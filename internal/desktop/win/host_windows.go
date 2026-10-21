@@ -12,13 +12,13 @@
 package win
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"image"
 	"log/slog"
 	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -160,9 +160,10 @@ type Options struct {
 }
 
 type mon struct {
-	d    desktop.Display
-	hmon uintptr
-	r    rect
+	d        desktop.Display
+	hmon     uintptr
+	r        rect
+	wallPath string // IDesktopWallpaper 的 device path（SetSystemWallpaper 用）
 	// 上次上报的探针结果
 	lastFS, lastCov bool
 }
@@ -381,10 +382,26 @@ func (h *Host) initialPower() {
 
 // ---- 显示器 ----
 
-func displayID(dev string, r rect) desktop.DisplayID {
-	sum := sha256.Sum256([]byte(dev))
-	return desktop.DisplayID("w-" + hex.EncodeToString(sum[:6]))
+// sortMons 按物理排列排序并保证 ID 唯一（desktop.SortByLayout / Dedupe）。
+func sortMons(mons []*mon) {
+	sort.SliceStable(mons, func(i, j int) bool {
+		a, b := mons[i].d.Bounds.Min, mons[j].d.Bounds.Min
+		if a.X != b.X {
+			return a.X < b.X
+		}
+		return a.Y < b.Y
+	})
+	ds := make([]desktop.Display, len(mons))
+	for i := range mons {
+		ds[i] = mons[i].d
+	}
+	desktop.Dedupe(ds)
+	for i := range mons {
+		mons[i].d.ID = ds[i].ID
+	}
 }
+
+func upper(s string) string { return strings.ToUpper(strings.TrimSpace(s)) }
 
 func (h *Host) refreshMonitors() {
 	monList = monList[:0]
@@ -393,23 +410,24 @@ func (h *Host) refreshMonitors() {
 	}
 	pEnumDisplayMonitors.Call(0, 0, cbMonitors, 0)
 	paths := h.wallpaperMonitorPaths()
+	targets := queryDisplayTargets()
 	var mons []*mon
 	for _, hm := range monList {
 		mi := monitorInfoEx{Size: uint32(unsafe.Sizeof(monitorInfoEx{}))}
 		pGetMonitorInfoW.Call(hm, uintptr(unsafe.Pointer(&mi)))
 		dev := syscall.UTF16ToString(mi.Device[:])
-		key := dev
-		if p, ok := paths[mi.Monitor]; ok {
-			key = p // 16.3：monitor device path（重启后稳定）
-		}
+		eddPath, eddStr := enumMonitorDevice(dev)
+		idn := monIdentity{GDI: dev, DC: targets[upper(dev)], EDDPath: eddPath, EDDString: eddStr, WallPath: paths[mi.Monitor]}
+		id, name, legacy := idn.resolve()
 		var dx, dy uint32
 		scale := 1.0
 		if r, _, _ := pGetDpiForMonitor.Call(hm, 0, uintptr(unsafe.Pointer(&dx)), uintptr(unsafe.Pointer(&dy))); r == 0 && dx > 0 {
 			scale = float64(dx) / 96
 		}
-		d := desktop.Display{ID: displayID(key, mi.Monitor), Name: dev, Scale: scale, Primary: mi.Flags&1 != 0,
+		d := desktop.Display{ID: id, Name: name, Device: dev, LegacyIDs: legacy, Scale: scale, Primary: mi.Flags&1 != 0,
 			Bounds: image.Rect(int(mi.Monitor.L), int(mi.Monitor.T), int(mi.Monitor.R), int(mi.Monitor.B))}
-		mons = append(mons, &mon{d: d, hmon: hm, r: mi.Monitor})
+		h.log.Info("monitor", "gdi", dev, "id", id, "name", name, "dcPath", dcPath(idn.DC) != "", "eddPath", eddPath != "", "wallPath", idn.WallPath != "")
+		mons = append(mons, &mon{d: d, hmon: hm, r: mi.Monitor, wallPath: idn.WallPath})
 	}
 	if h.o.Standalone && h.o.FakeMonitors > 1 && len(mons) > 0 {
 		base := mons[0]
@@ -426,12 +444,14 @@ func (h *Host) refreshMonitors() {
 			r.R = r.L + w
 			d := base.d
 			d.ID = desktop.DisplayID(fmt.Sprintf("fake-%d", i))
-			d.Name = fmt.Sprintf("fake%d", i)
+			d.Name = fmt.Sprintf("虚拟屏 %d", i+1)
+			d.LegacyIDs = nil
 			d.Primary = i == 0
 			d.Bounds = image.Rect(int(r.L), int(r.T), int(r.R), int(r.B))
 			mons = append(mons, &mon{d: d, hmon: base.hmon, r: r})
 		}
 	}
+	sortMons(mons)
 	h.mons = mons
 	ds := make([]desktop.Display, len(mons))
 	for i, m := range mons {
@@ -617,7 +637,7 @@ func (h *Host) createSurface(id desktop.DisplayID) (*surface, error) {
 		if w > 1280 {
 			w, ht = 1280, 720
 		}
-		hw, _, err := pCreateWindowExW.Call(0, up(u16(surfaceClass)), up(u16("wallpaperd-standalone-"+m.d.Name)),
+		hw, _, err := pCreateWindowExW.Call(0, up(u16(surfaceClass)), up(u16("wallpaperd-standalone-"+m.d.Device)),
 			wsVisible|0x00C00000 /*WS_CAPTION*/, uintptr(m.r.L), uintptr(m.r.T), uintptr(w), uintptr(ht), 0, 0, h.hInst, 0)
 		if hw == 0 {
 			return nil, fmt.Errorf("CreateWindowEx(standalone): %v", err)

@@ -138,7 +138,7 @@ func (h *Host) Displays() []desktop.Display {
 	if h.scr == nil {
 		return nil
 	}
-	return []desktop.Display{{ID: "x11-0", Name: os.Getenv("DISPLAY"), Scale: 1, Primary: true,
+	return []desktop.Display{{ID: "x11-0", Device: os.Getenv("DISPLAY"), Scale: 1, Primary: true,
 		Bounds: image.Rect(0, 0, int(h.scr.WidthInPixels), int(h.scr.HeightInPixels))}}
 }
 

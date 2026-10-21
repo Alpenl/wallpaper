@@ -6,12 +6,20 @@ package desktop
 
 import (
 	"errors"
+	"fmt"
 	"image"
+	"sort"
+	"strings"
 
 	"wpapp/internal/visibility"
 )
 
-// DisplayID 是稳定 ID（Win：IDesktopWallpaper 的 monitor device path 哈希；mac：CGDisplay UUID；X11：输出名）。
+// DisplayID 是稳定 ID，用来持久化每屏设置（壁纸、别名）。
+//   - Win：monitor device interface path（DisplayConfig 的 monitorDevicePath /
+//     EnumDisplayDevices(EDD_GET_DEVICE_INTERFACE_NAME)，包含 EDID 厂商/型号和实例号）的哈希，
+//     不用 GDI 名 \\.\DISPLAYn（它随驱动和插拔顺序变化）。
+//   - mac：CGDisplayCreateUUIDFromDisplayID 的 UUID 哈希。
+//   - X11：固定 "x11-0"（Linux 只支持单屏）。
 type DisplayID string
 
 // Display 描述一块显示器。Bounds 为物理像素、虚拟屏坐标。
@@ -20,7 +28,53 @@ type Display struct {
 	Bounds  image.Rectangle
 	Scale   float64
 	Primary bool
-	Name    string
+	// Name 是系统给的友好名（Win：monitorFriendlyDeviceName / 显示器 DeviceString；mac：NSScreen.localizedName）。
+	// 拿不到或只是“通用即插即用监视器”这类泛称时为空，UI 显示“显示器 N”。
+	Name string
+	// Device 是系统内部名（Win：\\.\DISPLAYn），只用于日志和诊断，不显示给用户、不做持久化键。
+	Device string
+	// LegacyIDs 是旧版本用过的 ID（迁移 assignments.json 用）。
+	LegacyIDs []DisplayID
+}
+
+// genericNames 是系统在拿不到 EDID 名字时给的泛称，不当作友好名。
+var genericNames = []string{"generic pnp monitor", "通用即插即用监视器", "generic non-pnp monitor", "通用非即插即用监视器", "default monitor", "默认监视器"}
+
+// CleanName 去掉空白，泛称返回空串。
+func CleanName(n string) string {
+	n = strings.TrimSpace(n)
+	l := strings.ToLower(n)
+	for _, g := range genericNames {
+		if l == g {
+			return ""
+		}
+	}
+	return n
+}
+
+// Dedupe 保证 ID 唯一：两块同型号且没有序列号的屏可能得到相同 ID，后出现的加 "#2"、"#3"。
+// 调用前应先按 SortByLayout 排序，这样编号稳定。
+func Dedupe(ds []Display) {
+	seen := map[DisplayID]int{}
+	for i := range ds {
+		id := ds[i].ID
+		seen[id]++
+		if n := seen[id]; n > 1 {
+			ds[i].ID = DisplayID(fmt.Sprintf("%s#%d", id, n))
+		}
+	}
+}
+
+// SortByLayout 按物理排列排序：从左到右，同一列从上到下（左边缘相同时比上边缘）。
+// 这个顺序就是 UI 里的编号 1、2、3…，与系统内部编号（DISPLAYn）无关。
+func SortByLayout(ds []Display) {
+	sort.SliceStable(ds, func(i, j int) bool {
+		a, b := ds[i].Bounds.Min, ds[j].Bounds.Min
+		if a.X != b.X {
+			return a.X < b.X
+		}
+		return a.Y < b.Y
+	})
 }
 
 // Surface 是渲染器画画的原生表面。

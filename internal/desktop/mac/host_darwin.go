@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"sync"
 	"time"
 	"unsafe"
@@ -99,9 +100,25 @@ func (h *Host) refresh() {
 		b := macos.CGDisplayBounds(num)
 		scale := objc.Send[float64](s, macos.Sel("backingScaleFactor"))
 		name := macos.GoString(s.Send(macos.Sel("localizedName")))
-		out = append(out, &scr{cgID: num, ns: s, d: desktop.Display{ID: desktop.DisplayID("m-" + hex.EncodeToString(sum[:6])), Name: name,
+		out = append(out, &scr{cgID: num, ns: s, d: desktop.Display{ID: desktop.DisplayID("m-" + hex.EncodeToString(sum[:6])), Name: desktop.CleanName(name), Device: fmt.Sprint(num),
 			Scale: scale, Primary: i == 0,
 			Bounds: image.Rect(int(b.Origin.X), int(b.Origin.Y), int(b.Origin.X+b.Size.W), int(b.Origin.Y+b.Size.H))}})
+	}
+	// 按物理排列排序；两块同型号、EDID 无序列号的屏 UUID 可能相同，去重后加 #2。
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i].d.Bounds.Min, out[j].d.Bounds.Min
+		if a.X != b.X {
+			return a.X < b.X
+		}
+		return a.Y < b.Y
+	})
+	ds := make([]desktop.Display, len(out))
+	for i := range out {
+		ds[i] = out[i].d
+	}
+	desktop.Dedupe(ds)
+	for i := range out {
+		out[i].d.ID = ds[i].ID
 	}
 	h.mu.Lock()
 	h.scrs = out
