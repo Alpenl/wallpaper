@@ -35,7 +35,7 @@ import (
 	"wpapp/internal/transcode"
 )
 
-var version = "0.2.0-mvp"
+var version = "0.2.1-mvp"
 
 // updatePubKey 是 F-15 更新清单的 Ed25519 公钥（base64），构建时注入：-ldflags "-X main.updatePubKey=…"。
 // 为空时不能在线更新（界面会说明）。signedBuild 由签名流水线注入 "1"。
@@ -284,13 +284,13 @@ func runHeadless(f *flags) int {
 	if f.importPath != "" {
 		go func() {
 			n := len(e.app.View().Library)
-			e.app.Import(f.importPath)
+			e.app.Import(f.importPath, "")
 			for i := 0; i < 600; i++ {
 				v := e.app.View()
 				if len(v.Library) > n {
 					it := v.Library[len(v.Library)-1]
 					e.log.Info("headless: assign", "item", it.ID)
-					e.app.Assign("", it.ID)
+					e.app.AssignAll(it.ID)
 					return
 				}
 				if !v.Importing && v.LastError != "" {

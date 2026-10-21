@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -72,6 +73,8 @@ type UI struct {
 	Accent string `json:"accent"`
 	// LibraryView 是壁纸库的视图（grid | list）。
 	LibraryView string `json:"libraryView"`
+	// ImportApply 是导入完成后的动作：none（只加入库）| current（应用到当前选中的显示器）。
+	ImportApply string `json:"importApply"`
 }
 
 // Defaults 返回默认配置。
@@ -82,7 +85,7 @@ func Defaults() Config {
 		Startup: Startup{LaunchAtLogin: false},
 		Privacy: Privacy{Telemetry: false, CrashReports: "never"},
 		Render:  Render{WindowsBackend: "mpv"},
-		UI:      UI{Lang: "zh-CN", Theme: "system", Accent: "blue", LibraryView: "grid"},
+		UI:      UI{Lang: "zh-CN", Theme: "system", Accent: "blue", LibraryView: "grid", ImportApply: "none"},
 		Update:  Update{AutoCheck: true}}
 }
 
@@ -123,6 +126,9 @@ func (c *Config) Normalize() {
 	}
 	if c.UI.LibraryView != "list" {
 		c.UI.LibraryView = "grid"
+	}
+	if c.UI.ImportApply != "current" {
+		c.UI.ImportApply = "none"
 	}
 	c.Privacy.Telemetry = false
 }
@@ -179,11 +185,69 @@ func (l *Library) Remove(id string) bool {
 	return false
 }
 
-// Assignments 是 assignments.json：显示器稳定 ID → 壁纸 id。
+// Assignments 是 assignments.json：显示器稳定 ID（desktop.DisplayID）→ 壁纸 id。
+// Aliases 是用户给显示器起的名字（同样按稳定 ID 存，换接口顺序、重启后不变）。
 type Assignments struct {
 	SchemaVersion int               `json:"schemaVersion"`
 	Default       string            `json:"default,omitempty"`
 	Displays      map[string]string `json:"displays"`
+	Aliases       map[string]string `json:"aliases,omitempty"`
+}
+
+// Migrate 把旧 ID 下的单屏设置（壁纸、别名）搬到新 ID；新 ID 已有设置时不覆盖。返回是否有改动。
+func (a *Assignments) Migrate(newID string, legacy []string) bool {
+	changed := false
+	for _, old := range legacy {
+		if old == "" || old == newID {
+			continue
+		}
+		if v, ok := a.Displays[old]; ok {
+			if _, has := a.Displays[newID]; !has {
+				if a.Displays == nil {
+					a.Displays = map[string]string{}
+				}
+				a.Displays[newID] = v
+			}
+			delete(a.Displays, old)
+			changed = true
+		}
+		if v, ok := a.Aliases[old]; ok {
+			if _, has := a.Aliases[newID]; !has {
+				if a.Aliases == nil {
+					a.Aliases = map[string]string{}
+				}
+				a.Aliases[newID] = v
+			}
+			delete(a.Aliases, old)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// MaxAliasLen 是别名的最大字符数。
+const MaxAliasLen = 32
+
+// SetAlias 设置别名；去掉首尾空白后为空表示恢复默认名称。返回规范化后的别名。
+func (a *Assignments) SetAlias(display, alias string) string {
+	alias = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, alias))
+	if rs := []rune(alias); len(rs) > MaxAliasLen {
+		alias = string(rs[:MaxAliasLen])
+	}
+	if alias == "" {
+		delete(a.Aliases, display)
+		return ""
+	}
+	if a.Aliases == nil {
+		a.Aliases = map[string]string{}
+	}
+	a.Aliases[display] = alias
+	return alias
 }
 
 // For 返回某显示器的壁纸 id（没有单独设置时用 Default）。

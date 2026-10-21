@@ -46,20 +46,27 @@ type Deps struct {
 
 // DisplayView 是 UI 用的显示器快照。
 type DisplayView struct {
-	ID      string
-	Name    string
-	W, H    int
-	Primary bool
-	ItemID  string
-	Level   string
-	State   string // active | recovering | failed | idle
-	Backend string
-	HWDec   string
-	Dropped uint64
-	X, Y    int    // 虚拟屏坐标（布局示意图）
-	Reasons string // 当前生效的暂停/限帧原因（07 章名称，| 分隔）
-	FPSCap  int    // 当前生效的限帧，0 = 不限
-	Note    string // 例如“此后端不支持限帧”
+	ID string // 稳定 ID（持久化键）
+	// Index 是按物理排列（左→右、上→下）的编号，从 1 开始；UI 里的“1”“2”就是它。
+	Index int
+	// Name 是显示名：用户别名 → 系统友好名 → “显示器 N”。
+	Name     string
+	Friendly string // 系统友好名（可能为空）
+	Alias    string // 用户别名（可能为空）
+	Device   string // 系统内部名（\\.\DISPLAYn），只用于诊断
+	Custom   bool   // 这块屏有单独设置的壁纸（否则跟随默认壁纸）
+	W, H     int
+	Primary  bool
+	ItemID   string
+	Level    string
+	State    string // active | recovering | failed | idle
+	Backend  string
+	HWDec    string
+	Dropped  uint64
+	X, Y     int    // 虚拟屏坐标（布局示意图）
+	Reasons  string // 当前生效的暂停/限帧原因（07 章名称，| 分隔）
+	FPSCap   int    // 当前生效的限帧，0 = 不限
+	Note     string // 例如“此后端不支持限帧”
 }
 
 // Power 是电源快照（F-05）。
@@ -240,6 +247,9 @@ func (a *App) syncDisplays() {
 	for _, d := range a.d.Host.Displays() {
 		want[d.ID] = d
 	}
+	if a.migrateIDs(want) {
+		a.saveAssign()
+	}
 	for id, s := range a.screens {
 		if d, ok := want[id]; !ok || d.Bounds != s.d.Bounds {
 			a.log.Info("display removed/changed", "display", id)
@@ -248,13 +258,13 @@ func (a *App) syncDisplays() {
 			delete(a.screens, id)
 		}
 	}
-	ids := make([]string, 0, len(want))
-	for id := range want {
-		ids = append(ids, string(id))
+	for id, d := range want {
+		if s := a.screens[id]; s != nil {
+			s.d = d // 名字、主屏标记可能变了（几何没变）
+		}
 	}
-	sort.Strings(ids)
-	for _, sid := range ids {
-		id := desktop.DisplayID(sid)
+	for _, d := range layoutOrder(want) {
+		id := d.ID
 		if _, ok := a.screens[id]; ok {
 			continue
 		}
@@ -280,6 +290,68 @@ func (a *App) syncDisplays() {
 		a.assignItem(s)
 		a.startScreen(s, 0)
 	}
+}
+
+// layoutOrder 按物理排列返回显示器（desktop.SortByLayout）。
+func layoutOrder(m map[desktop.DisplayID]desktop.Display) []desktop.Display {
+	ds := make([]desktop.Display, 0, len(m))
+	for _, d := range m {
+		ds = append(ds, d)
+	}
+	sort.Slice(ds, func(i, j int) bool { return ds[i].ID < ds[j].ID })
+	desktop.SortByLayout(ds)
+	return ds
+}
+
+// migrateIDs 把旧版 ID（例如 0.2.0 用 GDI 名算出的 ID）下的设置搬到新的稳定 ID。
+func (a *App) migrateIDs(want map[desktop.DisplayID]desktop.Display) bool {
+	changed := false
+	for _, d := range layoutOrder(want) {
+		var legacy []string
+		for _, l := range d.LegacyIDs {
+			if _, live := want[l]; !live { // 旧 ID 正好是另一块在线屏的 ID 时不动
+				legacy = append(legacy, string(l))
+			}
+		}
+		if a.d.Store.Assign.Migrate(string(d.ID), legacy) {
+			a.log.Info("display id migrated", "display", d.ID, "legacy", legacy)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// DisplayName 是显示名规则：别名 → 友好名 → “显示器 N”。
+func DisplayName(alias, friendly string, index int) string {
+	if alias != "" {
+		return alias
+	}
+	if friendly != "" {
+		return friendly
+	}
+	return fmt.Sprintf("显示器 %d", index)
+}
+
+// layoutScreens 按物理排列返回屏幕（UI 编号顺序）。
+func (a *App) layoutScreens() []*screen {
+	out := a.sortedScreens()
+	sort.SliceStable(out, func(i, j int) bool {
+		x, y := out[i].d.Bounds.Min, out[j].d.Bounds.Min
+		if x.X != y.X {
+			return x.X < y.X
+		}
+		return x.Y < y.Y
+	})
+	return out
+}
+
+func (a *App) labelOf(s *screen) string {
+	for i, x := range a.layoutScreens() {
+		if x == s {
+			return DisplayName(a.d.Store.Assign.Aliases[string(s.d.ID)], s.d.Name, i+1)
+		}
+	}
+	return DisplayName("", s.d.Name, 0)
 }
 
 func worker(ops <-chan func(), quit <-chan struct{}) {
@@ -547,7 +619,7 @@ func (a *App) runActions() {
 			case visibility.ActRestartedAt:
 				a.applyLevel(s, act.Level)
 			case visibility.ActFail:
-				a.lastErr = fmt.Sprintf("显示器 %s 上的壁纸 10 分钟内崩溃 %d 次，已停用并显示截图", s.d.Name, VisConfig(a.d.Store.Config).CrashLimit)
+				a.lastErr = fmt.Sprintf("显示器 %s 上的壁纸 10 分钟内崩溃 %d 次，已停用并显示截图", a.labelOf(s), VisConfig(a.d.Store.Config).CrashLimit)
 				a.closeScreen(s, false)
 				if s.surf != nil {
 					surf := s.surf
@@ -734,7 +806,11 @@ func (a *App) saveAssign() {
 	for k, v := range a.d.Store.Assign.Displays {
 		m[k] = v
 	}
-	as := config.Assignments{SchemaVersion: config.AssignmentsVersion, Default: a.d.Store.Assign.Default, Displays: m}
+	al := map[string]string{}
+	for k, v := range a.d.Store.Assign.Aliases {
+		al[k] = v
+	}
+	as := config.Assignments{SchemaVersion: config.AssignmentsVersion, Default: a.d.Store.Assign.Default, Displays: m, Aliases: al}
 	a.d.Store.AssignSaver.Schedule(func() any { return as })
 }
 
@@ -782,9 +858,12 @@ func (a *App) publish() {
 	for k, x := range a.transc {
 		v.Transcoding[k] = x
 	}
-	for _, s := range a.sortedScreens() {
+	for i, s := range a.layoutScreens() {
 		lv, st := levelName(a.ctl.Display(s.n))
-		dv := DisplayView{ID: string(s.d.ID), Name: s.d.Name, W: s.d.Bounds.Dx(), H: s.d.Bounds.Dy(), Primary: s.d.Primary,
+		alias := a.d.Store.Assign.Aliases[string(s.d.ID)]
+		_, custom := a.d.Store.Assign.Displays[string(s.d.ID)]
+		dv := DisplayView{ID: string(s.d.ID), Index: i + 1, Name: DisplayName(alias, s.d.Name, i+1), Friendly: s.d.Name, Alias: alias,
+			Device: s.d.Device, Custom: custom, W: s.d.Bounds.Dx(), H: s.d.Bounds.Dy(), Primary: s.d.Primary,
 			Level: lv, State: st, X: s.d.Bounds.Min.X, Y: s.d.Bounds.Min.Y, FPSCap: s.curCap, Note: s.note}
 		if m := a.ctl.Display(s.n); m != nil {
 			dv.Reasons = reasonsString(m.Effective())
@@ -820,14 +899,39 @@ func (a *App) SetPausedAll(on bool) {
 	})
 }
 
-// Assign 设置某显示器的壁纸；display 为空表示设为默认（所有未单独设置的显示器）。itemID 为空表示清除。
-func (a *App) Assign(display, itemID string) {
+// Assign 设置某一块显示器的壁纸（按稳定 ID 持久化）；itemID 为空表示清除单独设置、改为跟随默认壁纸。
+// display 为空表示只改默认壁纸（新接入的显示器和没有单独设置的显示器使用它），不动已单独设置的屏。
+func (a *App) Assign(display, itemID string) { a.Do(func() { a.assign(display, itemID) }) }
+
+// AssignAll 把壁纸应用到所有显示器：设为默认并清除所有单独设置。
+func (a *App) AssignAll(itemID string) {
 	a.Do(func() {
+		a.d.Store.Assign.Displays = map[string]string{}
+		a.assign("", itemID)
+	})
+}
+
+// SetAlias 给显示器起名（按稳定 ID 持久化）；空串表示恢复系统名称。
+func (a *App) SetAlias(display, alias string) {
+	a.Do(func() {
+		if display == "" {
+			return
+		}
+		a.d.Store.Assign.SetAlias(display, alias)
+		a.saveAssign()
+	})
+}
+
+func (a *App) assign(display, itemID string) {
+	{
 		if display == "" {
 			a.d.Store.Assign.Default = itemID
 		} else if itemID == "" {
 			delete(a.d.Store.Assign.Displays, display)
 		} else {
+			if a.d.Store.Assign.Displays == nil {
+				a.d.Store.Assign.Displays = map[string]string{}
+			}
 			a.d.Store.Assign.Displays[display] = itemID
 		}
 		a.saveAssign()
@@ -864,11 +968,15 @@ func (a *App) Assign(display, itemID string) {
 				a.startScreen(s, 0)
 			}
 		}
-	})
+	}
 }
 
-// Import 异步导入；完成后加入库，并在库为空时设为默认壁纸。
-func (a *App) Import(path string) {
+// ApplyAll 是 Import 的 applyTo 取值：导入后应用到所有显示器（headless / e2e 用）。
+const ApplyAll = "*"
+
+// Import 异步导入，完成后只加入壁纸库。applyTo 非空时再应用：显示器稳定 ID = 只应用到那块屏；
+// ApplyAll = 所有显示器。导入本身不会改动任何显示器（修复 0.2.0“导入即应用到所有屏”）。
+func (a *App) Import(path, applyTo string) {
 	a.Do(func() {
 		if a.d.Import == nil {
 			return
@@ -884,7 +992,6 @@ func (a *App) Import(path string) {
 					a.log.Warn("import failed", "file", telemetry.HashPath(path), "err", err)
 					return
 				}
-				first := len(a.d.Store.Library.Items) == 0
 				a.d.Store.Library.Upsert(res.Item)
 				a.saveLibrary()
 				a.lastImp = "已导入「" + res.Item.Title + "」"
@@ -892,8 +999,15 @@ func (a *App) Import(path string) {
 					a.lastImp += "（" + joinNotes(res.Warnings) + "）"
 				}
 				a.log.Info("imported", "id", res.Item.ID, "type", res.Item.Type, "codec", res.Item.Codec, "transcode", res.Item.Transcode)
-				if first && a.d.Store.Assign.Default == "" {
-					go a.Assign("", res.Item.ID)
+				switch {
+				case applyTo == ApplyAll:
+					a.d.Store.Assign.Displays = map[string]string{}
+					a.assign("", res.Item.ID)
+				case applyTo != "":
+					if a.screens[desktop.DisplayID(applyTo)] != nil {
+						a.assign(applyTo, res.Item.ID)
+						a.lastImp += "，已应用到「" + a.labelOf(a.screens[desktop.DisplayID(applyTo)]) + "」"
+					}
 				}
 			})
 		}()
@@ -1044,21 +1158,30 @@ func (a *App) ExitSafeMode() {
 	})
 }
 
-// Next 把下一张壁纸设为默认（托盘“切换壁纸”，F-09）：按导入顺序轮换，清除各屏单独设置以外不动。
+// Next 是托盘“切换到下一张”（F-09）：每块屏各自按导入顺序换到下一张，结果写成该屏的单独设置；
+// 默认壁纸也前进一张（给新接入的显示器）。
 func (a *App) Next() {
 	a.Do(func() {
 		items := a.d.Store.Library.Items
 		if len(items) == 0 {
 			return
 		}
-		cur := a.d.Store.Assign.Default
-		next := items[0].ID
-		for i, it := range items {
-			if it.ID == cur {
-				next = items[(i+1)%len(items)].ID
+		after := func(cur string) string {
+			for i, it := range items {
+				if it.ID == cur {
+					return items[(i+1)%len(items)].ID
+				}
 			}
+			return items[0].ID
 		}
-		go a.Assign("", next)
+		for _, s := range a.layoutScreens() {
+			cur := ""
+			if s.item != nil {
+				cur = s.item.ID
+			}
+			a.assign(string(s.d.ID), after(cur))
+		}
+		a.assign("", after(a.d.Store.Assign.Default))
 	})
 }
 

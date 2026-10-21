@@ -386,13 +386,13 @@ func TestImportAssignRemove(t *testing.T) {
 	if e.cur("A") != nil {
 		t.Fatal("没有壁纸时不应启动渲染器")
 	}
-	e.a.Import("bad")
+	e.a.Import("bad", "")
 	eventually(t, "导入失败提示", func() bool {
 		v := e.a.View()
 		return !v.Importing && len(v.LastImport) > 0 && v.LastImport[:6] == "导入"
 	})
-	e.a.Import("good.mp4")
-	eventually(t, "首个导入自动设为默认并播放", func() bool { r := e.cur("A"); return r != nil && r.isLoaded() })
+	e.a.Import("good.mp4", "A")
+	eventually(t, "导入并应用到 A 后播放", func() bool { r := e.cur("A"); return r != nil && r.isLoaded() })
 	if v := e.a.View(); len(v.Library) != 1 || v.Displays[0].ItemID != "new" {
 		t.Fatal(v)
 	}
