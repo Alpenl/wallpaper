@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -20,8 +21,13 @@ type emitter interface{ Emit(desktop.Event) }
 func runUI(f *flags) int {
 	mygo.App.SetName("Wallpaper")
 	mygo.App.SetVersion(version)
+	waitRelaunch()
 	if !mygo.App.RequestSingleInstanceLock() {
 		return 0 // 已有实例：参数已交给它（它会打开设置窗口）
+	}
+	if exe, err := os.Executable(); err == nil && bootUpdate(exe) {
+		relaunch(exe) // 新版本连续启动失败，已回滚：启动旧版本
+		return 0
 	}
 	uiMainInit()
 	e, err := setup(f, nil, mygo.App.SetOpenAtLogin)
@@ -47,6 +53,14 @@ func runUI(f *flags) int {
 	settings := ui.NewSettings(e.app, runtime.GOOS)
 	settings.SetLaunchAtLogin = mygo.App.SetOpenAtLogin
 	settings.ExportDiag = e.exportDiag
+	settings.OpenPath = mygo.Shell.OpenPath
+	settings.ShowInFolder = mygo.Shell.ShowItemInFolder
+	e.updateHooks(&settings.Hooks, quit)
+	settings.Info = ui.Info{Version: version, Platform: runtime.GOOS + "/" + runtime.GOARCH, EncoderName: e.enc,
+		DataDir: filepath.Dir(e.paths.Logs), LogsDir: e.paths.Logs, SignedBuild: signedBuild == "1", UpdateKey: updatePub() != nil}
+	if runtime.GOOS != "darwin" {
+		settings.Info.MpvPath = e.mpvPath(e.store.Config)
+	}
 	sh := &ui.Shell{S: settings, OnQuit: quit}
 	e.app.OnChange(sh.Changed)
 	mygo.App.OnSecondInstance(func([]string, string) { sh.Open() })
@@ -74,6 +88,13 @@ func runUI(f *flags) int {
 			e.log.Error("tray", "err", err)
 			sh.Open() // 没有托盘（例如部分 Linux 面板）时至少给窗口
 		}
+		go func() { // 稳定运行 60 s 后确认本次更新（F-15）
+			select {
+			case <-time.After(60 * time.Second):
+				_ = e.updater().MarkGood()
+			case <-ctx.Done():
+			}
+		}()
 		go func() {
 			defer close(loopDone)
 			if err := e.app.Run(ctx); err != nil {
@@ -84,6 +105,9 @@ func runUI(f *flags) int {
 	if err := mygo.App.Run(); err != nil {
 		e.log.Error("mygo", "err", err)
 		return 1
+	}
+	if relaunchAfterQuit {
+		relaunch(e.exe)
 	}
 	return 0
 }

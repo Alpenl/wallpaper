@@ -3,7 +3,7 @@
 # arm64 安装器默认不带 mpv（shinchiro 有 aarch64 构建：scripts/fetch-mpv.sh aarch64 后会自动带上）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSION=${VERSION:-0.1.0-mvp}
+VERSION=${VERSION:-0.2.0-mvp}
 for arch in ${ARCHES:-amd64 arm64}; do
   src=dist/windows-$arch
   [ -f "$src/wallpaperd.exe" ] || { echo "missing $src/wallpaperd.exe (run scripts/build.sh)"; exit 1; }

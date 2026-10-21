@@ -4,6 +4,7 @@
 //	wallpaperd -headless [-import f]   无 UI，供 e2e / Wine 验证；-duration 后退出并打印状态 JSON
 //	wallpaperd -mfhost -pipe … -swap … Windows Media Foundation 渲染子进程（内部使用）
 //	wallpaperd -helper probe -in f     在子进程里探测媒体文件（隔离解析器崩溃），输出 JSON
+//	wallpaperd -update-apply [-feed u]  检查并增量安装更新；-update-rollback 回滚（F-15）
 package main
 
 import (
@@ -34,7 +35,11 @@ import (
 	"wpapp/internal/transcode"
 )
 
-var version = "0.1.0-mvp"
+var version = "0.2.0-mvp"
+
+// updatePubKey 是 F-15 更新清单的 Ed25519 公钥（base64），构建时注入：-ldflags "-X main.updatePubKey=…"。
+// 为空时不能在线更新（界面会说明）。signedBuild 由签名流水线注入 "1"。
+var updatePubKey, signedBuild string
 
 type flags struct {
 	headless   bool
@@ -51,6 +56,9 @@ type flags struct {
 	version    bool
 	statusOut  string
 	exportDiag bool
+	updApply   bool
+	updRoll    bool
+	feed       string
 }
 
 func parseFlags(args []string) *flags {
@@ -71,6 +79,9 @@ func parseFlags(args []string) *flags {
 	fs.StringVar(&f.in, "in", "", "内部：helper 输入文件")
 	fs.BoolVar(&f.version, "version", false, "打印版本")
 	fs.BoolVar(&f.exportDiag, "export-diagnostics", false, "导出诊断包后退出")
+	fs.BoolVar(&f.updApply, "update-apply", false, "检查并安装更新后退出（F-15，命令行/测试用）")
+	fs.BoolVar(&f.updRoll, "update-rollback", false, "回滚上一次更新后退出")
+	fs.StringVar(&f.feed, "feed", "", "更新源（覆盖 config.update.feedURL）")
 	fs.Parse(args)
 	return f
 }
@@ -109,6 +120,8 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(p)
+	case f.updApply || f.updRoll:
+		os.Exit(runUpdateCLI(f))
 	case f.headless:
 		os.Exit(runHeadless(f))
 	default:
@@ -125,6 +138,7 @@ type env struct {
 	host  desktop.Host
 	app   *app.App
 	exe   string
+	enc   string // 编码器显示名
 }
 
 func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error) {
@@ -163,9 +177,11 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 	imp := importer.Options{Library: paths.Library, Cache: paths.Cache, GOOS: runtime.GOOS, Lang: store.Config.UI.Lang,
 		Probe: e.probe, Transcode: transcode.System(runtime.GOOS)}
 	imp.Snapshot = e.snapshot
+	enc, ext, encName := transcode.Encoder(runtime.GOOS, store.Config.Render.FFmpegPath)
+	e.enc = encName
 	e.app = app.New(app.Deps{Host: e.host, Store: store, Log: log, SafeMode: safe, SetLaunchAtLogin: setLogin,
-		NewRenderer: e.newRenderer,
-		Import:      func(ctx context.Context, src string) (*importer.Result, error) { return importer.Import(ctx, src, imp) }})
+		NewRenderer: e.newRenderer, Transcode: enc, TranscodeExt: ext,
+		Import: func(ctx context.Context, src string) (*importer.Result, error) { return importer.Import(ctx, src, imp) }})
 	return e, nil
 }
 
