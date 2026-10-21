@@ -127,7 +127,17 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 	return c.Call("setPause", map[string]int{"level": lv}, 15*time.Second, nil)
 }
 
-func (r *Renderer) SetFPSCap(int) error   { return render.ErrUnsupported }
+// SetFPSCap 通过 IPC setFPS 让 mfhost 节流取帧/呈现（0 = 不限）。
+func (r *Renderer) SetFPSCap(fps int) error {
+	r.mu.Lock()
+	c := r.conn
+	r.mu.Unlock()
+	if c == nil {
+		return fmt.Errorf("mf: not running")
+	}
+	return c.Call("setFPS", map[string]int{"fps": fps}, 5*time.Second, nil)
+}
+
 func (r *Renderer) Snapshot(string) error { return render.ErrUnsupported }
 func (r *Renderer) Stats() render.Stats   { return r.stats.Load().(render.Stats) }
 func (r *Renderer) Done() <-chan error    { return r.done }

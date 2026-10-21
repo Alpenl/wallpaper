@@ -23,6 +23,10 @@ type Renderer struct {
 	looper objc.ID
 	layer  objc.ID
 	done   chan error
+	fps    int
+	item   render.Item
+	surf   desktop.Surface
+	paused bool
 }
 
 func New() *Renderer { return &Renderer{done: make(chan error, 1)} }
@@ -35,9 +39,23 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	if view == 0 {
 		return errors.New("avf: no view")
 	}
+	r.mu.Lock()
+	r.item, r.surf, r.paused = it, s, paused
+	fps := r.fps
+	r.mu.Unlock()
 	macos.Main(func() {
 		url := macos.Class("NSURL").Send(macos.Sel("fileURLWithPath:"), macos.NSString(it.Path))
 		item := macos.Class("AVPlayerItem").Send(macos.Sel("playerItemWithURL:"), url)
+		if fps > 0 {
+			// F-05 限帧：给模板 item 挂一个 frameDuration=1/fps 的 videoComposition（AVPlayerLooper 复制模板，
+			// 每一轮都带上）。未在真机验证【推断】。
+			asset := item.Send(macos.Sel("asset"))
+			comp := macos.Class("AVMutableVideoComposition").Send(macos.Sel("videoCompositionWithPropertiesOfAsset:"), asset)
+			if comp != 0 {
+				macos.MsgSetCMTime(comp, macos.Sel("setFrameDuration:"), macos.CMTime{Value: 1, Timescale: int32(fps), Flags: 1})
+				item.Send(macos.Sel("setVideoComposition:"), comp)
+			}
+		}
 		p := macos.Class("AVQueuePlayer").Send(macos.Sel("new"))
 		p.Send(macos.Sel("setMuted:"), true)
 		lp := macos.Class("AVPlayerLooper").Send(macos.Sel("playerLooperWithPlayer:templateItem:"), p, item)
@@ -67,6 +85,9 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 		return nil
 	}
 	macos.Main(func() {
+		r.mu.Lock()
+		r.paused = l != visibility.L0
+		r.mu.Unlock()
 		if l == visibility.L0 {
 			p.Send(macos.Sel("play"))
 		} else {
@@ -76,7 +97,24 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 	return nil
 }
 
-func (r *Renderer) SetFPSCap(int) error   { return render.ErrUnsupported }
+// SetFPSCap 换成带 videoComposition 的新 looper（AVPlayer 没有运行时限帧属性）。从头播放。
+func (r *Renderer) SetFPSCap(fps int) error {
+	r.mu.Lock()
+	if r.fps == fps {
+		r.mu.Unlock()
+		return nil
+	}
+	r.fps = fps
+	it, s, running := r.item, r.surf, r.player != 0
+	paused := r.paused
+	r.mu.Unlock()
+	if !running || s == nil {
+		return nil
+	}
+	r.Close()
+	return r.Load(it, s, paused)
+}
+
 func (r *Renderer) Snapshot(string) error { return render.ErrUnsupported }
 func (r *Renderer) Stats() render.Stats   { return render.Stats{Backend: "avf", HWDec: "videotoolbox"} }
 func (r *Renderer) Done() <-chan error    { return r.done }

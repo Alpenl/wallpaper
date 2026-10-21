@@ -95,6 +95,14 @@ func RunHost(pipeName string, swap string, statsEvery time.Duration) error {
 			}
 			level = x.Level
 			return struct{}{}, nil
+		case "setFPS":
+			var x struct{ FPS int }
+			_ = json.Unmarshal(p, &x)
+			if x.FPS < 0 || x.FPS > 240 {
+				return nil, &ipc.Error{Code: "E_PROTO", Msg: "fps out of range"}
+			}
+			eng.fpsCap.Store(int32(x.FPS))
+			return struct{}{}, nil
 		case "snapshot":
 			return nil, &ipc.Error{Code: "E_STATE", Msg: "snapshot not implemented in mf backend"}
 		case "ping":

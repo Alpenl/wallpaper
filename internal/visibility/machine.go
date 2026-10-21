@@ -231,6 +231,9 @@ func (m *Machine) floor() Level {
 	return f
 }
 
+// WantFPS 返回当前有效原因要求的限帧（0 = 不限）。
+func (m *Machine) WantFPS() int { return m.wantFPS() }
+
 func (m *Machine) wantFPS() int {
 	if m.eff&ThermalSerious != 0 {
 		return m.cfg.ThermalFPS

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,7 @@ type Renderer struct {
 	stop    chan struct{}
 	killing *atomic.Bool
 	level   atomic.Int32
+	cap     atomic.Int32
 	item    render.Item
 	pos     float64
 	done    chan error
@@ -64,13 +66,7 @@ func (r *Renderer) ipcName() string {
 
 // Args 返回 06 章 6.5 的播放参数（导出以便测试）。
 func Args(o Options, wid uintptr, ipcName, file string, paused bool, start float64) []string {
-	hw := o.Hwdec
-	if hw == "" {
-		hw = "auto-safe"
-		if runtime.GOOS == "windows" {
-			hw = "d3d11va"
-		}
-	}
+	hw := hwdecFor(o.Hwdec)
 	a := []string{"--no-config", "--idle=yes", "--force-window=yes", "--wid=" + strconv.FormatUint(uint64(wid), 10),
 		"--input-ipc-server=" + ipcName, "--hwdec=" + hw, "--loop-file=inf", "--keep-open=yes", "--no-audio",
 		"--no-input-default-bindings", "--input-vo-keyboard=no", "--input-cursor=no", "--cursor-autohide=no", "--osc=no", "--osd-level=0",
@@ -117,6 +113,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	r.mu.Lock()
 	r.cmd, r.c, r.stop, r.killing, r.item, r.pos = cmd, c, stop, killing, it, it.Start
 	r.mu.Unlock()
+	r.cap.Store(0)
 	if paused {
 		r.level.Store(1)
 	} else {
@@ -217,8 +214,60 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 	return err
 }
 
-// SetFPSCap：mpv 运行时限帧需要插入视频滤镜，会让硬解退回拷贝模式（反而更耗电），MVP 不做。
-func (r *Renderer) SetFPSCap(int) error { return render.ErrUnsupported }
+// SetFPSCap 限帧（F-05 电池 15 fps 档、过热、省电性能档）：插入带标签的 lavfi fps 滤镜 `@wpcap:fps=N`。
+// 代价：软件滤镜需要系统内存里的帧，所以限帧期间把 hwdec 切到对应的 *-copy 模式（d3d11va-copy / auto-copy）；
+// 解码仍是硬件，只多一次显存→内存拷贝，换来呈现/合成次数减半。是否比全帧率零拷贝更省电【推断】，
+// 需要 TEST_PLAN PB-battery 实测（Q-PB1）。fps=0 恢复原状。
+func (r *Renderer) SetFPSCap(fps int) error {
+	r.mu.Lock()
+	c := r.c
+	r.mu.Unlock()
+	if c == nil {
+		return fmt.Errorf("mpv: not running")
+	}
+	if int(r.cap.Load()) == fps {
+		return nil
+	}
+	hw := hwdecFor(r.o.Hwdec)
+	_, _ = c.cmd("vf", "remove", "@wpcap")
+	if fps > 0 {
+		if _, err := c.cmd("set_property", "hwdec", copyHwdec(hw)); err != nil {
+			return err
+		}
+		if _, err := c.cmd("vf", "add", "@wpcap:fps="+strconv.Itoa(fps)); err != nil {
+			return err
+		}
+	} else if _, err := c.cmd("set_property", "hwdec", hw); err != nil {
+		return err
+	}
+	r.cap.Store(int32(fps))
+	return nil
+}
+
+// FPSCap 返回当前生效的限帧（0 = 不限）。
+func (r *Renderer) FPSCap() int { return int(r.cap.Load()) }
+
+func hwdecFor(h string) string {
+	if h != "" {
+		return h
+	}
+	if runtime.GOOS == "windows" {
+		return "d3d11va"
+	}
+	return "auto-safe"
+}
+
+// copyHwdec 返回 hw 对应的拷贝模式（软件滤镜可用）。
+func copyHwdec(hw string) string {
+	switch {
+	case hw == "no", strings.HasSuffix(hw, "-copy"):
+		return hw
+	case hw == "auto", hw == "auto-safe", hw == "yes":
+		return "auto-copy"
+	default:
+		return hw + "-copy"
+	}
+}
 
 // Snapshot 截一帧到 path（screenshot-to-file … video）。
 func (r *Renderer) Snapshot(path string) error {

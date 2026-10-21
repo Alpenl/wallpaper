@@ -70,3 +70,24 @@ func (d *Debounce3) Push(v bool) bool {
 	}
 	return false
 }
+
+// PowerSignals 把 NSProcessInfo 的低电量模式和 thermalState（0 nominal、1 fair、2 serious、3 critical）
+// 映射到 07 章的原因：低电量模式 → BatterySaver；serious → ThermalSerious（只限帧 15 fps）；critical → ThermalCritical（暂停）。
+func PowerSignals(lowPower bool, thermal int) (saver, serious, critical bool) {
+	return lowPower, thermal == 2, thermal >= 3
+}
+
+// ThermalName 是 thermalState 的显示名。
+func ThermalName(t int) string {
+	switch t {
+	case 0:
+		return "正常"
+	case 1:
+		return "偏热"
+	case 2:
+		return "严重"
+	case 3:
+		return "危急"
+	}
+	return "未知"
+}

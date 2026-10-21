@@ -173,6 +173,7 @@ type mfEngine struct {
 	done       chan struct{}
 	wake       chan struct{}
 	paused     atomic.Bool
+	fpsCap     atomic.Int32 // F-05：>0 时按此帧率节流 Transfer+Present（MF 仍解码每一帧，省的是拷贝/呈现/合成）
 	engine     atomic.Uintptr
 
 	// 统计（render 线程写，stats 读）
@@ -405,6 +406,7 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32) {
 	dst := rect{0, 0, int32(w), int32(h)}
 	black := uint32(0xff000000)
 	var lastPTS, minDelta int64 = -1, 0
+	var lastPresent time.Time
 	for {
 		select {
 		case <-b.quit:
@@ -444,6 +446,10 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32) {
 		}
 		lastPTS = pts
 		b.lastPTS.Store(pts)
+		if c := b.fpsCap.Load(); c > 0 && time.Since(lastPresent) < time.Second/time.Duration(c)-2*time.Millisecond {
+			continue // 限帧：本 vblank 不取帧
+		}
+		lastPresent = time.Now()
 		if hr := vcall(engine, vtMETransferVideoFrame, tex, 0, uintptr(unsafe.Pointer(&dst)), uintptr(unsafe.Pointer(&black))); failed(hr) {
 			logf("MF TransferVideoFrame hr=0x%08x", hr)
 			continue

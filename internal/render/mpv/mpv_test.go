@@ -132,3 +132,56 @@ func TestFirstFrame(t *testing.T) {
 		t.Fatal("not png")
 	}
 }
+
+// F-05：限帧滤镜真的生效（estimated-vf-fps ≈ 15），取消后恢复。
+func TestRealMpvFPSCap(t *testing.T) {
+	path, err := exec.LookPath("mpv")
+	if err != nil {
+		t.Skip("mpv not installed")
+	}
+	dir := t.TempDir()
+	video := filepath.Join(dir, "v30.mp4")
+	if ff, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	} else if out, err := exec.Command(ff, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=30:duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", video).CombinedOutput(); err != nil {
+		t.Skip("ffmpeg failed: " + string(out))
+	}
+	r := New(Options{Path: path, StatsEvery: time.Second, ExtraArgs: []string{"--vo=null"}, Hwdec: "no"})
+	if err := r.Load(render.Item{Path: video}, fakeSurface{}, false); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if !r.WaitFirstFrame(5 * time.Second) {
+		t.Fatal("no first frame")
+	}
+	if err := r.SetFPSCap(15); err != nil {
+		t.Fatal(err)
+	}
+	if r.FPSCap() != 15 {
+		t.Fatal("cap not recorded")
+	}
+	time.Sleep(1500 * time.Millisecond)
+	vf, _ := r.c.cmd("get_property", "vf")
+	if !strings.Contains(string(vf), "wpcap") {
+		t.Fatalf("filter missing: %s", vf)
+	}
+	fps, err := r.c.getFloat("estimated-vf-fps")
+	if err != nil || fps < 13 || fps > 17 {
+		t.Fatalf("estimated-vf-fps=%v err=%v", fps, err)
+	}
+	if err := r.SetFPSCap(0); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if fps, _ := r.c.getFloat("estimated-vf-fps"); fps < 25 {
+		t.Fatalf("after uncap fps=%v", fps)
+	}
+}
+
+func TestCopyHwdec(t *testing.T) {
+	for in, want := range map[string]string{"d3d11va": "d3d11va-copy", "auto-safe": "auto-copy", "no": "no", "vaapi-copy": "vaapi-copy", "videotoolbox": "videotoolbox-copy"} {
+		if got := copyHwdec(in); got != want {
+			t.Error(in, got)
+		}
+	}
+}

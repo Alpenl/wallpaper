@@ -15,6 +15,15 @@ import (
 
 type CGPoint struct{ X, Y float64 }
 type CGSize struct{ W, H float64 }
+
+// CMTime 对应 CoreMedia 的 CMTime（24 字节：value int64, timescale int32, flags uint32, epoch int64）。
+type CMTime struct {
+	Value     int64
+	Timescale int32
+	Flags     uint32 // 1 = kCMTimeFlags_Valid
+	Epoch     int64
+}
+
 type CGRect struct {
 	Origin CGPoint
 	Size   CGSize
@@ -40,6 +49,7 @@ var (
 
 	MsgInitWindow func(objc.ID, objc.SEL, CGRect, uint, uint, bool, objc.ID) objc.ID
 	MsgSetFrame   func(objc.ID, objc.SEL, CGRect)
+	MsgSetCMTime  func(objc.ID, objc.SEL, CMTime)
 
 	KLayer, KBounds, KPID uintptr
 	GravityFill           objc.ID
@@ -73,6 +83,7 @@ func Load() error {
 		open("/System/Library/Frameworks/AppKit.framework/AppKit")
 		av := open("/System/Library/Frameworks/AVFoundation.framework/AVFoundation")
 		open("/System/Library/Frameworks/QuartzCore.framework/QuartzCore")
+		open("/System/Library/Frameworks/CoreMedia.framework/CoreMedia")
 		cg := open("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
 		cf := open("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
 		lo := open("/usr/lib/libobjc.A.dylib")
@@ -97,6 +108,7 @@ func Load() error {
 		}
 		purego.RegisterFunc(&MsgInitWindow, ms)
 		purego.RegisterFunc(&MsgSetFrame, ms)
+		purego.RegisterFunc(&MsgSetCMTime, ms)
 		KLayer, KBounds, KPID = symPtr(cg, "kCGWindowLayer"), symPtr(cg, "kCGWindowBounds"), symPtr(cg, "kCGWindowOwnerPID")
 		GravityFill = objc.ID(symPtr(av, "AVLayerVideoGravityResizeAspectFill"))
 	})

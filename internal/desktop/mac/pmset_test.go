@@ -41,3 +41,19 @@ func TestDebounce3(t *testing.T) {
 		t.Fatal(flips, d.State)
 	}
 }
+
+func TestPowerSignals(t *testing.T) {
+	for _, c := range []struct {
+		low           bool
+		th            int
+		sv, ser, crit bool
+	}{{false, 0, false, false, false}, {true, 1, true, false, false}, {false, 2, false, true, false}, {false, 3, false, false, true}} {
+		sv, ser, crit := PowerSignals(c.low, c.th)
+		if sv != c.sv || ser != c.ser || crit != c.crit {
+			t.Error(c)
+		}
+	}
+	if ThermalName(2) != "严重" || ThermalName(9) != "未知" {
+		t.Fatal()
+	}
+}

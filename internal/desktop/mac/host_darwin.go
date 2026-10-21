@@ -3,7 +3,7 @@
 // macOS 宿主（04 章）：每块 NSScreen 一个桌面层级无边框 NSWindow（kCGDesktopWindowLevelKey，
 // CanJoinAllSpaces|Stationary|IgnoresCycle，忽略鼠标），contentView 的 layer 交给 render/avf 挂 AVPlayerLayer。
 // 可见性：后台 goroutine 每秒采样 CGWindowList（layer 0、非本进程窗口）做 50 pt 网格遮挡/全屏判定，
-// 连续 3 次一致才上报（Wallnetic 策略，原型 proto_darwin.go）。电池：pmset -g batt 30 s 轮询。
+// 连续 3 次一致才上报（Wallnetic 策略，原型 proto_darwin.go）。电源：IOKit 1 s 采样 AC/电池，NSProcessInfo 1 s 采样低电量模式与 thermalState（power_darwin.go），pmset -g batt 30 s 报电量。
 // 锁屏/睡眠由 UI 层用 mygo.Power 转发（见 internal/ui）。
 // 未在真机验证（盒子上无 macOS）：只保证交叉编译通过。
 package mac
@@ -49,6 +49,9 @@ type Host struct {
 	mu     sync.Mutex
 	scrs   []*scr
 	surfs  map[objc.ID]*surface
+
+	thermal  int
+	lowPower bool
 }
 
 func New(o Options) *Host {
@@ -72,6 +75,7 @@ func (h *Host) Start() error {
 	macos.Main(h.refresh)
 	go h.sampler()
 	go h.battery()
+	go h.powerLoop()
 	return nil
 }
 
@@ -268,7 +272,7 @@ func (h *Host) battery() {
 		out, err := exec.Command("/usr/bin/pmset", "-g", "batt").Output()
 		if err == nil {
 			on, pct := ParsePmset(string(out))
-			if on != last {
+			if on != last && !loadIOKit() { // IOKit 可用时由 powerLoop 1 s 采样上报，pmset 只报电量
 				last = on
 				h.emit(desktop.Event{Kind: desktop.EventSignal, Reason: visibility.Battery, Active: on, Source: "pmset"})
 			}
