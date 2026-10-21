@@ -8,6 +8,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"wpapp/internal/config"
 	"wpapp/internal/ui/uidemo"
 )
 
@@ -70,10 +71,29 @@ func TestLibraryDetailActions(t *testing.T) {
 	s.SelectItem("ocean")
 	tt.Frame()
 	must(t, tt, "海浪 4K", "建议优化转码", "Wallpaper Engine 导入")
-	click(t, tt, "设为壁纸（所有显示器）")
-	if v := ctl.View(); v.Default != "ocean" || v.Displays[0].ItemID != "ocean" {
-		t.Fatal("应设为默认壁纸", v.Default)
+	must(t, tt, "应用到", "1  DELL U2723QE（主屏）")
+	click(t, tt, "应用")
+	if v := ctl.View(); v.Displays[0].ItemID != "ocean" || v.Displays[1].ItemID != "city" || v.Default != "aurora" {
+		t.Fatal("默认只应用到当前显示器（主屏），不动另一块和默认壁纸", v.Displays, v.Default)
 	}
+	s.applySel = "2  显示器 2"
+	tt.Frame()
+	click(t, tt, "应用")
+	if v := ctl.View(); v.Displays[1].ItemID != "ocean" || v.Default != "aurora" {
+		t.Fatal("应只应用到 2 号屏", v.Displays)
+	}
+	s.applySel = "所有显示器"
+	tt.Frame()
+	s.SelectItem("forest")
+	tt.Frame()
+	s.applySel = "所有显示器"
+	tt.Frame()
+	click(t, tt, "应用")
+	if v := ctl.View(); v.Default != "forest" || v.Displays[0].ItemID != "forest" || v.Displays[1].ItemID != "forest" || v.Displays[0].Custom {
+		t.Fatal("应用到所有显示器", v.Displays, v.Default)
+	}
+	s.SelectItem("ocean")
+	tt.Frame()
 	click(t, tt, "一键优化")
 	if len(ctl.Transc) != 1 || ctl.Transc[0] != "ocean" {
 		t.Fatal("应发起转码", ctl.Transc)
@@ -109,14 +129,21 @@ func TestLibrarySearchFilterImport(t *testing.T) {
 	must(t, tt, "没有符合条件的壁纸")
 	s.query = ""
 	click(t, tt, "导入壁纸")
-	if len(ctl.Imported) != 1 || ctl.Imported[0] != "/tmp/x.mp4" {
-		t.Fatal("应导入选择的文件", ctl.Imported)
+	if len(ctl.Imported) != 1 || ctl.Imported[0] != "/tmp/x.mp4" || ctl.ImportTo[0] != "" {
+		t.Fatal("应导入选择的文件，且默认只加入库", ctl.Imported, ctl.ImportTo)
+	}
+	ctl.UpdateConfig(func(c *config.Config) { c.UI.ImportApply = "current" })
+	s.SelectDisplay("d2")
+	tt.Frame()
+	click(t, tt, "导入壁纸")
+	if len(ctl.ImportTo) != 2 || ctl.ImportTo[1] != "d2" {
+		t.Fatal("设置为应用到当前显示器时只传当前那块", ctl.ImportTo)
 	}
 	click(t, tt, "列表")
 	if ctl.View().Config.UI.LibraryView != "list" {
 		t.Fatal("应切到列表视图")
 	}
-	must(t, tt, "使用中 · DELL U2723QE")
+	must(t, tt, "使用中 · 1  DELL U2723QE")
 }
 
 func TestEmptyLibrary(t *testing.T) {
@@ -197,11 +224,61 @@ func TestDisplaysPage(t *testing.T) {
 	tt.SetSize(1120, 1200)
 	click(t, tt, "显示器")
 	must(t, tt, "DELL U2723QE（主屏）", "播放中", "硬解 d3d11va")
-	click(t, tt, "2  内置显示器")
-	must(t, tt, "内置显示器", "暂停原因：其他程序全屏")
+	click(t, tt, "2  显示器 2")
+	must(t, tt, "2  显示器 2", "暂停原因：其他程序全屏", "系统没有提供名称，按排列顺序编号")
+	for _, x := range tt.Texts() {
+		if strings.Contains(x, `\\.\`) || strings.Contains(x, "DISPLAY") {
+			t.Fatal("不应显示系统内部名", x)
+		}
+	}
 	click(t, tt, "复制")
-	if v := ctl.View(); v.Default != "city" {
-		t.Fatal("复制到所有显示器", v.Default)
+	if v := ctl.View(); v.Default != "city" || v.Displays[0].ItemID != "city" || v.Displays[0].Custom {
+		t.Fatal("复制到所有显示器", v.Default, v.Displays)
+	}
+}
+
+// 重命名：别名只写到正在编辑的那块屏（按 ID），显示在名称位置，可恢复默认。
+func TestDisplayRename(t *testing.T) {
+	ctl, s, tt := newUI(t, "windows")
+	tt.SetSize(1120, 1200)
+	click(t, tt, "显示器")
+	s.SelectDisplay("d2")
+	tt.Frame()
+	click(t, tt, "重命名")
+	if s.renameID != "d2" || s.renameBuf != "显示器 2" {
+		t.Fatal("编辑框应预填当前名称", s.renameID, s.renameBuf)
+	}
+	s.renameBuf = "  书桌左屏 "
+	tt.Frame()
+	click(t, tt, "保存")
+	v := ctl.View()
+	if v.Displays[1].Name != "书桌左屏" || v.Displays[1].Alias != "书桌左屏" || v.Displays[0].Name != "DELL U2723QE" || v.Displays[0].Alias != "" {
+		t.Fatal("别名应只作用于 2 号屏", v.Displays)
+	}
+	must(t, tt, "2  书桌左屏", "自定义名称", "恢复默认名称")
+	// 编辑一半切到另一块屏：放弃，不会把名字写到 1 号屏
+	click(t, tt, "重命名")
+	s.renameBuf = "不该保存"
+	click(t, tt, "1  DELL U2723QE")
+	if s.renameID != "" {
+		t.Fatal("切屏应退出编辑")
+	}
+	if v := ctl.View(); v.Displays[0].Alias != "" {
+		t.Fatal(v.Displays[0])
+	}
+	s.SelectDisplay("d2")
+	tt.Frame()
+	click(t, tt, "恢复默认名称")
+	if v := ctl.View(); v.Displays[1].Name != "显示器 2" || v.Displays[1].Alias != "" {
+		t.Fatal(v.Displays[1])
+	}
+	// 保存与系统名称相同的名字 = 不存别名
+	s.SelectDisplay("d1")
+	tt.Frame()
+	click(t, tt, "重命名")
+	click(t, tt, "保存")
+	if v := ctl.View(); v.Displays[0].Alias != "" {
+		t.Fatal("与系统名称相同不应存别名", v.Displays[0])
 	}
 }
 

@@ -18,7 +18,7 @@ func (s *Settings) importFiles() {
 		return
 	}
 	for _, p := range s.PickFiles() {
-		s.ctl.Import(p)
+		s.importPath(p)
 	}
 }
 
@@ -35,7 +35,7 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 	inUse := map[string][]string{}
 	for _, d := range v.Displays {
 		if d.ItemID != "" {
-			inUse[d.ItemID] = append(inUse[d.ItemID], d.Name)
+			inUse[d.ItemID] = append(inUse[d.ItemID], dispLabel(d))
 		}
 	}
 	drop := ui.Column(c.Key("libdrop")).Grow(1).MinHeight(0).Children(func() {
@@ -64,7 +64,7 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 				if m.Item("导入 Wallpaper Engine 壁纸文件夹…").Chosen() {
 					if s.PickFolder != nil {
 						if d := s.PickFolder(); d != "" {
-							s.ctl.Import(d)
+							s.importPath(d)
 						}
 					} else {
 						s.wip(c, "选择文件夹导入")
@@ -138,7 +138,7 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 				ui.Column(c.Key("nodetail")).Width(300).Margin(0, 28, 28, 16).Padding(20).Radius(12).Background(cardBg(t)).Border(1, t.Border).AlignItems(ui.Center).Justify(ui.Center).Gap(8).Children(func() {
 					ui.Icon(c, icImage).FontSize(28).TextColor(t.TextMuted)
 					ui.Text(c, "选择一张壁纸查看详情").TextColor(t.TextMuted)
-					ui.Text(c, "双击可直接设为所有显示器的壁纸").FontSize(12).TextColor(t.TextMuted)
+					ui.Text(c, "双击可应用到当前显示器").FontSize(12).TextColor(t.TextMuted)
 				})
 			}
 		})
@@ -147,7 +147,7 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 		drop.Background(t.Accent.Alpha(0.08)).Border(2, t.Accent.Alpha(0.5))
 	}
 	for _, p := range drop.DroppedFiles() {
-		s.ctl.Import(p)
+		s.importPath(p)
 	}
 }
 
@@ -212,8 +212,7 @@ func (s *Settings) libGrid(c *ui.Context, v app.View, items []config.Item, inUse
 		s.confirmRm = false
 	}
 	if g.Submitted() && s.gridSel >= 0 && s.gridSel < len(items) {
-		s.ctl.Assign("", items[s.gridSel].ID)
-		c.Toast("已设为所有显示器的壁纸")
+		s.applyCurrent(c, v, items[s.gridSel].ID)
 	}
 }
 
@@ -268,8 +267,7 @@ func (s *Settings) libList(c *ui.Context, v app.View, items []config.Item, inUse
 					s.selID, s.gridSel, s.confirmRm = it.ID, i, false
 				}
 				if row.DoubleClicked() {
-					s.ctl.Assign("", it.ID)
-					c.Toast("已设为所有显示器的壁纸")
+					s.applyCurrent(c, v, it.ID)
 				}
 			}
 		})
@@ -298,20 +296,7 @@ func (s *Settings) detail(c *ui.Context, v app.View, it config.Item, using []str
 				if len(using) > 0 {
 					ui.Text(c, "正在用于："+strings.Join(using, "、")).FontSize(12).TextColor(t.Accent)
 				}
-				if iconButton(c.Key("apply"), icCheck, "设为壁纸（所有显示器）", true).FillWidth().Clicked() {
-					s.ctl.Assign("", it.ID)
-					c.Toast("已设为所有显示器的壁纸")
-				}
-				if len(v.Displays) > 1 {
-					ui.Button(c.Key("applyto"), "应用到指定显示器").FillWidth().Menu(func(m *ui.Menu) {
-						for _, d := range v.Displays {
-							if m.Item(d.Name).Checked(d.ItemID == it.ID).Chosen() {
-								s.ctl.Assign(d.ID, it.ID)
-								c.Toast("已应用到 " + d.Name)
-							}
-						}
-					})
-				}
+				s.applyBox(c, v, it)
 				// 转码建议（F-07）
 				st := v.Transcoding[it.ID]
 				if it.Transcode == "recommended" || st != "" {
@@ -386,4 +371,64 @@ func (s *Settings) noEncoderHint() string {
 		return "没有找到系统自带的 /usr/bin/avconvert。"
 	}
 	return "没有找到 ffmpeg。本应用不附带编码器（许可证原因），请自行安装 ffmpeg 并加入 PATH，或在“播放与性能”里指定路径。"
+}
+
+// applyCurrent 把壁纸应用到当前显示器（双击 / 回车）。
+func (s *Settings) applyCurrent(c *ui.Context, v app.View, itemID string) {
+	d := s.curDisplay(v)
+	if d == nil {
+		return
+	}
+	s.ctl.Assign(d.ID, itemID)
+	c.Toast("已应用到 " + dispLabel(*d))
+}
+
+const applyAllLabel = "所有显示器"
+
+// applyBox 是详情面板的“应用到”：下拉选择 当前显示器 / 某一块 / 所有显示器，再点“应用”。
+func (s *Settings) applyBox(c *ui.Context, v app.View, it config.Item) {
+	t := c.Theme()
+	if len(v.Displays) == 0 {
+		ui.Text(c, "没有检测到显示器").FontSize(12).TextColor(t.TextMuted)
+		return
+	}
+	opts := make([]string, 0, len(v.Displays)+1)
+	ids := map[string]string{}
+	for _, d := range v.Displays {
+		l := dispLabel(d)
+		if d.Primary {
+			l += "（主屏）"
+		}
+		opts = append(opts, l)
+		ids[l] = d.ID
+	}
+	if len(v.Displays) > 1 {
+		opts = append(opts, applyAllLabel)
+	}
+	valid := s.applySel == applyAllLabel && len(v.Displays) > 1
+	if _, ok := ids[s.applySel]; ok {
+		valid = true
+	}
+	if !valid {
+		cur := s.curDisplay(v)
+		for l, id := range ids {
+			if id == cur.ID {
+				s.applySel = l
+			}
+		}
+	}
+	ui.Text(c, "应用到").FontSize(12).TextColor(t.TextMuted)
+	ui.Row(c.Key("applyrow")).Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Select(c.Key("applyto"), &s.applySel, opts).Label("应用到显示器").Grow(1).Shrink(1)
+		if iconButton(c.Key("apply"), icCheck, "应用", true).Clicked() {
+			if s.applySel == applyAllLabel {
+				s.ctl.AssignAll(it.ID)
+				c.Toast("已应用到所有显示器")
+			} else if id := ids[s.applySel]; id != "" {
+				s.ctl.Assign(id, it.ID)
+				s.dispSel = id
+				c.Toast("已应用到 " + strings.TrimSuffix(s.applySel, "（主屏）"))
+			}
+		}
+	})
 }

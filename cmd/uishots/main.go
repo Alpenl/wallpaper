@@ -36,7 +36,7 @@ func main() {
 		thumbs[id] = p
 	}
 	shots := []struct{ name, page, sel string }{
-		{"01-library", "library", "ocean"}, {"02-displays", "displays", ""}, {"03-discover", "discover", ""},
+		{"01-library", "library", "ocean"}, {"02-displays", "displays", ""}, {"02b-displays-rename", "displays", ""}, {"02c-displays-alias", "displays", ""}, {"03-discover", "discover", ""},
 		{"04-perf", "perf", ""}, {"05-pause", "pause", ""}, {"06-power", "power", ""}, {"07-look", "look", ""},
 		{"08-startup", "startup", ""}, {"09-diag", "diag", ""}, {"10-about", "about", ""},
 	}
@@ -46,7 +46,7 @@ func main() {
 			m := mode
 			ctl.UpdateConfig(func(c *config.Config) { c.UI.Theme = m })
 			s := ui.NewSettings(ctl, *goos)
-			s.Info = ui.Info{Version: "0.2.0-mvp", Platform: *goos + "/amd64", EncoderName: "ffmpeg（用户安装）", MpvPath: `C:\Users\me\AppData\Local\Programs\Wallpaper\mpv\mpv.exe`,
+			s.Info = ui.Info{Version: "0.2.1-mvp", Platform: *goos + "/amd64", EncoderName: "ffmpeg（用户安装）", MpvPath: `C:\Users\me\AppData\Local\Programs\Wallpaper\mpv\mpv.exe`,
 				DataDir: `C:\Users\me\AppData\Roaming\Wallpaper`, LogsDir: `C:\Users\me\AppData\Roaming\Wallpaper\logs`, UpdateKey: true}
 			s.PickFiles = func() []string { return nil }
 			s.ExportDiag = func() (string, error) { return "diag.zip", nil }
@@ -55,6 +55,14 @@ func main() {
 			s.SetPage(sh.page)
 			if sh.sel != "" {
 				s.SelectItem(sh.sel)
+			}
+			switch sh.name {
+			case "02b-displays-rename":
+				s.SelectDisplay("d2")
+				s.StartRename("d2", "书桌左屏")
+			case "02c-displays-alias":
+				ctl.SetAlias("d2", "书桌左屏")
+				s.SelectDisplay("d2")
 			}
 			s.Refresh()
 			tt := mui.NewTester(s.View, 1120, 740)
@@ -74,7 +82,7 @@ func main() {
 		ctl.V.Displays[i].ItemID = ""
 	}
 	s := ui.NewSettings(ctl, *goos)
-	s.Info = ui.Info{Version: "0.2.0-mvp"}
+	s.Info = ui.Info{Version: "0.2.1-mvp"}
 	s.PickFiles = func() []string { return nil }
 	tt := mui.NewTester(s.View, 1120, 740)
 	tt.SetScale(float32(*scale))

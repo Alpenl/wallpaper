@@ -12,6 +12,7 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -28,8 +29,10 @@ import (
 type Controller interface {
 	View() app.View
 	SetPausedAll(bool)
-	Assign(display, itemID string)
-	Import(path string)
+	Assign(display, itemID string) // 单块屏；display 为空 = 只改默认壁纸
+	AssignAll(itemID string)       // 所有显示器（清除单独设置）
+	SetAlias(display, alias string)
+	Import(path, applyTo string) // applyTo：空 = 只加入库；显示器 ID = 同时应用到这块屏
 	Remove(itemID string)
 	UpdateConfig(func(*config.Config))
 	ExitSafeMode()
@@ -107,6 +110,9 @@ type Settings struct {
 	selID     string
 	confirmRm bool
 	dispSel   string
+	applySel  string // 详情面板“应用到”下拉框的当前项
+	renameID  string // 正在重命名的显示器 ID（空 = 不在编辑）
+	renameBuf string
 	diagMsg   string
 	thumbs    map[string]thumb
 	themeKey  string
@@ -480,6 +486,41 @@ func (s *Settings) filtered(v app.View) []config.Item {
 
 // SelectItem 选中壁纸库里的一项（测试、截图用）。
 func (s *Settings) SelectItem(id string) { s.selID = id }
+
+// dispLabel 是显示器在界面上的统一写法：“编号  名称”，编号按物理排列。
+func dispLabel(d app.DisplayView) string { return fmt.Sprintf("%d  %s", d.Index, d.Name) }
+
+// curDisplay 是“当前显示器”：显示器页选中的那块；没选过时用主屏。
+func (s *Settings) curDisplay(v app.View) *app.DisplayView {
+	var primary *app.DisplayView
+	for i := range v.Displays {
+		if v.Displays[i].ID == s.dispSel {
+			return &v.Displays[i]
+		}
+		if v.Displays[i].Primary && primary == nil {
+			primary = &v.Displays[i]
+		}
+	}
+	if primary == nil && len(v.Displays) > 0 {
+		primary = &v.Displays[0]
+	}
+	return primary
+}
+
+// importPath 导入一个文件：默认只加入库；设置为“应用到当前显示器”时只应用到当前那一块。
+func (s *Settings) importPath(p string) {
+	v := s.ctl.View()
+	to := ""
+	if v.Config.UI.ImportApply == "current" {
+		if d := s.curDisplay(v); d != nil {
+			to = d.ID
+		}
+	}
+	s.ctl.Import(p, to)
+}
+
+// StartRename 进入某块屏的重命名编辑状态（截图用）。
+func (s *Settings) StartRename(id, buf string) { s.dispSel, s.renameID, s.renameBuf = id, id, buf }
 
 // SelectDisplay 选中一块显示器（测试、截图用）。
 func (s *Settings) SelectDisplay(id string) { s.dispSel = id }

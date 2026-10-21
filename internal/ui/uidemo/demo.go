@@ -15,6 +15,8 @@ type Ctl struct {
 	mu       sync.Mutex
 	V        app.View
 	Imported []string
+	ImportTo []string
+	Assigns  []string // "显示器=壁纸"，"*" 表示所有显示器
 	Removed  []string
 	Transc   []string
 	Nexts    int
@@ -43,6 +45,7 @@ func (f *Ctl) SetPausedAll(b bool) {
 	}
 }
 
+// Assign 与 app.App 语义一致：d 为空只改默认壁纸（不动已单独设置的屏）；id 为空表示改回跟随默认。
 func (f *Ctl) Assign(d, id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -50,19 +53,49 @@ func (f *Ctl) Assign(d, id string) {
 		f.V.Default = id
 	}
 	for i := range f.V.Displays {
-		if d == "" || f.V.Displays[i].ID == d {
-			if id == "" && d != "" {
-				f.V.Displays[i].ItemID = f.V.Default
-			} else {
-				f.V.Displays[i].ItemID = id
+		x := &f.V.Displays[i]
+		switch {
+		case d == "" && !x.Custom:
+			x.ItemID = id
+		case d != "" && x.ID == d:
+			x.Custom = id != ""
+			x.ItemID = id
+			if id == "" {
+				x.ItemID = f.V.Default
 			}
+		}
+	}
+	f.Assigns = append(f.Assigns, d+"="+id)
+}
+
+func (f *Ctl) AssignAll(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.V.Default = id
+	for i := range f.V.Displays {
+		f.V.Displays[i].ItemID, f.V.Displays[i].Custom = id, false
+	}
+	f.Assigns = append(f.Assigns, "*="+id)
+}
+
+func (f *Ctl) SetAlias(d, alias string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var a config.Assignments
+	alias = a.SetAlias(d, alias)
+	for i := range f.V.Displays {
+		x := &f.V.Displays[i]
+		if x.ID == d {
+			x.Alias = alias
+			x.Name = app.DisplayName(alias, x.Friendly, x.Index)
 		}
 	}
 }
 
-func (f *Ctl) Import(p string) {
+func (f *Ctl) Import(p, applyTo string) {
 	f.mu.Lock()
 	f.Imported = append(f.Imported, p)
+	f.ImportTo = append(f.ImportTo, applyTo)
 	f.mu.Unlock()
 }
 
@@ -120,8 +153,8 @@ func New(thumbs map[string]string) *Ctl {
 		LastImport: "已导入「极光之夜」",
 		Power:      app.Power{OnBattery: false, Percent: 86},
 		Displays: []app.DisplayView{
-			{ID: "d1", Name: "DELL U2723QE", W: 3840, H: 2160, X: 0, Y: 0, Primary: true, ItemID: "aurora", Level: "L0", State: "active", Backend: "mpv", HWDec: "d3d11va"},
-			{ID: "d2", Name: "内置显示器", W: 2560, H: 1600, X: 3840, Y: 560, ItemID: "city", Level: "L1", State: "active", Backend: "mpv", HWDec: "d3d11va", Reasons: "Fullscreen"},
+			{ID: "d1", Index: 1, Name: "DELL U2723QE", Friendly: "DELL U2723QE", Custom: true, W: 3840, H: 2160, X: 0, Y: 0, Primary: true, ItemID: "aurora", Level: "L0", State: "active", Backend: "mpv", HWDec: "d3d11va"},
+			{ID: "d2", Index: 2, Name: "显示器 2", Custom: true, W: 2560, H: 1600, X: 3840, Y: 560, ItemID: "city", Level: "L1", State: "active", Backend: "mpv", HWDec: "d3d11va", Reasons: "Fullscreen"},
 		},
 		Transcoding: map[string]string{},
 	}}

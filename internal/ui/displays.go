@@ -46,8 +46,8 @@ func (s *Settings) itemByID(v app.View, id string) *config.Item {
 
 func (s *Settings) displays(c *ui.Context, v app.View) {
 	t := c.Theme()
-	if s.dispSel == "" && len(v.Displays) > 0 {
-		s.dispSel = v.Displays[0].ID
+	if d := s.curDisplay(v); d != nil {
+		s.dispSel = d.ID
 	}
 	page(c, "显示器", "每块屏可以单独设置壁纸；暂停和省电按屏判定（F-03 / F-04）", nil, func() {
 		if len(v.Displays) == 0 {
@@ -67,7 +67,7 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 			sc := min(boxW/float32(max(1, maxX-minX)), boxH/float32(max(1, maxY-minY)))
 			offX := (boxW - float32(maxX-minX)*sc) / 2
 			ui.Box(c.Key("canvas")).Height(boxH+24).Width(boxW).AlignSelf(ui.Center).Padding(12, 0).Children(func() {
-				for i, d := range v.Displays {
+				for _, d := range v.Displays {
 					d := d
 					x := offX + float32(d.X-minX)*sc
 					y := 12 + float32(d.Y-minY)*sc
@@ -80,7 +80,7 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 							ui.Box(c).Height(h).FillWidth().Background(t.Surface).Children(func() {})
 						}
 						ui.Column(c).Absolute().Left(0).Right(0).Bottom(0).Padding(4, 8).Background(ui.RGBA(0, 0, 0, 0.55)).Children(func() {
-							name := fmt.Sprintf("%d  %s", i+1, d.Name)
+							name := dispLabel(d)
 							if d.Primary {
 								name += " · 主屏"
 							}
@@ -90,8 +90,9 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 					if sel {
 						mon.Border(3, t.Accent)
 					}
-					if mon.Clicked() {
+					if mon.Clicked() && s.dispSel != d.ID {
 						s.dispSel = d.ID
+						s.renameID = "" // 切换屏时放弃未保存的重命名，避免把名字存到另一块屏上
 					}
 				}
 			})
@@ -106,9 +107,24 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 			d = &v.Displays[0]
 			s.dispSel = d.ID
 		}
+		// 显示器选择条（与布局图同序同号）
+		if len(v.Displays) > 1 {
+			ui.Row(c.Key("dtabs")).Gap(8).Children(func() {
+				for _, o := range v.Displays {
+					o := o
+					mk := ui.Button
+					if o.ID == s.dispSel {
+						mk = ui.PrimaryButton
+					}
+					if mk(c.Key("tab"+o.ID), dispLabel(o)).Clicked() && s.dispSel != o.ID {
+						s.dispSel, s.renameID = o.ID, ""
+					}
+				}
+			})
+		}
 		s.displayCard(c, v, *d)
-		card(c.Key("default"), "默认壁纸", "没有单独设置的显示器都使用它", func() {
-			settingRow(c, "所有显示器", "托盘“切换到下一张壁纸”也会改这里", func() {
+		card(c.Key("default"), "默认壁纸", "没有单独设置壁纸的显示器（包括以后新接入的）使用它；已单独设置的屏不受影响", func() {
+			settingRow(c, "默认壁纸", "要让所有屏都换成同一张，请在壁纸详情里选“应用到 → 所有显示器”", func() {
 				s.itemSelect(c.Key("defsel"), v, "", v.Default)
 			})
 		})
@@ -120,14 +136,9 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 					s.wip(c, "跨屏拼接")
 				}
 			})
-			settingRow(c, "复制到所有显示器", "把当前屏的壁纸设为默认，并清除其他屏的单独设置", func() {
+			settingRow(c, "复制到所有显示器", "把「"+d.Name+"」的壁纸设为默认，并清除所有屏的单独设置", func() {
 				if ui.Button(c.Key("dup"), "复制").Disabled(d.ItemID == "").Clicked() {
-					for _, o := range v.Displays {
-						if o.ID != d.ID {
-							s.ctl.Assign(o.ID, "")
-						}
-					}
-					s.ctl.Assign("", d.ItemID)
+					s.ctl.AssignAll(d.ItemID)
 					c.Toast("已复制到所有显示器")
 				}
 			})
@@ -166,11 +177,16 @@ func (s *Settings) itemSelect(c *ui.Context, v app.View, display, cur string) {
 
 func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 	t := c.Theme()
-	title := d.Name
+	title := dispLabel(d)
 	if d.Primary {
 		title += "（主屏）"
 	}
-	card(c.Key("disp"+d.ID), title, fmt.Sprintf("%d × %d 像素", d.W, d.H), func() {
+	sub := fmt.Sprintf("%d × %d", d.W, d.H)
+	if d.Alias != "" && d.Friendly != "" {
+		sub += " · 系统名称：" + d.Friendly
+	}
+	card(c.Key("disp"+d.ID), title, sub, func() {
+		s.renameRow(c, d)
 		// 状态条
 		ui.Row(c.Key("state")).Gap(8).Padding(6, 0, 10, 0).AlignItems(ui.Center).Children(func() {
 			col := t.Success
@@ -207,7 +223,11 @@ func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 		if d.Note != "" {
 			ui.Text(c, d.Note).FontSize(12).TextColor(t.Warning).Padding(0, 0, 6, 0)
 		}
-		settingRow(c, "壁纸", "单独为这块屏选择；选“跟随默认”则使用默认壁纸", func() {
+		hint := "当前跟随默认壁纸"
+		if d.Custom {
+			hint = "已单独设置；选“跟随默认壁纸”可取消"
+		}
+		settingRow(c, "壁纸", hint, func() {
 			s.itemSelect(c.Key("sel"+d.ID), v, d.ID, d.ItemID)
 		})
 		settingRow(c, "填充方式", "填充（裁切）/ 适应（留边）/ 拉伸 / 居中", func() {
@@ -229,3 +249,54 @@ func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 		}
 	})
 }
+
+// renameRow 是显示器名称：别名按稳定 ID 保存，显示在系统名称的位置上；可恢复默认。
+func (s *Settings) renameRow(c *ui.Context, d app.DisplayView) {
+	editing := s.renameID == d.ID
+	desc := "系统名称"
+	switch {
+	case d.Alias != "":
+		desc = "自定义名称"
+	case d.Friendly == "":
+		desc = "系统没有提供名称，按排列顺序编号"
+	}
+	settingRow(c.Key("rn"+d.ID), "名称", desc, func() {
+		if !editing {
+			ui.Text(c, d.Name).Bold().FontSize(13).SingleLine().Ellipsis("…")
+			if ui.Button(c.Key("rename"+d.ID), "重命名").Clicked() {
+				s.renameID, s.renameBuf = d.ID, d.Name
+			}
+			if d.Alias != "" {
+				if ui.Button(c.Key("rnreset"+d.ID), "恢复默认名称").Clicked() {
+					s.ctl.SetAlias(d.ID, "")
+					c.Toast("已恢复默认名称")
+				}
+			}
+			return
+		}
+		in := ui.TextInput(c.Key("alias"+d.ID), &s.renameBuf).Placeholder(DefaultName(d)).Label("显示器名称").Width(200)
+		save := func() {
+			id, name := d.ID, strings.TrimSpace(s.renameBuf)
+			if name == DefaultName(d) {
+				name = "" // 和系统名称相同就不存别名
+			}
+			s.ctl.SetAlias(id, name)
+			s.renameID, s.renameBuf = "", ""
+			c.Toast("已保存名称")
+		}
+		if in.Submitted() {
+			save()
+			return
+		}
+		if ui.PrimaryButton(c.Key("rnsave"+d.ID), "保存").Clicked() {
+			save()
+			return
+		}
+		if ui.Button(c.Key("rncancel"+d.ID), "取消").Clicked() {
+			s.renameID, s.renameBuf = "", ""
+		}
+	})
+}
+
+// DefaultName 是没有别名时的名称（系统友好名或“显示器 N”）。
+func DefaultName(d app.DisplayView) string { return app.DisplayName("", d.Friendly, d.Index) }

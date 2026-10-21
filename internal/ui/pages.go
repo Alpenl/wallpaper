@@ -378,6 +378,16 @@ func (s *Settings) look(c *ui.Context, v app.View) {
 					s.set(func(x *config.Config) { x.UI.LibraryView = lv })
 				}
 			})
+			settingRow(c, "导入后", "默认只加入壁纸库，不会改动任何显示器；也可以自动应用到当前显示器（显示器页里选中的那块，没选时为主屏）", func() {
+				j := 0
+				if cfg.UI.ImportApply == "current" {
+					j = 1
+				}
+				if ui.Segmented(c.Key("impapply"), &j, "只加入壁纸库", "应用到当前显示器").Label("导入后").Changed() {
+					ia := []string{"none", "current"}[j]
+					s.set(func(x *config.Config) { x.UI.ImportApply = ia })
+				}
+			})
 		})
 	})
 }
@@ -560,7 +570,7 @@ func (s *Settings) diag(c *ui.Context, v app.View) {
 		card(c.Key("rt"), "运行状态", "每块屏当前的级别、后端和硬解状态（F-17 资源徽章的雏形）", func() {
 			for _, d := range v.Displays {
 				d := d
-				settingRow(c.Key("rt"+d.ID), d.Name, ReasonsText(d.Reasons), func() {
+				settingRow(c.Key("rt"+d.ID), dispLabel(d), ReasonsText(d.Reasons), func() {
 					ui.Row(c).Gap(6).Children(func() {
 						chip(c, d.Level+" "+levelNames[d.Level], t.Accent)
 						if d.Backend != "" {
