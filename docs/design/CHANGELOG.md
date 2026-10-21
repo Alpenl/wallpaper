@@ -166,5 +166,15 @@ WebKitGTK 与 Chrome 的 box 实测写入 08；新增 bench/windows_capture.ps1�
   - 仓库整理：设计文档移入 `docs/design/`，三份调研报告移入 `docs/research/`，原型二进制不入库。
 - 未真机验证：AVF/MF fps 上限、mac 电源轮询、省电实际功耗、mac 按文件更新后的代码签名、0.2.0 全部新 UI 在 Win/mac 上的显示。
 
+## 2026-10-21 0.2.1-mvp：多显示器修正（来自 Windows 双屏真机反馈）
+- 用户在 Windows 双屏真机上测 0.2.0【用户实测】，发现：导入即应用到所有屏；卡片编号和 `\\.\DISPLAYn` 对不上（"2 \\.\DISPLAY1"、"1 \\.\DISPLAY2 · 主屏"）；显示原始设备名；重命名行为异常。
+- 修正：
+  - 导入只加入库（可选"应用到当前显示器"）；详情面板"应用到"支持某一块 / 所有显示器。
+  - 稳定 ID：DisplayConfig monitorDevicePath → EDD interface name → IDesktopWallpaper 路径 → GDI 名兜底；0.2.0 的 ID 自动迁移；同型号无序列号的屏去重（#2）。mac 同样按排列排序并去重。
+  - 名称：友好名 → DeviceString（排除泛称）→ "显示器 N"；编号按物理排列，布局图、选择条、卡片、壁纸库"使用中"统一"编号  名称"。
+  - 重命名：别名按稳定 ID 持久化、可恢复默认；切屏时放弃未保存的编辑，避免写到另一块屏。
+  - 新增单元测试：ID 解析/回退/迁移、排序与去重、别名、导入不改屏、单屏/全部分配、下一张。
+- 盒子上：Wine 下 DisplayConfig 调用成功、结构体大小断言通过【实测】。**Windows 真机双屏待复测。**
+
 ## 2026-10-21 待决策清单
 - 新增 DECISIONS_PENDING.md：15 项产品决策（D-01–D-15）、4 个律师问题（L-1–L-4）。没有改动其他章节内容。

@@ -3,7 +3,7 @@
 # LSUIElement=true：只有菜单栏图标，没有 Dock 图标。签名/公证走 scripts/sign-macos.sh（只在 macOS 上生效）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSION=${VERSION:-0.2.0-mvp}
+VERSION=${VERSION:-0.2.1-mvp}
 for arch in ${ARCHES:-arm64 amd64}; do
   bin=dist/darwin-$arch/wallpaperd
   [ -f "$bin" ] || { echo "missing $bin (run scripts/build.sh)"; exit 1; }

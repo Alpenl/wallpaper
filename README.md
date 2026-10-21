@@ -1,6 +1,6 @@
 # Wallpaper MVP（wallpaper-app）
 
-> 版本 **0.2.0-mvp**（预发布）。私有仓库，安装包见 GitHub Releases。
+> 版本 **0.2.1-mvp**（预发布）。私有仓库，安装包见 GitHub Releases。
 
 动态壁纸 MVP。它是 [`docs/design/`](docs/design/README.md) 里设计文档（第 02–17 章）和原型的正式实现。前期调研报告在 [`docs/research/`](docs/research/)：
 - [`wallpaper_research.md`](docs/research/wallpaper_research.md)：市场与竞品调研
@@ -117,7 +117,7 @@ internal/platform/macos    purego/objc 胶水
 |---|---|---|
 | F-01 桌面挂载、自检、重挂 | Win 已实现，Linux 已实现，mac 已实现但没跑过 | Win：24H2+ 走 Progman 下的 WS_EX_LAYERED 子窗口，插在 DefView 下面；旧版走 WorkerW。TaskbarCreated 和每 3 s 的健康检查都会触发 ShellRestarted，然后退避重挂。AC（≤3 s 恢复、5 次都成功）**需要真机** |
 | F-02 渲染器监管 | 已实现 | 退避序列 0.5/1/2/4/8… s，连续崩溃超过上限后进入 Failed 并显示首帧截图；Job Object（KILL_ON_JOB_CLOSE）；mpv 卡住检测。TDR 恢复**需要真机** |
-| F-03 每屏分配、热插拔 | 已实现 | Win 的稳定 ID 来自 IDesktopWallpaper 的 device path 哈希，失败时退回 `\\.\DISPLAYn`；WM_DISPLAYCHANGE 合并 500 ms 内的变化。Linux 只支持单屏。混合 DPI**需要真机** |
+| F-03 每屏分配、热插拔 | 已实现（0.2.1 修正，待 Win 真机复测） | 每屏壁纸和别名按**稳定 ID** 持久化：Win 取 DisplayConfig 的 monitorDevicePath → EnumDisplayDevices(EDD_GET_DEVICE_INTERFACE_NAME) → IDesktopWallpaper 路径，最后才用 GDI 名 `\\.\DISPLAYn`；mac 用 CGDisplay UUID；Linux 只支持单屏。0.2.0 的 ID 会自动迁移。名称：monitorFriendlyDeviceName → 显示器 DeviceString（"通用即插即用监视器"这类泛称不用）→ "显示器 N"；N 按物理排列（左→右、上→下）。WM_DISPLAYCHANGE 合并 500 ms 内的变化。混合 DPI**需要真机** |
 | F-04 自动暂停 | Win 已实现，mac 部分实现，Linux 部分实现 | Win：前台全屏、50 px 网格遮挡、锁屏、远程桌面、显示器关闭、睡眠、屏保，按屏判定。mac：CGWindowList 采样，连续 3 次一致才翻转，锁屏和睡眠由 mygo.Power 转发。Linux：没有全屏和遮挡探针。延迟和 CPU 的 AC**需要真机** |
 | F-05 电源策略 | 已实现（mac/MF 未真机验证） | 电池时可选 暂停 / 继续 / **限 15 fps**，低电量（默认 20%）进入 L4，Windows 省电模式、性能档位"省电"也限 15 fps。fps 上限：mpv 用 `vf @wpcap:fps=N` + hwdec 切到 `-copy` 变体（Linux 真 mpv 测得约 15 fps【实测】）；MF 后端节流 Transfer+Present；AVF 用 AVMutableVideoComposition（【推断】未真机）。不支持的后端会回退并在界面注明原因。mac：IOKit 电源类型 + NSProcessInfo 低电量模式和过热（serious/critical）每秒轮询（未真机）。省电效果**需要真机**测功耗 |
 | F-06 视频播放 | 已实现 | mpv 参数：Win 用 d3d11va + gpu-next/d3d11，`loop-file=inf`，静音，panscan 填满。硬解、丢帧、循环点**需要真机** |
@@ -129,14 +129,21 @@ internal/platform/macos    purego/objc 胶水
 | F-15 安装与更新 | 已实现（真机未验证） | NSIS 安装器（Wine 静默安装/卸载通过）；Ed25519 签名清单、SHA-256 增量下载、暂存到 `.update/`、重启应用、连续 2 次启动未标记成功即自动回滚，可手动回滚；`scripts/e2e-update.sh` 7/7 PASS【实测】。发布版没有内置公钥，所以线上更新默认不可用；macOS 按文件替换后代码签名是否仍有效**未验证**；签名证书只有钩子 |
 | F-16 诊断包 | 已实现 | 导出的 zip 里路径换成 sha256 前缀，标题类字段被去掉，mpv 日志只保留警告和错误；有自动化测试检查不泄露 |
 
+## 多显示器规则（0.2.1）
+
+- **导入只加入壁纸库**，不会改动任何显示器。可在"外观 → 导入后"改成"应用到当前显示器"（显示器页选中的那块，没选时为主屏）。
+- "应用到"一块显示器 = 写该屏的单独设置；"所有显示器" = 设为默认壁纸并清除所有单独设置；"默认壁纸"只影响没有单独设置的屏和以后新接入的屏。
+- 托盘"下一张"：每块屏各自换到下一张。
+- 别名按稳定 ID 存在 `assignments.json` 的 `aliases` 里，换接口顺序或重启后仍对应同一块屏；保存空名或与系统名称相同的名字等于恢复默认。
+
 ## 设置界面（0.2.0 重做）
 
 对标调研文档里 Wallpaper Engine、Lively、Wallnetic 等产品的布局：左侧导航 + 状态卡，右侧内容页。
 
 | 页面 | 内容 | 状态 |
 |---|---|---|
-| 壁纸库 | 网格/列表视图、类型筛选、搜索、详情面板（应用到屏幕、转码优化、删除确认）、拖放导入、"更多导入"菜单（文件 / .wpk / Lively / WE） | 已实现 |
-| 显示器 | 多屏布局画布、每屏卡片（当前壁纸、状态、暂停原因、fps 上限及说明） | 已实现 |
+| 壁纸库 | 网格/列表视图、类型筛选、搜索、详情面板（"应用到"：某一块显示器 / 所有显示器，默认是当前显示器；双击 = 应用到当前显示器；转码优化、删除确认）、拖放导入、"更多导入"菜单（文件 / .wpk / Lively / WE） | 已实现 |
+| 显示器 | 多屏布局画布 + 编号选择条（编号按物理排列）、每屏卡片：名称/重命名/恢复默认名称、单独壁纸或跟随默认、状态、暂停原因、fps 上限 | 已实现 |
 | 发现 | 网页 / Shader 壁纸、创意工坊等 v1 规划介绍 | 占位（"开发中"） |
 | 性能 | 性能档位、渲染后端、ffmpeg 路径 | 已实现；渲染分辨率等占位 |
 | 暂停规则 | 全屏、遮挡、锁屏、远程桌面等 | 已实现 |
