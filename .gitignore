@@ -1,0 +1,7 @@
+/dist/
+/third_party/
+*.test
+*.test.exe
+*.exe
+!/packaging/**
+.DS_Store
