@@ -1,0 +1,57 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- 守护进程（Go）在会话总线上拥有 io.github.wpd.Daemon，导出对象 /io/github/wpd/Shell1。
+     GNOME 扩展是客户端：调用方法上报状态，订阅信号接收指令。版本见属性 ProtocolVersion。 -->
+<node>
+  <interface name="io.github.wpd.Shell1">
+    <property name="ProtocolVersion" type="u" access="read"/>
+
+    <!-- 扩展启动或重载后调用：上报 GNOME Shell 版本和会话类型；返回守护进程版本与是否启用 -->
+    <method name="Hello">
+      <arg name="shell_version" type="s" direction="in"/>
+      <arg name="session_type" type="s" direction="in"/>
+      <arg name="extension_protocol" type="u" direction="in"/>
+      <arg name="daemon_version" type="s" direction="out"/>
+      <arg name="enabled" type="b" direction="out"/>
+    </method>
+
+    <!-- 全量上报显示器：(index, connector, x, y, w, h, scale, primary) -->
+    <method name="ReportMonitors">
+      <arg name="monitors" type="a(isiiiidb)" direction="in"/>
+    </method>
+
+    <!-- 某显示器的可见性原因变化（reason 取 07 章 Reason 名称：Fullscreen/Covered/Locked/Overview...）-->
+    <method name="ReportVisibility">
+      <arg name="monitor" type="i" direction="in"/>
+      <arg name="reason" type="s" direction="in"/>
+      <arg name="active" type="b" direction="in"/>
+    </method>
+
+    <!-- 扩展用 Meta.WaylandClient 拉起渲染器后回报：pid 和窗口是否已被 Clone -->
+    <method name="RendererStarted">
+      <arg name="monitor" type="i" direction="in"/>
+      <arg name="pid" type="u" direction="in"/>
+      <arg name="cloned" type="b" direction="in"/>
+    </method>
+    <method name="RendererExited">
+      <arg name="monitor" type="i" direction="in"/>
+      <arg name="exit_status" type="i" direction="in"/>
+    </method>
+
+    <!-- 守护进程 → 扩展：用给定 argv 启动渲染器（mpv 参数含 title 与 input-ipc-server 等）；
+         title 用于扩展按标题识别并隐藏渲染器窗口（Hanabi 的做法） -->
+    <signal name="StartRenderer">
+      <arg name="monitor" type="i"/>
+      <arg name="title" type="s"/>
+      <arg name="argv" type="as"/>
+    </signal>
+    <signal name="StopRenderer">
+      <arg name="monitor" type="i"/>
+    </signal>
+    <!-- 暂停/恢复由守护进程直接经 mpv IPC 完成；此信号只用于让扩展切换“静态截图”显示（L4） -->
+    <signal name="ShowSnapshot">
+      <arg name="monitor" type="i"/>
+      <arg name="png_path" type="s"/>
+    </signal>
+  </interface>
+</node>

@@ -1,0 +1,5 @@
+# visibility：07 章状态机 v1.1 的可运行实现（第 18 轮）
+- `machine.go`：`Controller`（全局原因扇出、显示器增删）+ 每屏 `Machine`；输入是原因开关、渲染器 Done/重启结果、时间推进；输出是 `Action` 指令序列。无 I/O、无真实时钟。
+- `go test -race -cover .` → 28 个测试通过，语句覆盖率 98.2%（2026-10-21，Go 1.27.3，box）【实测】。第 19 轮新增 `Controller.NextDeadline()`/`IDs()` 及测试后为 29 个、98.3%。
+- 未覆盖的 1.8%：`skipL2` 中 Shader 分支与 `maxD` 的一个分支，属于防御性代码。
+- 规格修订见 07 章 7.8。

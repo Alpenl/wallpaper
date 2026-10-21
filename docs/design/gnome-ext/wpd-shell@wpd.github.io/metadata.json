@@ -1,0 +1,9 @@
+{
+  "uuid": "wpd-shell@wpd.github.io",
+  "name": "WPD Live Wallpaper Shell Helper",
+  "description": "Minimal helper for the WPD live wallpaper daemon: launches the renderer as a trusted Wayland client and clones it into the desktop background. Prototype.",
+  "shell-version": ["46", "47", "48"],
+  "session-modes": ["user"],
+  "url": "https://example.invalid/wpd",
+  "version": 1
+}

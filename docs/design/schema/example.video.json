@@ -1,0 +1,5 @@
+{"format":"wpk","schema":0,"id":"3f2b8c1e-9a7d-4e2f-8b1a-0c6d5e4f3a21","version":1,"type":"video",
+ "entry":"content/loop.mp4","title":{"en":"Misty Lake","zh-CN":"雾湖"},"license":"CC-BY-4.0",
+ "video":{"loop":true,"durationSec":12,"w":3840,"h":2160,"fps":30,"codec":"hevc","hasAudio":false},
+ "properties":[{"key":"speed","type":"slider","min":0.25,"max":2,"step":0.05,"default":1}],
+ "perf":{"maxFps":30}}

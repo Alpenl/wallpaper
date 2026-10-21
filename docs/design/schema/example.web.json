@@ -1,0 +1,5 @@
+{"format":"wpk","schema":0,"id":"a1b2c3d4-0000-4000-8000-123456789abc","version":3,"type":"web",
+ "entry":"content/index.html","title":{"en":"Clock"},
+ "web":{"permissions":["network"],"networkAllow":["api.open-meteo.com"],"fpsCap":30},
+ "properties":[{"key":"tint","type":"color","default":"#88ccff"},{"key":"mode","type":"select","options":[{"value":"24h"},{"value":"12h"}],"default":"24h"}],
+ "origin":{"kind":"lively"}}

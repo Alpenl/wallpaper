@@ -5,3 +5,9 @@
 *.exe
 !/packaging/**
 .DS_Store
+/ui_screens/
+.thumbs/
+docs/design/prototype/bin/
+*.zip
+*.key
+.update/
