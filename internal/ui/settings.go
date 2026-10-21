@@ -1,12 +1,22 @@
-// Package ui 是 MyGo 原生 UI（不用 WebView）：托盘（F-09）+ 设置窗口（壁纸库与拖入导入 F-06/F-08/F-11、
-// 每屏壁纸 F-03、暂停与电源策略 F-04/F-05、开机自启 F-10、诊断包 F-16、D-04 Windows 后端、安全模式横幅）。视图函数与 MyGo 窗口/托盘分离，前者可用 ui.NewTester 测试。
+// Package ui 是 MyGo 原生 UI（不用 WebView）：托盘（F-09）+ 设置窗口。
+//
+// 设置窗口对标 Wallpaper Engine / Lively 的信息架构（01 章竞品分析）：左侧导航，右侧页面。
+//   - 壁纸库：缩略图网格 / 列表、搜索、类型筛选、详情面板（预览、元数据、应用到显示器、一键转码 F-07、删除）、拖入导入（F-06/F-08/F-11）
+//   - 显示器：按真实坐标画的布局示意图、每屏分配（F-03）、运行状态徽章（级别 L0–L4、暂停原因、后端、硬解、限帧，F-17 雏形）
+//   - 播放与性能：性能档位（流畅/均衡/省电 15 fps）、Windows 渲染后端（D-04）、硬件解码、转码编码器（F-07）
+//   - 暂停规则（F-04）、电源与电池（F-05：电池策略含 15 fps 档、低电量阈值、macOS 低电量模式 / 过热）
+//   - 外观（浅色 / 深色 / 跟随系统、强调色）、启动与更新（F-10、F-15 增量更新与回滚）、诊断（F-16）、关于
+//
+// v1 才做的功能（网页 / Shader 壁纸、创意工坊、属性面板、按应用暂停……）有入口，点击时提示“正在开发中”。
+// 视图函数与 MyGo 窗口 / 托盘分离，可以用 ui.NewTester 测试和截图（settings_test.go、cmd/uishots）。
 package ui
 
 import (
-	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -23,31 +33,108 @@ type Controller interface {
 	Remove(itemID string)
 	UpdateConfig(func(*config.Config))
 	ExitSafeMode()
+	Next()
+	Transcode(itemID string)
 }
 
-const none = "（不设置）"
+// UpdateInfo 是“检查更新”的结果。
+type UpdateInfo struct {
+	Version string
+	Notes   string
+	Size    int64 // 需要下载的字节数（增量）
+}
 
-// Settings 是设置窗口的状态（只在 MyGo 主线程上读写，snap 例外：由 Refresh 加锁替换）。
+// Hooks 是由 UI 宿主（cmd/wallpaperd）注入的平台能力；nil 表示不支持，界面会给出说明。
+type Hooks struct {
+	PickFiles        func() []string
+	PickFolder       func() string
+	SetLaunchAtLogin func(bool) error
+	ExportDiag       func() (string, error) // F-16：返回 zip 路径
+	OpenPath         func(string) error
+	ShowInFolder     func(string)
+	CheckUpdate      func() (*UpdateInfo, error)
+	ApplyUpdate      func(progress func(done, total int64)) error
+	Rollback         func() error
+	CanRollback      func() (string, bool)
+	Restart          func()
+}
+
+// Info 是关于页和诊断页的静态信息。
+type Info struct {
+	Version     string
+	Platform    string // windows/amd64 …
+	EncoderName string // 转码编码器显示名；空 = 没有
+	MpvPath     string
+	DataDir     string
+	LogsDir     string
+	SignedBuild bool
+	UpdateKey   bool // 是否编译进了更新公钥
+}
+
+const (
+	pgLibrary  = "library"
+	pgDisplays = "displays"
+	pgDiscover = "discover"
+	pgPerf     = "perf"
+	pgPause    = "pause"
+	pgPower    = "power"
+	pgLook     = "look"
+	pgStartup  = "startup"
+	pgDiag     = "diag"
+	pgAbout    = "about"
+)
+
+// Settings 是设置窗口的状态（只在 MyGo 主线程上读写；snap 和 upd 例外，加锁）。
 type Settings struct {
 	ctl  Controller
 	GOOS string
-	// 由 UI 层提供
-	PickFiles        func() []string
-	SetLaunchAtLogin func(bool) error
-	ExportDiag       func() (string, error) // F-16：返回 zip 路径
-
-	diagMsg string
+	Hooks
+	Info Info
+	// Invalidate 由 Shell 设置：后台任务完成后请求重绘。
+	Invalidate func()
 
 	mu   sync.Mutex
 	snap app.View
+	upd  updState
 
-	tab     int
-	sel     map[string]string // display → 选项文本
-	confirm string            // 待确认删除的 item id
+	page      string
+	navOpen   [3]bool
+	query     string
+	filter    int
+	gridSel   int
+	grid      ui.GridState
+	list      ui.ListState
+	selID     string
+	confirmRm bool
+	dispSel   string
+	diagMsg   string
+	thumbs    map[string]thumb
+	themeKey  string
+	theme     *ui.Theme
+	resetAsk  bool
+	ffmpeg    string
+	feed      string
+	feedInit  bool
+	ffInit    bool
+	askLogin  bool
+	askInit   bool
+}
+
+type thumb struct {
+	bm  *ui.Bitmap
+	mod time.Time
+}
+
+type updState struct {
+	busy     bool
+	msg      string
+	info     *UpdateInfo
+	progress float64
 }
 
 func NewSettings(ctl Controller, goos string) *Settings {
-	s := &Settings{ctl: ctl, GOOS: goos, sel: map[string]string{}}
+	s := &Settings{ctl: ctl, GOOS: goos, page: pgLibrary, navOpen: [3]bool{true, true, true}, gridSel: -1, thumbs: map[string]thumb{}}
+	s.grid.Selected = &s.gridSel
 	s.Refresh()
 	return s
 }
@@ -66,227 +153,333 @@ func (s *Settings) view0() app.View {
 	return s.snap
 }
 
-func itemLabel(it config.Item) string { return fmt.Sprintf("%s [%s]", it.Title, it.ID) }
-
-func idOf(label string) string {
-	if i := strings.LastIndex(label, "["); i >= 0 && strings.HasSuffix(label, "]") {
-		return label[i+1 : len(label)-1]
+func (s *Settings) invalidate() {
+	if s.Invalidate != nil {
+		s.Invalidate()
 	}
-	return ""
+}
+
+// SetPage 切换页面（托盘“打开壁纸库/设置”用）。
+func (s *Settings) SetPage(p string) { s.page = p }
+
+// wip 是“正在开发中”的统一提示。
+func (s *Settings) wip(c *ui.Context, feature string) {
+	c.AddToast(ui.Toast{ID: "wip-" + feature, Title: feature + " 正在开发中", Description: "这个功能计划在 v1 版本提供，当前 MVP 只保留入口。"})
+}
+
+// thumbOf 返回条目的缩略图（首帧截图 PNG，按修改时间缓存）。
+func (s *Settings) thumbOf(it config.Item) *ui.Bitmap {
+	if it.Snapshot == "" {
+		return nil
+	}
+	st, err := os.Stat(it.Snapshot)
+	if err != nil {
+		return nil
+	}
+	if t, ok := s.thumbs[it.ID]; ok && t.mod.Equal(st.ModTime()) {
+		return t.bm
+	}
+	b, err := os.ReadFile(it.Snapshot)
+	if err != nil {
+		return nil
+	}
+	bm, err := ui.DecodeBitmap(b)
+	if err != nil {
+		return nil
+	}
+	s.thumbs[it.ID] = thumb{bm: bm, mod: st.ModTime()}
+	return bm
 }
 
 // View 是 MyGo 视图函数。
 func (s *Settings) View(c *ui.Context) {
 	v := s.view0()
+	s.applyTheme(c, v.Config.UI)
 	t := c.Theme()
-	ui.Column(c).Fill().Padding(16).Gap(12).Children(func() {
+	ui.Row(c.Key("root")).Fill().Clip().AlignItems(ui.Stretch).Background(t.Background).Children(func() {
+		s.sidebar(c, v)
+		ui.Column(c.Key("main")).Grow(1).Shrink(1).MinWidth(0).MinHeight(0).Children(func() {
+			s.banners(c, v)
+			switch s.page {
+			case pgLibrary:
+				s.library(c, v)
+			case pgDisplays:
+				s.displays(c, v)
+			case pgDiscover:
+				s.discover(c, v)
+			case pgPerf:
+				s.perf(c, v)
+			case pgPause:
+				s.pause(c, v)
+			case pgPower:
+				s.power(c, v)
+			case pgLook:
+				s.look(c, v)
+			case pgStartup:
+				s.startup(c, v)
+			case pgDiag:
+				s.diag(c, v)
+			default:
+				s.about(c, v)
+			}
+		})
+	})
+	s.firstRun(c, v)
+}
+
+// firstRun：F-10 默认不开机自启，首次运行时询问一次。
+func (s *Settings) firstRun(c *ui.Context, v app.View) {
+	if !s.askInit {
+		s.askInit = true
+		s.askLogin = !v.Config.Startup.Asked && s.SetLaunchAtLogin != nil
+	}
+	switch ui.AlertDialog(c.Key("asklogin"), &s.askLogin, "开机时自动启动动态壁纸？", "开启后登录系统时自动在后台运行并显示壁纸，可以随时在“启动与更新”里关闭。", "暂不", "开机启动") {
+	case 0, ui.AlertDismissed:
+		s.ctl.UpdateConfig(func(x *config.Config) { x.Startup.Asked = true })
+	case 1:
+		s.ctl.UpdateConfig(func(x *config.Config) { x.Startup.Asked = true; x.Startup.LaunchAtLogin = true })
+	}
+}
+
+func (s *Settings) sidebar(c *ui.Context, v app.View) {
+	t := c.Theme()
+	ui.Column(c.Key("side")).Width(228).MinHeight(0).Background(sideBg(t)).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
+		ui.Row(c.Key("brand")).Gap(10).Padding(18, 16, 10, 16).AlignItems(ui.Center).Children(func() {
+			ui.Box(c).Size(30, 30).Radius(8).Gradient(accentColor(v.Config.UI.Accent), ui.Hex("#22d3ee"), 135).Children(func() {})
+			ui.Column(c).Children(func() {
+				ui.Text(c, "动态壁纸").Bold().FontSize(15)
+				ui.Text(c, "Wallpaper "+s.Info.Version).FontSize(11).TextColor(t.TextMuted)
+			})
+		})
+		ui.Sidebar(c.Key("nav"), &s.page, func() {
+			ui.SidebarSection(c.Key("sec0"), "壁纸", &s.navOpen[0], func() {
+				ui.SidebarItem(c.Key("n-lib"), pgLibrary, icLibrary, "壁纸库").Children(func() {
+					if n := len(v.Library); n > 0 {
+						ui.Badge(c, itoa(n))
+					}
+				})
+				ui.SidebarItem(c.Key("n-disp"), pgDisplays, icMonitor, "显示器").Children(func() {
+					if n := len(v.Displays); n > 1 {
+						ui.Badge(c, itoa(n))
+					}
+				})
+				ui.SidebarItem(c.Key("n-disc"), pgDiscover, icDiscover, "发现与创意工坊")
+			})
+			ui.SidebarSection(c.Key("sec1"), "设置", &s.navOpen[1], func() {
+				ui.SidebarItem(c.Key("n-perf"), pgPerf, icGauge, "播放与性能")
+				ui.SidebarItem(c.Key("n-pause"), pgPause, icPause, "暂停规则")
+				ui.SidebarItem(c.Key("n-power"), pgPower, icBattery, "电源与电池")
+				ui.SidebarItem(c.Key("n-look"), pgLook, icPalette, "外观")
+				ui.SidebarItem(c.Key("n-start"), pgStartup, icRocket, "启动与更新")
+			})
+			ui.SidebarSection(c.Key("sec2"), "支持", &s.navOpen[2], func() {
+				ui.SidebarItem(c.Key("n-diag"), pgDiag, icPulse, "诊断")
+				ui.SidebarItem(c.Key("n-about"), pgAbout, icInfo, "关于")
+			})
+		}).Grow(1).MinHeight(0)
+		// 底部状态卡：一眼看到在不在播放，一键暂停（Lively / WE 托盘都有的“暂停全部”）
+		ui.Column(c.Key("status")).Margin(12).Padding(12).Gap(8).Radius(10).Background(cardBg(t)).Border(1, t.Border).Children(func() {
+			playing, paused := 0, 0
+			for _, d := range v.Displays {
+				switch {
+				case d.ItemID == "":
+				case d.Level == "L0" && d.State == "active":
+					playing++
+				default:
+					paused++
+				}
+			}
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				col := t.Success
+				msg := "正在播放"
+				switch {
+				case v.PausedAll:
+					col, msg = t.Warning, "已全部暂停"
+				case playing == 0 && paused > 0:
+					col, msg = t.Warning, "自动暂停中"
+				case playing == 0:
+					col, msg = t.TextMuted, "未设置壁纸"
+				}
+				ui.Box(c).Size(8, 8).Radius(4).Background(col).Children(func() {})
+				ui.Text(c, msg).Bold().FontSize(13)
+			})
+			ui.Textf(c, "%d 块屏播放 · %d 块屏暂停", playing, paused).FontSize(12).TextColor(t.TextMuted)
+			ui.Row(c).Gap(6).Children(func() {
+				lbl, ic := "暂停全部", icPause
+				if v.PausedAll {
+					lbl, ic = "继续播放", icPlay
+				}
+				if iconButton(c.Key("pauseall"), ic, lbl, false).Grow(1).Clicked() {
+					s.ctl.SetPausedAll(!v.PausedAll)
+				}
+				if iconButton(c.Key("next"), icSkip, "", false).Label("切换到下一张壁纸").Tooltip("切换到下一张壁纸").Disabled(len(v.Library) < 2).Clicked() {
+					s.ctl.Next()
+				}
+			})
+		})
+	})
+}
+
+func (s *Settings) banners(c *ui.Context, v app.View) {
+	t := c.Theme()
+	if !v.SafeMode && v.LastError == "" && len(v.ReadOnly) == 0 {
+		return
+	}
+	ui.Column(c.Key("banners")).Padding(16, 24, 0, 24).Gap(8).Children(func() {
 		if v.SafeMode {
-			ui.Row(c.Key("safe")).Gap(8).Padding(10).Radius(6).Background(t.Surface).Border(1, t.Border).Children(func() {
-				ui.Text(c, "安全模式：连续多次异常退出，壁纸未自动启动。").Grow(1).Wrap()
+			banner(c.Key("safe"), t.Warning, "安全模式", "连续多次异常退出，壁纸没有自动启动。确认问题已解决后再恢复。", func() {
 				if ui.PrimaryButton(c.Key("exitsafe"), "恢复正常").Clicked() {
 					s.ctl.ExitSafeMode()
 				}
 			})
 		}
 		for _, f := range v.ReadOnly {
-			ui.Text(c.Key("ro"+f), f+" 由更新版本写入，本版本只读，不会覆盖。").TextColor(t.TextMuted).Wrap()
+			banner(c.Key("ro"+f), t.Warning, "配置只读", f+" 由更新版本写入，本版本只读取，不会覆盖。", nil)
 		}
 		if v.LastError != "" {
-			ui.Text(c.Key("err"), "错误："+v.LastError).Wrap()
+			banner(c.Key("err"), t.Danger, "出现问题", v.LastError, nil)
 		}
-		ui.Tabs(c.Key("tabs"), &s.tab, "壁纸库", "显示器", "设置")
-		switch s.tab {
-		case 0:
-			s.library(c, v)
+	})
+}
+
+func banner(c *ui.Context, col ui.Color, title, msg string, action func()) {
+	t := c.Theme()
+	ui.Row(c).Gap(12).Padding(12, 14).Radius(10).AlignItems(ui.Center).Background(col.Alpha(0.12)).Border(1, col.Alpha(0.35)).Children(func() {
+		ui.Box(c).Size(4, 28).Radius(2).Background(col).Children(func() {})
+		ui.Column(c).Grow(1).Children(func() {
+			ui.Text(c, title).Bold().FontSize(13)
+			ui.Text(c, msg).FontSize(12).TextColor(t.TextMuted).Wrap()
+		})
+		if action != nil {
+			action()
+		}
+	})
+}
+
+// ---- 共用小部件 ----
+
+// page 画页面标题和可滚动的内容区。
+func page(c *ui.Context, title, sub string, actions func(), body func()) {
+	t := c.Theme()
+	ui.Row(c.Key("hdr")).Padding(22, 28, 14, 28).Gap(12).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Grow(1).Children(func() {
+			ui.Text(c, title).Bold().FontSize(22)
+			if sub != "" {
+				ui.Text(c, sub).FontSize(13).TextColor(t.TextMuted)
+			}
+		})
+		if actions != nil {
+			actions()
+		}
+	})
+	ui.Scroll(c.Key("body")).Grow(1).MinHeight(0).Children(func() {
+		ui.Column(c).Padding(0, 28, 28, 28).Gap(16).MaxWidth(880).Children(body)
+	})
+}
+
+// card 是设置分组卡片。
+func card(c *ui.Context, title, desc string, body func()) {
+	t := c.Theme()
+	ui.Column(c).Radius(12).Background(cardBg(t)).Border(1, t.Border).Shadow(0, 1, 2, 0, ui.RGBA(0, 0, 0, 0.04)).Children(func() {
+		if title != "" {
+			ui.Column(c).Padding(14, 18, 4, 18).Children(func() {
+				ui.Text(c, title).Bold().FontSize(14)
+				if desc != "" {
+					ui.Text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap()
+				}
+			})
+		}
+		ui.Column(c).Padding(4, 18, 10, 18).Children(body)
+	})
+}
+
+// settingRow 是“标题 + 说明 | 控件”一行。
+func settingRow(c *ui.Context, title, desc string, control func()) {
+	t := c.Theme()
+	ui.Row(c).Gap(16).Padding(10, 0).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border.Alpha(0.5)).Children(func() {
+		ui.Column(c).Grow(1).Shrink(1).Children(func() {
+			ui.Text(c, title).FontSize(13)
+			if desc != "" {
+				ui.Text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap()
+			}
+		})
+		control()
+	})
+}
+
+// devTag 是“开发中”标签。
+func devTag(c *ui.Context) {
+	t := c.Theme()
+	ui.Text(c, "开发中").FontSize(11).Padding(1, 7).Radius(999).Background(t.Warning.Alpha(0.16)).TextColor(t.Warning).SingleLine()
+}
+
+// chip 是小标签。
+func chip(c *ui.Context, text string, col ui.Color) ui.Element {
+	return ui.Text(c, text).FontSize(11).Padding(1, 7).Radius(999).Background(col.Alpha(0.14)).TextColor(col).SingleLine()
+}
+
+func iconButton(c *ui.Context, ic *ui.SVG, label string, primary bool) ui.Element {
+	mk := ui.Button
+	if primary {
+		mk = ui.PrimaryButton
+	}
+	return mk(c, "").Children(func() {
+		ui.Icon(c, ic).FontSize(14)
+		if label != "" {
+			ui.Text(c, label).SingleLine()
+		}
+	}).Label(label)
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	if neg {
+		b = append([]byte{'-'}, b...)
+	}
+	return string(b)
+}
+
+// filtered 返回按搜索词和筛选过滤、按导入时间倒序的条目。
+func (s *Settings) filtered(v app.View) []config.Item {
+	q := strings.ToLower(strings.TrimSpace(s.query))
+	var out []config.Item
+	for _, it := range v.Library {
+		if q != "" && !strings.Contains(strings.ToLower(it.Title), q) && !strings.Contains(strings.ToLower(it.Origin), q) {
+			continue
+		}
+		switch s.filter {
 		case 1:
-			s.displays(c, v)
-		default:
-			s.config(c, v)
+			if it.Type != "video" {
+				continue
+			}
+		case 2:
+			if it.Type != "image" {
+				continue
+			}
+		case 3:
+			if it.Transcode != "recommended" {
+				continue
+			}
 		}
-	})
+		out = append(out, it)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].AddedAt.After(out[j].AddedAt) })
+	return out
 }
 
-func (s *Settings) library(c *ui.Context, v app.View) {
-	t := c.Theme()
-	drop := ui.Box(c.Key("drop")).Padding(18).Radius(8).Border(1, t.Border).Children(func() {
-		msg := "把 mp4 / mov / gif / 图片 / .wpk / Lively 压缩包拖到这里导入"
-		if v.Importing {
-			msg = "正在导入…"
-		}
-		ui.Text(c, msg).TextColor(t.TextMuted).Wrap()
-	})
-	if drop.FileDragOver() {
-		drop.Background(t.Surface)
-	}
-	for _, p := range drop.DroppedFiles() {
-		s.ctl.Import(p)
-	}
-	ui.Row(c.Key("improw")).Gap(8).Children(func() {
-		if ui.Button(c.Key("pick"), "选择文件导入…").Disabled(s.PickFiles == nil || v.Importing).Clicked() {
-			for _, p := range s.PickFiles() {
-				s.ctl.Import(p)
-			}
-		}
-		if v.LastImport != "" {
-			ui.Text(c, v.LastImport).TextColor(t.TextMuted).Wrap().Grow(1)
-		}
-	})
-	if len(v.Library) == 0 {
-		ui.Text(c.Key("empty"), "壁纸库为空。").TextColor(t.TextMuted)
-		return
-	}
-	ui.Scroll(c.Key("lib")).Grow(1).Children(func() {
-		ui.Column(c).Gap(6).Children(func() {
-			for _, it := range v.Library {
-				it := it
-				ui.Row(c.Key("it"+it.ID)).Gap(8).Padding(8).Radius(6).Border(1, t.Border).Children(func() {
-					info := fmt.Sprintf("%s · %s", it.Type, it.Origin)
-					if it.Codec != "" {
-						info += " · " + it.Codec
-					}
-					if it.Transcode == "recommended" {
-						info += " · 建议转码"
-					}
-					ui.Column(c).Grow(1).Children(func() {
-						ui.Text(c, it.Title).Bold()
-						ui.Text(c, info).FontSize(12).TextColor(t.TextMuted)
-						if it.Note != "" {
-							ui.Text(c, it.Note).FontSize(12).TextColor(t.TextMuted).Wrap()
-						}
-					})
-					if s.confirm == it.ID {
-						if ui.Button(c.Key("rmyes"+it.ID), "确认删除").Clicked() {
-							s.confirm = ""
-							s.ctl.Remove(it.ID)
-						}
-						if ui.Button(c.Key("rmno"+it.ID), "取消").Clicked() {
-							s.confirm = ""
-						}
-					} else if ui.Button(c.Key("rm"+it.ID), "删除").Label("删除 " + it.Title).Clicked() {
-						s.confirm = it.ID
-					}
-				})
-			}
-		})
-	})
-}
+// SelectItem 选中壁纸库里的一项（测试、截图用）。
+func (s *Settings) SelectItem(id string) { s.selID = id }
 
-func (s *Settings) displays(c *ui.Context, v app.View) {
-	t := c.Theme()
-	opts := []string{none}
-	byID := map[string]string{}
-	lib := append([]config.Item(nil), v.Library...)
-	sort.Slice(lib, func(i, j int) bool { return lib[i].AddedAt.Before(lib[j].AddedAt) })
-	for _, it := range lib {
-		opts = append(opts, itemLabel(it))
-		byID[it.ID] = itemLabel(it)
-	}
-	if len(v.Displays) == 0 {
-		ui.Text(c.Key("nodisp"), "没有检测到显示器。").TextColor(t.TextMuted)
-	}
-	for _, d := range v.Displays {
-		d := d
-		cur := none
-		if l, ok := byID[d.ItemID]; ok {
-			cur = l
-		}
-		if _, ok := s.sel[d.ID]; !ok || s.sel[d.ID] != cur && idOf(s.sel[d.ID]) == d.ItemID {
-			s.sel[d.ID] = cur
-		}
-		ui.Column(c.Key("d"+d.ID)).Gap(4).Padding(10).Radius(6).Border(1, t.Border).Children(func() {
-			name := d.Name
-			if d.Primary {
-				name += "（主屏）"
-			}
-			ui.Textf(c, "%s  %d×%d", name, d.W, d.H).Bold()
-			sel := s.sel[d.ID]
-			if ui.Select(c.Key("sel"+d.ID), &sel, opts).Label("壁纸 " + d.Name).Changed() {
-				s.sel[d.ID] = sel
-				s.ctl.Assign(d.ID, idOf(sel))
-			}
-			st := fmt.Sprintf("状态 %s · 级别 %s", d.State, d.Level)
-			if d.Backend != "" {
-				st += fmt.Sprintf(" · %s", d.Backend)
-			}
-			if d.HWDec != "" {
-				st += " · hwdec " + d.HWDec
-			}
-			ui.Text(c, st).FontSize(12).TextColor(t.TextMuted)
-		})
-	}
-}
-
-func (s *Settings) config(c *ui.Context, v app.View) {
-	cfg := v.Config
-	row := func(key, label string, on bool, set func(*config.Config, bool)) {
-		ui.Row(c.Key(key)).Gap(8).Center().Children(func() {
-			ui.Text(c, label).Grow(1)
-			b := on
-			if ui.Switch(c.Key(key+"sw"), &b).Label(label + " 开关").Changed() {
-				s.ctl.UpdateConfig(func(x *config.Config) { set(x, b) })
-			}
-		})
-	}
-	paused := v.PausedAll
-	ui.Row(c.Key("pauseall")).Gap(8).Center().Children(func() {
-		ui.Text(c, "暂停全部壁纸").Grow(1)
-		if ui.Switch(c.Key("pauseallsw"), &paused).Label("暂停全部壁纸 开关").Changed() {
-			s.ctl.SetPausedAll(paused)
-		}
-	})
-	row("fs", "其他程序全屏时暂停", cfg.Pause.OnFullscreen, func(x *config.Config, b bool) { x.Pause.OnFullscreen = b })
-	row("cov", "桌面被窗口完全遮挡时暂停", cfg.Pause.OnCovered, func(x *config.Config, b bool) { x.Pause.OnCovered = b })
-	ui.Row(c.Key("batt")).Gap(8).Center().Children(func() {
-		ui.Text(c, "使用电池时").Grow(1)
-		labels := map[string]string{"pause": "暂停", "ignore": "继续播放"}
-		cur := labels[cfg.Pause.BatteryPolicy]
-		if cur == "" {
-			cur = labels["pause"]
-		}
-		if ui.Select(c.Key("battsel"), &cur, []string{"暂停", "继续播放"}).Label("使用电池时").Changed() {
-			p := "pause"
-			if cur == "继续播放" {
-				p = "ignore"
-			}
-			s.ctl.UpdateConfig(func(x *config.Config) { x.Pause.BatteryPolicy = p })
-		}
-	})
-	ui.Row(c.Key("low")).Gap(8).Center().Children(func() {
-		ui.Text(c, "低电量阈值（%，低于此值总是暂停）").Grow(1)
-		f := float64(cfg.Pause.LowBatteryPct)
-		if ui.NumberInput(c.Key("lowin"), &f, 0, 100, 5).Label("低电量阈值").Changed() {
-			n := int(f)
-			s.ctl.UpdateConfig(func(x *config.Config) { x.Pause.LowBatteryPct = n })
-		}
-	})
-	ui.Row(c.Key("login")).Gap(8).Center().Children(func() {
-		ui.Text(c, "开机自动启动").Grow(1)
-		b := cfg.Startup.LaunchAtLogin
-		if ui.Switch(c.Key("loginsw"), &b).Label("开机自动启动 开关").Disabled(s.SetLaunchAtLogin == nil).Changed() {
-			s.ctl.UpdateConfig(func(x *config.Config) { x.Startup.LaunchAtLogin = b; x.Startup.Asked = true })
-		}
-	})
-	if s.GOOS == "windows" {
-		ui.Row(c.Key("backend")).Gap(8).Center().Children(func() {
-			ui.Text(c, "Windows 渲染后端（切换后重启壁纸）").Grow(1)
-			cur := cfg.Render.WindowsBackend
-			if ui.Select(c.Key("backendsel"), &cur, []string{"mpv", "mf"}).Label("渲染后端").Changed() {
-				b := cur
-				s.ctl.UpdateConfig(func(x *config.Config) { x.Render.WindowsBackend = b })
-			}
-		})
-	}
-	ui.Row(c.Key("diag")).Gap(8).Center().Children(func() {
-		if ui.Button(c.Key("diagbtn"), "导出诊断包").Disabled(s.ExportDiag == nil).Clicked() {
-			if p, err := s.ExportDiag(); err != nil {
-				s.diagMsg = "导出失败：" + err.Error()
-			} else {
-				s.diagMsg = "已导出：" + p
-			}
-		}
-		if s.diagMsg != "" {
-			ui.Text(c, s.diagMsg).FontSize(12).Wrap().Grow(1)
-		}
-	})
-	ui.Text(c.Key("priv"), "不收集任何遥测数据（D-15）。日志只保存在本机 logs 目录。").FontSize(12).TextColor(c.Theme().TextMuted)
-}
+// SelectDisplay 选中一块显示器（测试、截图用）。
+func (s *Settings) SelectDisplay(id string) { s.dispSel = id }
