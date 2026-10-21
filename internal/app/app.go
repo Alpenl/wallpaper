@@ -38,6 +38,10 @@ type Deps struct {
 	SafeMode    bool
 	// SetLaunchAtLogin 由 UI 层（MyGo）提供；nil 表示不支持。
 	SetLaunchAtLogin func(bool) error
+	// Transcode 是 F-07 的系统/用户编码器（transcode.Encoder）；nil 表示本机没有可用编码器。
+	Transcode func(ctx context.Context, src, dst string) error
+	// TranscodeExt 是转码产物扩展名（mac avconvert 输出 .mov，其余 .mp4）。
+	TranscodeExt string
 }
 
 // DisplayView 是 UI 用的显示器快照。
@@ -52,19 +56,35 @@ type DisplayView struct {
 	Backend string
 	HWDec   string
 	Dropped uint64
+	X, Y    int    // 虚拟屏坐标（布局示意图）
+	Reasons string // 当前生效的暂停/限帧原因（07 章名称，| 分隔）
+	FPSCap  int    // 当前生效的限帧，0 = 不限
+	Note    string // 例如“此后端不支持限帧”
+}
+
+// Power 是电源快照（F-05）。
+type Power struct {
+	OnBattery bool
+	Percent   int // -1 = 未知
+	Saver     bool
+	Thermal   string // "" | ThermalSerious | ThermalCritical
 }
 
 // View 是 UI 用的整体快照。
 type View struct {
-	Displays   []DisplayView
-	Library    []config.Item
-	Config     config.Config
-	PausedAll  bool
-	SafeMode   bool
-	Importing  bool
-	LastImport string
-	LastError  string
-	ReadOnly   []string
+	Displays    []DisplayView
+	Library     []config.Item
+	Config      config.Config
+	PausedAll   bool
+	SafeMode    bool
+	Importing   bool
+	LastImport  string
+	LastError   string
+	ReadOnly    []string
+	Power       Power
+	Transcoding map[string]string // itemID → 状态文本（正在转码…/失败原因）
+	HasEncoder  bool
+	Default     string // 默认壁纸 id（assignments.default）
 }
 
 type screen struct {
@@ -77,6 +97,9 @@ type screen struct {
 	started bool
 	crashes int
 	okAt    time.Time
+	machCap int // 状态机要求的限帧（电池 fps15 / 过热）
+	curCap  int // 已下发给渲染器的限帧
+	note    string
 	ops     chan func()
 	quit    chan struct{}
 }
@@ -101,6 +124,8 @@ type App struct {
 	lastImp   string
 	lastErr   string
 	reattach  int
+	transc    map[string]string
+	power     map[visibility.Reason]bool
 
 	vmu      sync.Mutex
 	view     View
@@ -115,7 +140,7 @@ func New(d Deps) *App {
 	}
 	return &App{d: d, log: d.Log, screens: map[desktop.DisplayID]*screen{}, post: make(chan func(), 256),
 		global: map[visibility.Reason]bool{}, perDisp: map[desktop.DisplayID]visibility.Reason{}, battPct: -1,
-		stopped: make(chan struct{})}
+		transc: map[string]string{}, power: map[visibility.Reason]bool{}, stopped: make(chan struct{})}
 }
 
 func (a *App) now() time.Duration { return time.Since(a.t0) }
@@ -390,10 +415,59 @@ func (a *App) onStarted(s *screen, gen int, r render.Renderer, err error) {
 		e := <-r.Done()
 		a.Do(func() { a.onDone(s, gen, e) })
 	}()
+	s.curCap = 0
+	a.applyCap(s)
 	if m.State() == visibility.StateRecovering {
 		m.RestartOK(t)
 	} else {
 		a.applyLevel(s, m.Level())
+	}
+}
+
+// ProfileCap 返回性能档位对应的限帧：saver = 15 fps，其余不限（balanced 依赖导入时转码到 30 fps）。
+func ProfileCap(c config.Config) int {
+	if c.Perf.Profile == "saver" {
+		return 15
+	}
+	return 0
+}
+
+// EffectiveCap 取两个限帧里更严格的一个（0 = 不限）。
+func EffectiveCap(a, b int) int {
+	switch {
+	case a == 0:
+		return b
+	case b == 0:
+		return a
+	}
+	return min(a, b)
+}
+
+// applyCap 把“档位 ∧ 状态机”的限帧下发给渲染器（F-05）。
+func (a *App) applyCap(s *screen) {
+	want := EffectiveCap(ProfileCap(a.d.Store.Config), s.machCap)
+	r := s.r
+	if r == nil || !s.started || want == s.curCap {
+		return
+	}
+	s.curCap = want
+	gen := s.gen
+	s.ops <- func() {
+		err := r.SetFPSCap(want)
+		a.Do(func() {
+			if s.gen != gen {
+				return
+			}
+			switch {
+			case errors.Is(err, render.ErrUnsupported) && want > 0:
+				s.note = "当前渲染后端不支持限帧，按原帧率播放"
+			case err != nil:
+				s.note = "限帧失败：" + err.Error()
+				a.log.Info("fpsCap not applied", "display", s.d.ID, "fps", want, "err", err)
+			default:
+				s.note = ""
+			}
+		})
 	}
 }
 
@@ -456,14 +530,8 @@ func (a *App) runActions() {
 					a.applyLevel(s, visibility.L0)
 				}
 			case visibility.ActFPSCap:
-				if r := s.r; r != nil {
-					fps := act.FPS
-					s.ops <- func() {
-						if err := r.SetFPSCap(fps); err != nil {
-							a.log.Info("fpsCap not applied", "display", s.d.ID, "fps", fps, "err", err)
-						}
-					}
-				}
+				s.machCap = act.FPS
+				a.applyCap(s)
 			case visibility.ActHealthCheck:
 				a.healthCheck("resume")
 			case visibility.ActRestart:
@@ -537,6 +605,9 @@ func (a *App) onEvent(ev desktop.Event) {
 		a.updateLowBattery()
 	case desktop.EventSignal:
 		a.signal(ev.Reason, ev.Display, ev.Active, ev.Source)
+		if ev.Display == "" {
+			a.power[ev.Reason] = ev.Active
+		}
 	}
 }
 
@@ -699,11 +770,25 @@ func levelName(m *visibility.Machine) (string, string) {
 func (a *App) publish() {
 	v := View{Config: a.d.Store.Config, PausedAll: a.pausedAll, SafeMode: a.d.SafeMode, Importing: a.importing,
 		LastImport: a.lastImp, LastError: a.lastErr, ReadOnly: a.d.Store.ReadOnlyWarn,
-		Library: append([]config.Item(nil), a.d.Store.Library.Items...)}
+		Library: append([]config.Item(nil), a.d.Store.Library.Items...), HasEncoder: a.d.Transcode != nil, Default: a.d.Store.Assign.Default,
+		Power:       Power{OnBattery: a.onBattery, Percent: a.battPct, Saver: a.power[visibility.BatterySaver]},
+		Transcoding: map[string]string{}}
+	switch {
+	case a.power[visibility.ThermalCritical]:
+		v.Power.Thermal = "ThermalCritical"
+	case a.power[visibility.ThermalSerious]:
+		v.Power.Thermal = "ThermalSerious"
+	}
+	for k, x := range a.transc {
+		v.Transcoding[k] = x
+	}
 	for _, s := range a.sortedScreens() {
 		lv, st := levelName(a.ctl.Display(s.n))
 		dv := DisplayView{ID: string(s.d.ID), Name: s.d.Name, W: s.d.Bounds.Dx(), H: s.d.Bounds.Dy(), Primary: s.d.Primary,
-			Level: lv, State: st}
+			Level: lv, State: st, X: s.d.Bounds.Min.X, Y: s.d.Bounds.Min.Y, FPSCap: s.curCap, Note: s.note}
+		if m := a.ctl.Display(s.n); m != nil {
+			dv.Reasons = reasonsString(m.Effective())
+		}
 		if s.item != nil {
 			dv.ItemID = s.item.ID
 		}
@@ -885,6 +970,11 @@ func (a *App) UpdateConfig(fn func(*config.Config)) {
 		if c.Pause != old.Pause {
 			a.rebuildMachines()
 		}
+		if c.Perf != old.Perf {
+			for _, s := range a.sortedScreens() {
+				a.applyCap(s)
+			}
+		}
 		if c.Render != old.Render {
 			for _, s := range a.sortedScreens() {
 				if s.r != nil {
@@ -918,6 +1008,8 @@ func (a *App) rebuildMachines() {
 	for _, s := range a.sortedScreens() {
 		a.ctl.Display(s.n).Drain()
 		l := a.ctl.Display(s.n).Level()
+		s.machCap = a.ctl.Display(s.n).WantFPS()
+		a.applyCap(s)
 		switch {
 		case s.r == nil && l < visibility.L4:
 			a.startScreen(s, 0)
@@ -949,6 +1041,83 @@ func (a *App) ExitSafeMode() {
 			a.assignItem(s)
 			a.startScreen(s, 0)
 		}
+	})
+}
+
+// Next 把下一张壁纸设为默认（托盘“切换壁纸”，F-09）：按导入顺序轮换，清除各屏单独设置以外不动。
+func (a *App) Next() {
+	a.Do(func() {
+		items := a.d.Store.Library.Items
+		if len(items) == 0 {
+			return
+		}
+		cur := a.d.Store.Assign.Default
+		next := items[0].ID
+		for i, it := range items {
+			if it.ID == cur {
+				next = items[(i+1)%len(items)].ID
+			}
+		}
+		go a.Assign("", next)
+	})
+}
+
+// Transcode 对一个“建议转码”的条目运行编码器（F-07），完成后替换入口并重启正在播放它的屏幕。
+// 原文件保留，转码失败不影响原条目。
+func (a *App) Transcode(itemID string) {
+	a.Do(func() {
+		it := a.d.Store.Library.Find(itemID)
+		if it == nil || a.transc[itemID] == "正在转码…" {
+			return
+		}
+		if a.d.Transcode == nil {
+			a.transc[itemID] = "本机没有可用的编码器"
+			return
+		}
+		ext := a.d.TranscodeExt
+		if ext == "" {
+			ext = ".mp4"
+		}
+		src := filepath.Join(it.Dir, filepath.FromSlash(it.Entry))
+		rel := "optimized" + ext
+		dst := filepath.Join(it.Dir, rel)
+		a.transc[itemID] = "正在转码…"
+		enc := a.d.Transcode
+		go func() {
+			tmp := dst + ".part" + ext
+			err := enc(context.Background(), src, tmp)
+			if err == nil {
+				err = os.Rename(tmp, dst)
+			} else {
+				_ = os.Remove(tmp)
+			}
+			a.Do(func() {
+				p := a.d.Store.Library.Find(itemID)
+				if p == nil {
+					delete(a.transc, itemID)
+					return
+				}
+				if err != nil {
+					a.transc[itemID] = "转码失败：" + err.Error()
+					a.log.Warn("transcode failed", "id", itemID, "err", err)
+					return
+				}
+				delete(a.transc, itemID)
+				p.Entry, p.Transcode = rel, "done"
+				p.Note = "已转码为 H.264/HEVC、30 fps、无音轨"
+				a.saveLibrary()
+				a.log.Info("transcoded", "id", itemID)
+				for _, s := range a.sortedScreens() {
+					if s.item != nil && s.item.ID == itemID {
+						a.assignItem(s)
+						a.closeScreen(s, false)
+						if a.ctl.Display(s.n).Level() < visibility.L4 {
+							a.startScreen(s, 0)
+						}
+					}
+				}
+			})
+		}()
 	})
 }
 

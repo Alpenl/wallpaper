@@ -1,6 +1,10 @@
 package transcode
 
 import (
+	"context"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"wpapp/internal/media"
@@ -34,5 +38,28 @@ func TestDecide(t *testing.T) {
 	}
 	if System("windows") != nil || System("linux") != nil {
 		t.Error("Windows/Linux 在 MVP 不应有编码器挂钩")
+	}
+}
+
+func TestFFmpegEncoderReal(t *testing.T) {
+	fn, ext, _ := Encoder("linux", "")
+	if fn == nil {
+		t.Skip("no ffmpeg")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "in.mp4")
+	if out, err := exec.Command("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=60:duration=2", "-f", "lavfi", "-i", "sine=duration=2", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", src).CombinedOutput(); err != nil {
+		t.Skip(string(out))
+	}
+	dst := filepath.Join(dir, "out"+ext)
+	if err := fn(context.Background(), src, dst); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=codec_type,r_frame_rate", "-of", "csv=p=0", dst).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := strings.TrimSpace(string(out)); s != "video,30/1" {
+		t.Fatalf("want only video 30fps, got %q", s)
 	}
 }

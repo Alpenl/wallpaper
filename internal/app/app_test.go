@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -84,6 +85,7 @@ type fakeR struct {
 	paused  bool
 	done    chan error
 	failLd  bool
+	caps    []int
 }
 
 func (r *fakeR) Load(it render.Item, s desktop.Surface, paused bool) error {
@@ -101,7 +103,20 @@ func (r *fakeR) SetLevel(l visibility.Level) error {
 	r.mu.Unlock()
 	return nil
 }
-func (r *fakeR) SetFPSCap(int) error   { return render.ErrUnsupported }
+func (r *fakeR) SetFPSCap(n int) error {
+	r.mu.Lock()
+	r.caps = append(r.caps, n)
+	r.mu.Unlock()
+	return nil
+}
+func (r *fakeR) lastCap() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.caps) == 0 {
+		return -1
+	}
+	return r.caps[len(r.caps)-1]
+}
 func (r *fakeR) Snapshot(string) error { return nil }
 func (r *fakeR) Stats() render.Stats   { return render.Stats{Backend: "fake"} }
 func (r *fakeR) Done() <-chan error    { return r.done }
@@ -149,6 +164,11 @@ func (e *env) cur(d desktop.DisplayID) *fakeR {
 
 func setup(t *testing.T, n int, withItem bool) *env {
 	t.Helper()
+	return setupWith(t, n, withItem, nil)
+}
+
+func setupWith(t *testing.T, n int, withItem bool, mod func(*Deps)) *env {
+	t.Helper()
 	t.Setenv("WPAPP_HOME", t.TempDir())
 	p, _ := config.DefaultPaths()
 	st, err := config.Open(p)
@@ -162,7 +182,7 @@ func setup(t *testing.T, n int, withItem bool) *env {
 		st.Assign.Default = "x"
 	}
 	e := &env{h: newHost(n), store: st}
-	e.a = New(Deps{Host: e.h, Store: st, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	deps := (Deps{Host: e.h, Store: st, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		NewRenderer: func(kind string, cfg config.Config, d desktop.DisplayID) render.Renderer {
 			e.mu.Lock()
 			defer e.mu.Unlock()
@@ -176,6 +196,10 @@ func setup(t *testing.T, n int, withItem bool) *env {
 			}
 			return &importer.Result{Item: config.Item{ID: "new", Title: "New", Type: "video", Dir: t.TempDir(), Entry: "content/b.mp4"}, Warnings: []string{"w"}}, nil
 		}})
+	if mod != nil {
+		mod(&deps)
+	}
+	e.a = New(deps)
 	ctx, cancel := context.WithCancel(context.Background())
 	e.cancel = cancel
 	go e.a.Run(ctx)
@@ -425,4 +449,89 @@ func TestSafeMode(t *testing.T) {
 	mu.Unlock()
 	a.ExitSafeMode()
 	eventually(t, "退出安全模式后加载", func() bool { mu.Lock(); defer mu.Unlock(); return made == 1 })
+}
+
+// F-05：电池 fps15 档 → 渲染器限帧 15；插电恢复 0；省电性能档全程 15。
+func TestFPS15BatteryAndSaverProfile(t *testing.T) {
+	e := setup(t, 1, true)
+	eventually(t, "启动", func() bool { r := e.cur("A"); return r != nil && r.isLoaded() })
+	e.a.UpdateConfig(func(c *config.Config) { c.Pause.BatteryPolicy = "fps15" })
+	e.sync()
+	e.h.ev <- desktop.Event{Kind: desktop.EventSignal, Reason: visibility.Battery, Active: true}
+	eventually(t, "电池 → 15 fps", func() bool { return e.cur("A").lastCap() == 15 })
+	if e.cur("A").last() == visibility.L1 {
+		t.Fatal("fps15 不应暂停")
+	}
+	eventually(t, "视图显示限帧", func() bool {
+		v := e.a.View()
+		return len(v.Displays) == 1 && v.Displays[0].FPSCap == 15 && v.Power.OnBattery
+	})
+	e.h.ev <- desktop.Event{Kind: desktop.EventSignal, Reason: visibility.Battery, Active: false}
+	eventually(t, "插电 → 不限", func() bool { return e.cur("A").lastCap() == 0 })
+	e.a.UpdateConfig(func(c *config.Config) { c.Perf.Profile = "saver" })
+	eventually(t, "省电档 → 15", func() bool { return e.cur("A").lastCap() == 15 })
+	e.a.UpdateConfig(func(c *config.Config) { c.Perf.Profile = "smooth" })
+	eventually(t, "流畅档 → 不限", func() bool { return e.cur("A").lastCap() == 0 })
+	// 过热（ThermalSerious）只限帧不暂停
+	e.h.ev <- desktop.Event{Kind: desktop.EventSignal, Reason: visibility.ThermalSerious, Active: true}
+	eventually(t, "过热 → 15", func() bool { return e.cur("A").lastCap() == 15 })
+	eventually(t, "视图显示过热", func() bool { return e.a.View().Power.Thermal == "ThermalSerious" })
+}
+
+func TestEffectiveCap(t *testing.T) {
+	for _, c := range [][3]int{{0, 0, 0}, {0, 15, 15}, {30, 0, 30}, {30, 15, 15}, {15, 30, 15}} {
+		if EffectiveCap(c[0], c[1]) != c[2] {
+			t.Error(c)
+		}
+	}
+}
+
+// F-07：一键转码替换入口并重启渲染器；失败保留原条目。
+func TestTranscodeFlow(t *testing.T) {
+	var fail atomic.Bool
+	e := setupWith(t, 1, true, func(d *Deps) {
+		d.Transcode = func(ctx context.Context, src, dst string) error {
+			if fail.Load() {
+				return errors.New("boom")
+			}
+			return os.WriteFile(dst, []byte("x"), 0o644)
+		}
+	})
+	eventually(t, "启动", func() bool { r := e.cur("A"); return r != nil && r.isLoaded() })
+	if !e.a.View().HasEncoder {
+		t.Fatal("HasEncoder")
+	}
+	first := e.cur("A")
+	e.a.Transcode("x")
+	eventually(t, "转码完成", func() bool {
+		v := e.a.View()
+		return len(v.Library) == 1 && v.Library[0].Transcode == "done" && v.Library[0].Entry == "optimized.mp4"
+	})
+	eventually(t, "重启渲染器", func() bool { r := e.cur("A"); return r != first && r.isLoaded() })
+	fail.Store(true)
+	e.sync()
+	e.a.Transcode("x")
+	eventually(t, "失败提示", func() bool {
+		return e.a.View().Transcoding["x"] != "" && e.a.View().Transcoding["x"] != "正在转码…"
+	})
+	if e.a.View().Library[0].Entry != "optimized.mp4" {
+		t.Fatal("失败不应改条目")
+	}
+}
+
+func TestNextRotatesDefault(t *testing.T) {
+	e := setup(t, 1, true)
+	dir := t.TempDir()
+	e.a.Do(func() { e.store.Library.Upsert(config.Item{ID: "y", Dir: dir, Type: "video", Entry: "a.mp4"}) })
+	e.sync()
+	e.a.Next()
+	eventually(t, "切到 y", func() bool { return e.defaultID() == "y" })
+	e.a.Next()
+	eventually(t, "回到 x", func() bool { return e.defaultID() == "x" })
+}
+
+func (e *env) defaultID() string {
+	ch := make(chan string)
+	e.a.Do(func() { ch <- e.store.Assign.Default })
+	return <-ch
 }

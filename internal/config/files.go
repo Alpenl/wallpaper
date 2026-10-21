@@ -24,6 +24,13 @@ type Config struct {
 	Privacy       Privacy `json:"privacy"`
 	Render        Render  `json:"render"`
 	UI            UI      `json:"ui"`
+	Update        Update  `json:"update"`
+}
+
+// Update 是 F-15 增量更新的客户端设置（internal/update）。FeedURL 为空 = 未配置更新源。
+type Update struct {
+	FeedURL   string `json:"feedURL,omitempty"`
+	AutoCheck bool   `json:"autoCheck"`
 }
 
 type Perf struct {
@@ -55,10 +62,16 @@ type Render struct {
 	WindowsBackend string `json:"windowsBackend"`
 	MpvPath        string `json:"mpvPath,omitempty"` // 空 = 安装目录下的 mpv/mpv(.exe)，再找 PATH
 	Hwdec          string `json:"hwdec,omitempty"`
+	FFmpegPath     string `json:"ffmpegPath,omitempty"` // F-07：用户自己安装的 ffmpeg（不随安装包分发）
 }
 
 type UI struct {
-	Lang string `json:"lang"`
+	Lang  string `json:"lang"`
+	Theme string `json:"theme"` // system | light | dark
+	// Accent 是强调色名（blue | purple | green | orange | pink）。
+	Accent string `json:"accent"`
+	// LibraryView 是壁纸库的视图（grid | list）。
+	LibraryView string `json:"libraryView"`
 }
 
 // Defaults 返回默认配置。
@@ -69,7 +82,8 @@ func Defaults() Config {
 		Startup: Startup{LaunchAtLogin: false},
 		Privacy: Privacy{Telemetry: false, CrashReports: "never"},
 		Render:  Render{WindowsBackend: "mpv"},
-		UI:      UI{Lang: "zh-CN"}}
+		UI:      UI{Lang: "zh-CN", Theme: "system", Accent: "blue", LibraryView: "grid"},
+		Update:  Update{AutoCheck: true}}
 }
 
 // Normalize 修正越界值。
@@ -91,6 +105,24 @@ func (c *Config) Normalize() {
 	}
 	if c.Perf.FPSCap < 0 || c.Perf.FPSCap > 240 {
 		c.Perf.FPSCap = d.Perf.FPSCap
+	}
+	switch c.Perf.Profile {
+	case "smooth", "balanced", "saver":
+	default:
+		c.Perf.Profile = d.Perf.Profile
+	}
+	switch c.UI.Theme {
+	case "system", "light", "dark":
+	default:
+		c.UI.Theme = d.UI.Theme
+	}
+	switch c.UI.Accent {
+	case "blue", "purple", "green", "orange", "pink":
+	default:
+		c.UI.Accent = d.UI.Accent
+	}
+	if c.UI.LibraryView != "list" {
+		c.UI.LibraryView = "grid"
 	}
 	c.Privacy.Telemetry = false
 }
