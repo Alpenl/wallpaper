@@ -7,14 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+	"wpapp/internal/render"
 )
 
 // client 是 mpv JSON IPC 的最小客户端（每行一个 JSON，带 request_id）。
 type client struct {
+	log     render.LogFunc
 	rw      io.ReadWriteCloser
 	mu      sync.Mutex
 	writeMu sync.Mutex
@@ -32,10 +35,16 @@ type resp struct {
 	Data      json.RawMessage `json:"data"`
 	RequestID int             `json:"request_id"`
 	Event     string          `json:"event"`
+	Prefix    string          `json:"prefix"`
+	Level     string          `json:"level"`
+	Text      string          `json:"text"`
 }
 
-func newClient(rw io.ReadWriteCloser) *client {
+func newClient(rw io.ReadWriteCloser, logs ...render.LogFunc) *client {
 	c := &client{rw: rw, pending: map[int]chan resp{}, first: make(chan struct{}), closed: make(chan struct{})}
+	if len(logs) > 0 {
+		c.log = logs[0]
+	}
 	go c.readLoop()
 	return c
 }
@@ -50,6 +59,9 @@ func (c *client) readLoop() {
 			continue
 		}
 		if r.Event != "" {
+			if r.Event == "log-message" {
+				c.log.Log("mpv_log", "level", r.Level, "prefix", r.Prefix, "text", r.Text)
+			}
 			if r.Event == "file-loaded" {
 				c.mu.Lock()
 				if c.loaded != nil {
@@ -90,7 +102,16 @@ func (c *client) cmd(args ...any) (json.RawMessage, error) {
 	c.pending[id] = ch
 	b, _ := json.Marshal(map[string]any{"command": args, "request_id": id})
 	c.mu.Unlock()
+	lifecycle := len(args) > 0 && (args[0] == "loadfile" || args[0] == "stop" || (args[0] == "set_property" && len(args) > 1 && args[1] == "pause"))
+	stage := func(name string, fields ...any) {
+		if lifecycle {
+			c.log.Log(name, append([]any{"request_id", id, "op", args[0]}, fields...)...)
+		}
+	}
+	begin := time.Now()
+	stage("write_begin")
 	c.writeMu.Lock()
+	var timedOut atomic.Bool
 	// Serialize deadline setup/reset with the write it protects.
 	var clearDeadline func()
 	if rw, ok := c.rw.(interface{ SetWriteDeadline(time.Time) error }); ok {
@@ -100,7 +121,7 @@ func (c *client) cmd(args ...any) (json.RawMessage, error) {
 	}
 	if clearDeadline == nil {
 		done := make(chan struct{})
-		guard := time.AfterFunc(2*time.Second, func() { _ = c.rw.Close(); close(done) })
+		guard := time.AfterFunc(2*time.Second, func() { timedOut.Store(true); _ = c.rw.Close(); close(done) })
 		clearDeadline = func() {
 			if !guard.Stop() {
 				<-done
@@ -110,16 +131,24 @@ func (c *client) cmd(args ...any) (json.RawMessage, error) {
 	_, err := c.rw.Write(append(b, '\n'))
 	clearDeadline()
 	c.writeMu.Unlock()
+	stage("write_end", "elapsed_ms", time.Since(begin).Milliseconds(), "err", err)
 	if err != nil {
+		if timedOut.Load() || errors.Is(err, os.ErrDeadlineExceeded) {
+			stage("timeout", "phase", "write")
+		} else {
+			stage("response", "phase", "write", "err", err)
+		}
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
 		return nil, err
 	}
+	begin = time.Now()
 	t := time.NewTimer(2 * time.Second)
 	defer t.Stop()
 	select {
 	case r, ok := <-ch:
+		stage("response", "elapsed_ms", time.Since(begin).Milliseconds(), "error", r.Error, "closed", !ok)
 		if !ok {
 			return nil, errClosed
 		}
@@ -128,6 +157,7 @@ func (c *client) cmd(args ...any) (json.RawMessage, error) {
 		}
 		return r.Data, nil
 	case <-t.C:
+		stage("timeout", "phase", "response", "elapsed_ms", time.Since(begin).Milliseconds())
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()

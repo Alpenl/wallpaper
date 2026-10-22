@@ -7,16 +7,17 @@ import (
 	"fmt"
 	"image"
 	"io"
-	"os"
 	"os/exec"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"wpapp/internal/desktop"
 	"wpapp/internal/ipc"
 	"wpapp/internal/reactive"
 	"wpapp/internal/render"
+	"wpapp/internal/telemetry"
 	"wpapp/internal/visibility"
 )
 
@@ -35,16 +36,19 @@ type loadRequest struct {
 	Paused bool
 }
 type Renderer struct {
-	statsMu      sync.Mutex
-	signalStatus string
-	mu           sync.Mutex
-	exe          string
-	command      func() *exec.Cmd
-	cmd          *exec.Cmd
-	conn         *ipc.Conn
-	exited       chan struct{}
-	closing      bool
-	done         chan error
+	processPID          atomic.Int64
+	Log                 render.LogFunc
+	Display, StderrPath string
+	statsMu             sync.Mutex
+	signalStatus        string
+	mu                  sync.Mutex
+	exe                 string
+	command             func() *exec.Cmd
+	cmd                 *exec.Cmd
+	conn                *ipc.Conn
+	exited              chan struct{}
+	closing             bool
+	done                chan error
 }
 
 func New(exe string) *Renderer { return &Renderer{exe: exe, done: make(chan error, 1)} }
@@ -80,12 +84,37 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		in.Close()
 		return e
 	}
-	cmd.Stderr = os.Stderr
+	var stderr *telemetry.ChildLog
+	if r.StderrPath != "" {
+		stderr, e = telemetry.NewChildLog(r.StderrPath)
+		if e != nil {
+			in.Close()
+			out.Close()
+			return e
+		}
+		cmd.Stderr = stderr
+	}
+	finish := func(err error) {
+		if stderr != nil {
+			logErr := stderr.Close()
+			r.Log.Log("child_log", "display", r.Display, "err", logErr, "dropped", stderr.Dropped())
+		}
+		code := -1
+		if cmd.ProcessState != nil {
+			code = cmd.ProcessState.ExitCode()
+		}
+		r.Log.Log("child_exit", "role", "web", "display", r.Display, "child_pid", cmd.Process.Pid, "code", code, "err", err)
+	}
 	if e = cmd.Start(); e != nil {
+		if stderr != nil {
+			_ = stderr.Close()
+		}
 		in.Close()
 		out.Close()
 		return e
 	}
+	r.processPID.Store(int64(cmd.Process.Pid))
+	r.Log.Log("child_start", "role", "web", "display", r.Display, "child_pid", cmd.Process.Pid)
 	r.statsMu.Lock()
 	r.signalStatus = ""
 	r.statsMu.Unlock()
@@ -108,6 +137,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	r.mu.Unlock()
 	go func() {
 		err := cmd.Wait()
+		finish(err)
 		conn.Close()
 		r.mu.Lock()
 		intentional := r.closing
@@ -132,7 +162,15 @@ func (r *Renderer) call(method string, v any) error {
 	if r.conn == nil {
 		return fmt.Errorf("web: host not running")
 	}
-	e := r.conn.Call(method, v, 20*time.Second, nil)
+	var reply render.HelperIdentity
+	var out any
+	if method == "load" {
+		out = &reply
+	}
+	e := r.conn.Call(method, v, 20*time.Second, out)
+	if method == "load" && e == nil {
+		r.Log.Log("helper_identity", "display", r.Display, "child_pid", reply.PID, "build", reply.Build)
+	}
 	if e != nil {
 		_ = r.cmd.Process.Kill()
 	}
@@ -204,6 +242,9 @@ func (h *hostSession) handle(method string, p json.RawMessage) (any, *ipc.Error)
 	err := h.control(method, p)
 	if err != nil {
 		return nil, &ipc.Error{Code: "E_LOAD", Msg: err.Error()}
+	}
+	if method == "load" {
+		return render.Identity(), nil
 	}
 	return struct{}{}, nil
 }
@@ -290,3 +331,5 @@ func (h *hostSession) control(method string, p json.RawMessage) error {
 		return fmt.Errorf("web: unknown method %q", method)
 	}
 }
+
+func (r *Renderer) ChildPID() int { return int(r.processPID.Load()) }

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
+	"wpapp/internal/buildinfo"
 
 	"wpapp/internal/ipc"
 	"wpapp/internal/render"
@@ -137,5 +139,12 @@ func TestLivePlaybackIPCValidatesAndAcknowledgesAppliedState(t *testing.T) {
 	}
 	if result.Options != o || !result.Paused || result.Start != 12 || result.Calls != 3 {
 		t.Fatalf("unexpected applied state: %+v", result)
+	}
+}
+
+func TestHelloIdentity(t *testing.T) {
+	reply := helloReply(false)
+	if reply["pid"] != os.Getpid() || reply["build"].(buildinfo.Info).Version == "" {
+		t.Fatal(reply)
 	}
 }

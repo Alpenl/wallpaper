@@ -45,7 +45,7 @@
 | F-13 | 本轮补作者/说明/标签/尺寸/时长/大小与预览主色索引；搜索覆盖名称/来源/作者/说明/标签/中英文颜色；网格/列表/缩略图已有 | [`library.go`](../internal/ui/library.go)、[`palette.go`](../internal/importer/palette.go)、[`search_test.go`](../internal/ui/search_test.go) | 16:09 以前的布局检查点，1000 条查询云端微基准约 1.18 ms，通过该检查点基准目标；不是端到端 UI/旧库完整索引或真机时延认证；UI-01 |
 | F-14 | 独立原生 Shader 子进程、GLSL → HLSL/MSL 转译、D3D11/Metal、离屏缩放、GPU 计时与自适应控制、导入和原生属性 UI 已接线；不使用 WebView；Linux 明确 unsupported | [`render/shader`](../internal/render/shader/)、[`shader-waves`](../examples/shader-waves/) | 真机画面、原生 GPU 帧预算与长期暂停恢复尚未验证；当前沙箱无 Metal device，GPU 测试跳过，不能以占位预览验收 |
 | F-15 | 严格 SemVer（含数字 prerelease）排序、dev 不参与更新、下载/替换前拒绝非 schema 1；更新清单校验、增量下载/暂存/回滚与打包脚本存在；[标签 CI/CD](releases/README.md) 已接入三系统验证、五目标打包、可选签名与幂等发布；真实签名/更新服务仍待验证 | [`update`](../internal/update/)、[`packaging`](../packaging/)、[`scripts`](../scripts/) | D-02、更新源/公钥、实际签名及公证、安装卸载、mac 更新后签名完整性 |
-| F-16 | 本地日志、诊断包脱敏实现和测试已有；I/O 错误保留首错但允许后续写入，重开失败仅随刷写 tick 重试；正常退出无日志状态噪声；不上传遥测 | [`telemetry`](../internal/telemetry/) | 本轮脱敏测试、失败提示、各平台导出路径；日志性能 AC |
+| F-16 | 已接入 dispatch 前 Go crash 文件（启动清理旧空文件、保留最新 5 份非空报告并保护当前文件；-version 不安装）、child stderr/MF 文本 2 MiB 写入限额与启动 `.1` 轮换、helper PID/build、worker 转场 begin/end 和生命周期 IPC 分阶段日志、mpv warn 转发；mpv 原生 log-file 保留且仅启动轮换；本地日志、诊断包脱敏实现和测试已有；I/O 错误保留首错但允许后续写入，重开失败仅随刷写 tick 重试；正常退出无日志状态噪声；不上传遥测 | [`telemetry`](../internal/telemetry/) | 本轮脱敏测试、失败提示、各平台导出路径；日志性能 AC |
 | F-17 | 每屏 L0–L4、暂停原因、当前 UTC 周已确认动态运行时长/暂停时长已持久化；显示器指标键为 SHA-256 截断摘要；不估算能源 | [`app/metrics.go`](../internal/app/metrics.go)、[`config/metrics.go`](../internal/config/metrics.go)、[`ui/metrics_test.go`](../internal/ui/metrics_test.go) | mpv 展示报告的硬解状态；MF/AVF 仍标 unknown/未验证，不能从框架名推断硬解。真实睡眠/时钟/重启与 UI 一致性需平台验收，完整 F-17 未关闭 |
 | F-18 | 每屏 fit/speed、静音/降采样按能力接线；mpv/MF/AVF 支持 fit/speed 原位修改并保持暂停；MF 增加原生播放速率、位置采样/异步 seek 及 L3 恢复 | [`render.go`](../internal/render/render.go)、[`options.go`](../internal/app/options.go)、[`mf/playback.go`](../internal/render/mf/playback.go)、[`mf/engine_windows.go`](../internal/render/mf/engine_windows.go) | MF/AVF 原生运行与 ≤200 ms 时延仍未验；MF 不支持帧降采样，全局/不支持属性仍可重建；Web 属性已接入独立宿主，完整 AC 的原生时延仍未关闭 |
 | F-19 | 本轮接入可执行文件 basename 规则 pause/saver/ignore，Windows/macOS/X11 前台进程探针；ignore 只豁免全屏/遮挡，不能覆盖安全或手动暂停 | [`foreground.go`](../internal/desktop/foreground.go)、[`options.go`](../internal/app/options.go)、[`options_test.go`](../internal/app/options_test.go) | 前台而非“任意后台运行”语义；实际桌面会话探针/权限/误判验证；不可用时能力提示 |
@@ -63,6 +63,7 @@
 
 | 控制 | mpv（Windows/Linux） | MF（Windows） | AVF（macOS） | 静态图 |
 |---|---|---|---|---|
+| crash / child / lifecycle 日志 | Go crash、2 MiB stderr、mpv warn 与转场/IPC 阶段；MF hello/build 与有界文本 | Go crash、web/shader PID/build、转场与有界 stderr | Go crash、mpv warn、转场/IPC 与有界 stderr | 纯 Go 回归含空文件清理、最新 5 份非空 crash 保留与当前文件保护；Windows MF、各平台原生 child/crash 行为仍需实机验证；Go crash 不等于 native dump，mpv log-file 无运行时硬限额 |
 | 日志与配置故障恢复 | 共用纯 Go：日志瞬时错误后继续写；普通 .bak 失败仍保存主文件并报告；迁移备份失败仍中止 | 同左 | 同左 | 同左；故障注入回归覆盖，真实磁盘满/杀毒软件锁文件仍需各平台验证 |
 | 每屏 worker 状态隔离 | 独立指针；纯 Go 并发回归 | 同左 | 同左；原生暂停/恢复仍需真机 | 共用编排结构 |
 | fill / fit / stretch | 已接入，可原位调整 | 已接入：源裁切 / MF letterbox / 交换链 stretch，可原位调整 | 已接入，可原位调整 | 单屏自定义不支持；跨屏由图片裁切实现 |

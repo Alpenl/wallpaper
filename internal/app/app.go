@@ -521,75 +521,6 @@ func (a *App) assignItem(s *screen) {
 	a.installSystemWallpaper(s)
 }
 
-// closeScreen 结束渲染器；destroySurface=true 时也关闭表面和 worker。
-func (a *App) closeScreen(s *screen, destroySurface bool) {
-	a.closeScreenForPause(s, destroySurface, false)
-}
-
-func (a *App) closeScreenForPause(s *screen, destroySurface, policyPause bool) {
-	countStopped := policyPause
-	r, surf := s.r, s.surf
-	a.capturePosition(s)
-	if s.watchStop != nil {
-		close(s.watchStop)
-		s.watchStop = nil
-	}
-	s.r, s.started, s.metricsReady = nil, false, false
-	s.levelPending = 0
-	s.gen++
-	gen := s.gen
-	if destroySurface {
-		s.surf = nil
-	}
-	id := s.d.ID
-	done := make(chan struct{})
-	s.ops <- func() {
-		var closeErr error
-		begin := time.Now()
-		from := s.worker.level
-		if r != nil {
-			closeErr = r.Close()
-		}
-		if policyPause {
-			if closeErr == nil {
-				s.worker.level = visibility.L4
-			}
-			backend := "none"
-			if r != nil {
-				backend = r.Stats().Backend
-			}
-			a.log.Info("renderer level transition", "display", id, "backend", backend, "from", from.String(), "to", "L4", "duration", time.Since(begin), "err", closeErr)
-			if closeErr != nil {
-				a.log.Error("renderer stop failed", "display", id, "err", closeErr)
-				a.Do(func() {
-					if s.gen == gen {
-						s.levelNote = "播放状态恢复失败，请重新应用壁纸"
-					}
-				})
-			}
-		}
-		if countStopped && closeErr == nil {
-			a.Do(func() {
-				if s.gen == gen {
-					s.metricsReady, s.metricsLevel = true, visibility.L4
-				}
-			})
-		}
-		if destroySurface && surf != nil {
-			_ = surf.Close()
-		}
-		close(done)
-	}
-	if destroySurface {
-		close(s.quit)
-		select { // 有界等待，避免卡住事件循环
-		case <-done:
-		case <-time.After(3 * time.Second):
-			a.log.Warn("close screen timed out", "display", id)
-		}
-	}
-}
-
 // startScreen 在 delay 后启动渲染器（结果回到事件循环）。
 func (a *App) startScreen(s *screen, delay time.Duration) {
 	if s.levelExhausted {
@@ -789,57 +720,6 @@ func (a *App) onDone(s *screen, gen int, err error) {
 		s.crashes = 0
 	}
 	a.ctl.Display(s.n).RendererDone(a.now())
-}
-
-func (a *App) applyLevel(s *screen, l visibility.Level) {
-	r := s.r
-	if r == nil {
-		return
-	}
-	if l >= visibility.L4 {
-		a.closeScreenForPause(s, false, true)
-		if s.surf != nil {
-			surf := s.surf
-			s.ops <- func() { _ = surf.SetVisible(false) }
-		}
-		return
-	}
-	gen := s.gen
-	id := s.d.ID
-	queued := time.Now()
-	s.levelPending++
-	s.ops <- func() {
-		begin := time.Now()
-		from := s.worker.level
-		err := r.SetLevel(l)
-		if err == nil {
-			s.worker.level = l
-		}
-		a.log.Info("renderer level transition", "display", id, "backend", r.Stats().Backend, "from", from.String(), "to", l.String(), "duration", time.Since(begin), "queueDuration", begin.Sub(queued), "err", err)
-		a.Do(func() {
-			if s.gen != gen {
-				return
-			}
-			s.levelPending--
-			if err != nil {
-				a.log.Error("renderer level transition failed", "display", id, "level", l.String(), "err", err)
-				s.levelNote = "播放状态切换失败，已尝试重启渲染器"
-				if s.levelFailures < 2 {
-					s.levelFailures++
-					a.restartPlayback(s)
-				} else {
-					s.levelExhausted = true
-					s.levelNote = "播放状态恢复失败，请重新应用壁纸"
-					a.closeScreen(s, false)
-				}
-				return
-			}
-			if s.started {
-				s.metricsReady, s.metricsLevel = true, l
-			}
-		})
-	}
-
 }
 
 // ---- 状态机动作 ----
@@ -1951,7 +1831,7 @@ func (a *App) beginTranscode(itemID string) {
 			}
 			if err != nil {
 				a.transc[itemID] = "转码失败：" + err.Error()
-				a.log.Warn("transcode failed", "id", itemID, "err", err)
+				a.log.Warn("transcode failed", "item", itemID, "err", err)
 				return
 			}
 			delete(a.transc, itemID)
@@ -1968,7 +1848,7 @@ func (a *App) beginTranscode(itemID string) {
 				p.SizeBytes = st.Size()
 			}
 			a.saveLibrary()
-			a.log.Info("transcoded", "id", itemID)
+			a.log.Info("transcoded", "item", itemID)
 			a.refreshStorage()
 			for _, s := range a.sortedScreens() {
 				if s.item != nil && s.item.ID == itemID {

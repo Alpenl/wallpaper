@@ -3,8 +3,10 @@ package shader
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 	"time"
+	"wpapp/internal/render"
 	"wpapp/internal/wpk"
 )
 
@@ -52,5 +54,12 @@ func TestMalformedShaderNeverPanics(t *testing.T) {
 		for _, target := range []Target{MSL, HLSL} {
 			_, _ = Translate(src, target)
 		}
+	}
+}
+
+func TestLoadReplyIdentity(t *testing.T) {
+	identity, ok := controlReply("load").(render.HelperIdentity)
+	if !ok || identity.PID != os.Getpid() || identity.Build.Version == "" {
+		t.Fatal(identity)
 	}
 }

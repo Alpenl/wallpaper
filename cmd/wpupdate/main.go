@@ -18,10 +18,17 @@ import (
 	"path/filepath"
 	"strings"
 
+	"wpapp/internal/config"
+	"wpapp/internal/telemetry"
 	"wpapp/internal/update"
 )
 
 func main() {
+	if paths, err := config.DefaultPaths(); err != nil {
+		fmt.Fprintln(os.Stderr, "crash output:", err)
+	} else if err := telemetry.InstallCrashOutput(paths.Logs, "wpupdate"); err != nil {
+		fmt.Fprintln(os.Stderr, "crash output:", err)
+	}
 	if len(os.Args) < 2 {
 		usage()
 	}

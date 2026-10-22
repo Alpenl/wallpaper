@@ -312,7 +312,11 @@ func TestItemPropsApplyAndDisplayOverridesWin(t *testing.T) {
 		defer r.lock.Unlock()
 		return r.options
 	}
-	eventually(t, "started", func() bool { return current() != nil && current().isLoaded() })
+	// Load is acknowledged on the worker before the app publishes its view.
+	// Wait for the item identity as well; an empty ID makes SetItemProps a no-op.
+	eventually(t, "started and item published", func() bool {
+		return current() != nil && current().isLoaded() && byID(e.a.View(), "A").ItemID != ""
+	})
 	item := byID(e.a.View(), "A").ItemID
 	e.a.SetItemProps(item, config.ItemProps{Fit: "stretch", Speed: 1.5, Volume: 40, Audio: "sound"})
 	eventually(t, "group props applied", func() bool {

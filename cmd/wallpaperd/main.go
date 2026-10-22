@@ -104,10 +104,28 @@ func parseFlags(args []string) *flags {
 
 func main() {
 	f := parseFlags(os.Args[1:])
-	switch {
-	case f.version:
+	if f.version {
 		fmt.Println("wallpaperd", build.String())
 		return
+	}
+	render.HelperBuild = build
+	role := "wallpaperd"
+	switch {
+	case f.mfhost:
+		role = "mfhost"
+	case f.webhost:
+		role = "web"
+	case f.shaderhost:
+		role = "shader"
+	case f.helper != "":
+		role = safeName(f.helper)
+	}
+	if paths, err := config.DefaultPaths(); err != nil {
+		fmt.Fprintln(os.Stderr, "crash output:", err)
+	} else if err := telemetry.InstallCrashOutput(paths.Logs, role); err != nil {
+		fmt.Fprintln(os.Stderr, "crash output:", err)
+	}
+	switch {
 	case f.shaderhost:
 		os.Exit(shader.HostMain())
 	case f.webhost:
@@ -191,7 +209,7 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 	if extraLog != nil {
 		w = io.MultiWriter(lw, extraLog)
 	}
-	log := telemetry.NewLogger(w, f.debug)
+	log := telemetry.NewLogger(w, f.debug).With("session", fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()))
 	log.Info("start", "version", build.Version, "commit", build.Revision(), "commit_time", build.CommitTime, "go", build.GoVersion, "pid", os.Getpid(), "os", runtime.GOOS, "arch", runtime.GOARCH, "headless", f.headless)
 	platInit(log)
 	store, err := config.Open(paths)
@@ -312,10 +330,18 @@ func (e *env) snapshot(src, dst string) error {
 
 func (e *env) newRenderer(kind string, cfg config.Config, d desktop.DisplayID) render.Renderer {
 	if kind == "shader" {
-		return shader.New(e.exe)
+		r := shader.New(e.exe)
+		r.Log = e.log.Info
+		r.Display = string(d)
+		r.StderrPath = filepath.Join(e.paths.Logs, "shader-"+safeName(string(d))+"-stderr.log")
+		return r
 	}
 	if kind == "web" {
-		return webwall.New(e.exe)
+		r := webwall.New(e.exe)
+		r.Log = e.log.Info
+		r.Display = string(d)
+		r.StderrPath = filepath.Join(e.paths.Logs, "web-"+safeName(string(d))+"-stderr.log")
+		return r
 	}
 	if kind == "image" {
 		return imgr.New()
@@ -323,7 +349,7 @@ func (e *env) newRenderer(kind string, cfg config.Config, d desktop.DisplayID) r
 	if r := platformRenderer(e, cfg, d); r != nil {
 		return r
 	}
-	return mpv.New(mpv.Options{Path: e.mpvPath(cfg), Hwdec: cfg.Render.Hwdec, Display: string(d),
+	return mpv.New(mpv.Options{Log: e.log.Info, Path: e.mpvPath(cfg), Hwdec: cfg.Render.Hwdec, Display: string(d),
 		LogFile: filepath.Join(e.paths.Logs, "mpv-"+safeName(string(d))+".log")})
 }
 

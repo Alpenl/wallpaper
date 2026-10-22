@@ -16,11 +16,13 @@ import (
 
 	"wpapp/internal/desktop"
 	"wpapp/internal/render"
+	"wpapp/internal/telemetry"
 	"wpapp/internal/visibility"
 )
 
 // Options 是 mpv 渲染器参数。
 type Options struct {
+	Log        render.LogFunc
 	Path       string        // mpv 可执行文件
 	Hwdec      string        // 空 = 平台默认（Win d3d11va，Linux auto-safe）
 	LogFile    string        // --log-file
@@ -32,18 +34,20 @@ type Options struct {
 
 // Renderer 实现 render.Renderer。
 type Renderer struct {
-	o       Options
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	c       *client
-	stop    chan struct{}
-	killing *atomic.Bool
-	level   atomic.Int32
-	cap     atomic.Int32
-	item    render.Item
-	pos     float64
-	done    chan error
-	stats   atomic.Value
+	processPID atomic.Int64
+	o          Options
+	mu         sync.Mutex
+	cmd        *exec.Cmd
+	c          *client
+	stop       chan struct{}
+	exited     chan struct{}
+	killing    *atomic.Bool
+	level      atomic.Int32
+	cap        atomic.Int32
+	item       render.Item
+	pos        float64
+	done       chan error
+	stats      atomic.Value
 }
 
 // New 创建 mpv 渲染器。
@@ -240,20 +244,49 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		return executableError(o.Path, err)
 	}
 	cmd := exec.Command(path, Args(o, s.Native(), name, it.Path, paused, it.Start)...)
+	var stderr *telemetry.ChildLog
+	if o.LogFile != "" {
+		if err := telemetry.RotateChildLog(o.LogFile); err != nil {
+			return err
+		}
+		stderr, err = telemetry.NewChildLog(strings.TrimSuffix(o.LogFile, ".log") + "-stderr.log")
+		if err != nil {
+			return err
+		}
+		cmd.Stderr = stderr
+	}
+	log := render.LogFunc(func(msg string, fields ...any) { r.childLogger(cmd.Process.Pid).Log(msg, fields...) })
+	finish := func(err error) {
+		if stderr != nil {
+			logErr := stderr.Close()
+			log.Log("child_log", "err", logErr, "dropped", stderr.Dropped())
+		}
+		log.Log("child_exit", "code", cmd.ProcessState.ExitCode(), "err", err)
+	}
 	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
+		if stderr != nil {
+			_ = stderr.Close()
+		}
 		return executableError(path, err)
 	}
+	r.processPID.Store(int64(cmd.Process.Pid))
+	log.Log("child_start")
 	rw, err := dial(name, 5*time.Second)
 	if err != nil {
 		cmd.Process.Kill()
-		cmd.Wait()
+		finish(cmd.Wait())
 		return executableError(path, err)
 	}
-	c := newClient(rw)
+	c := newClient(rw, log)
+	if _, err := c.cmd("request_log_messages", "warn"); err != nil {
+		log.Log("mpv_log_subscription_failed", "err", err)
+	}
 	killing := &atomic.Bool{}
 	stop := make(chan struct{})
+	exited := make(chan struct{})
 	r.mu.Lock()
+	r.exited = exited
 	r.cmd, r.c, r.stop, r.killing, r.item, r.pos = cmd, c, stop, killing, it, it.Start
 	r.mu.Unlock()
 	r.stats.Store(render.Stats{Backend: "mpv", Pos: it.Start})
@@ -265,7 +298,9 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	}
 	go r.statsLoop(c, stop, cmd)
 	go func() {
+		defer close(exited)
 		err := cmd.Wait()
+		finish(err)
 		c.Close()
 		if !killing.Load() {
 			r.fail(fmt.Errorf("mpv exited: %v", err))
@@ -496,12 +531,12 @@ func (r *Renderer) Close() error {
 	r.c.Close()
 	cmd := r.cmd
 	r.cmd, r.c = nil, nil
-	done := make(chan struct{})
-	go func() { cmd.Process.Wait(); close(done) }()
+	done := r.exited
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		cmd.Process.Kill()
+		<-done
 	}
 	return nil
 }
@@ -536,4 +571,13 @@ func (r *Renderer) UpdateSource(it render.Item, level visibility.Level) error {
 	r.item = it
 	r.pos = it.Start
 	return nil
+}
+
+func (r *Renderer) ChildPID() int { return int(r.processPID.Load()) }
+
+func (r *Renderer) childLogger(pid int) render.LogFunc {
+	return func(msg string, fields ...any) {
+		base := []any{"display", r.o.Display, "role", "mpv", "child_pid", pid}
+		r.o.Log.Log(msg, append(base, fields...)...)
+	}
 }

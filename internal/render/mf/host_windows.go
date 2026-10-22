@@ -67,7 +67,7 @@ func RunHost(pipeName string, swap string, statsEvery time.Duration) error {
 			if x.Proto != 1 {
 				return nil, &ipc.Error{Code: "E_PROTO", Msg: "proto"}
 			}
-			return map[string]any{"pid": os.Getpid(), "caps": []string{"video", "mf", "fit", "speed", "audio", "resume", "fps", "live-playback"}, "inJob": inJob()}, nil
+			return helloReply(inJob()), nil
 		case "load":
 			x, options, err := decodeLoad(p)
 			if err != nil {

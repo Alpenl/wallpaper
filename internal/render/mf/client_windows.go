@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,14 +17,18 @@ import (
 	"wpapp/internal/ipc"
 	"wpapp/internal/platform/win32"
 	"wpapp/internal/render"
+	"wpapp/internal/telemetry"
 	"wpapp/internal/visibility"
 )
 
 // Renderer 是主进程一侧：启动 `<本程序> -mfhost -pipe <名字>` 子进程，用 IPC v1 控制。
 type Renderer struct {
-	Exe     string // 子进程可执行文件（通常是 os.Executable()）
-	LogPath string
-	Swap    string
+	processPID atomic.Int64
+	Log        render.LogFunc
+	Display    string
+	Exe        string // 子进程可执行文件（通常是 os.Executable()）
+	LogPath    string
+	Swap       string
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -121,14 +126,39 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		args = append(args, "-log", r.LogPath)
 	}
 	cmd := exec.Command(r.Exe, args...)
+	var stderr *telemetry.ChildLog
+	if r.LogPath != "" {
+		stderr, err = telemetry.NewChildLog(strings.TrimSuffix(r.LogPath, ".log") + "-stderr.log")
+		if err != nil {
+			ps.Close()
+			return err
+		}
+		cmd.Stderr = stderr
+	}
+	log := render.LogFunc(func(msg string, fields ...any) {
+		base := []any{"display", r.Display, "role", "mfhost", "child_pid", cmd.Process.Pid}
+		r.Log.Log(msg, append(base, fields...)...)
+	})
+	finish := func(err error) {
+		if stderr != nil {
+			logErr := stderr.Close()
+			log.Log("child_log", "err", logErr, "dropped", stderr.Dropped())
+		}
+		log.Log("child_exit", "code", cmd.ProcessState.ExitCode(), "err", err)
+	}
 	if err := cmd.Start(); err != nil {
+		if stderr != nil {
+			_ = stderr.Close()
+		}
 		ps.Close()
 		return fmt.Errorf("mfhost start: %w", err)
 	}
+	r.processPID.Store(int64(cmd.Process.Pid))
+	log.Log("child_start")
 	f, err := ps.Accept(5 * time.Second)
 	if err != nil {
 		cmd.Process.Kill()
-		cmd.Wait()
+		finish(cmd.Wait())
 		return err
 	}
 	killing := &atomic.Bool{}
@@ -164,13 +194,15 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 			r.stats.Store(s)
 		}
 	})
-	var hello struct{ Pid int }
+	conn.SetLifecycleLogger(log)
+	var hello render.HelperIdentity
 	if err := conn.Call("hello", map[string]any{"proto": 1, "app": "wallpaperd"}, 5*time.Second, &hello); err != nil {
 		cmd.Process.Kill()
 		conn.Close()
-		cmd.Wait()
+		finish(cmd.Wait())
 		return fmt.Errorf("mfhost hello: %w", err)
 	}
+	log.Log("helper_identity", "helper_pid", hello.PID, "build", hello.Build)
 	b := s.Bounds()
 	r.mu.Lock()
 	o := r.options
@@ -182,7 +214,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	if err := conn.Call("load", load, 15*time.Second, &loaded); err != nil {
 		cmd.Process.Kill()
 		conn.Close()
-		cmd.Wait()
+		finish(cmd.Wait())
 		return fmt.Errorf("mfhost load: %w", err)
 	}
 	if validPosition(loaded.Pos) {
@@ -202,6 +234,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	go func() {
 		defer close(exited)
 		err := cmd.Wait()
+		finish(err)
 		conn.Close()
 		if !killing.Load() {
 			select {
@@ -275,6 +308,7 @@ func (r *Renderer) Close() error {
 		cmd.Process.Kill()
 	}
 	c.Close()
+	<-exited
 	return nil
 }
 
@@ -286,11 +320,18 @@ var _ render.CapabilityProvider = (*Renderer)(nil)
 // HostMain 是 -mfhost 子进程入口。
 func HostMain(pipe, swap, logPath string) int {
 	if logPath != "" {
-		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
-			defer f.Close()
+		if f, err := telemetry.NewChildLog(logPath); err == nil {
+			defer func() {
+				err := f.Close()
+				if err != nil || f.Dropped() > 0 {
+					fmt.Fprintf(os.Stderr, "mf log: err=%v dropped=%d\n", err, f.Dropped())
+				}
+			}()
 			Logf = func(format string, a ...any) {
 				fmt.Fprintf(f, "%s %s\n", time.Now().Format(time.RFC3339Nano), fmt.Sprintf(format, a...))
 			}
+		} else {
+			fmt.Fprintln(os.Stderr, "mf log:", err)
 		}
 	}
 	if err := RunHost(pipe, swap, 5*time.Second); err != nil {
@@ -299,3 +340,5 @@ func HostMain(pipe, swap, logPath string) int {
 	}
 	return 0
 }
+
+func (r *Renderer) ChildPID() int { return int(r.processPID.Load()) }
