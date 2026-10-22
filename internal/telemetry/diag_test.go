@@ -32,7 +32,7 @@ func TestExportDiagnosticsHasNoPaths(t *testing.T) {
 	os.WriteFile(lib, []byte(`{"items":[{"title":"x"}]}`), 0o644)
 	out := filepath.Join(d, "diag.zip")
 	identity := buildinfo.Info{Version: "1.2.3", Commit: "abcdef012345", Modified: true, CommitTime: "2026-10-22T00:00:00Z", GoVersion: "go1.27.3"}
-	if err := ExportDiagnostics(logs, []string{cfg}, out, identity); err != nil {
+	if err := ExportDiagnostics(logs, []string{cfg}, out, identity, PrivateValues{}); err != nil {
 		t.Fatal(err)
 	}
 	z, err := zip.OpenReader(out)
@@ -117,7 +117,7 @@ func TestDiagnosticsFormatsAndRecursivePrivacy(t *testing.T) {
 	status := putDiagnostic(t, d, "logger-status.json", `{"dropped": 17, "error":"open /Users/other/Private Files/status-secret"}`)
 	out := filepath.Join(d, "export.zip")
 	snapshot := []any{map[string]any{"display": "display-1", "type": "video", "backend": "mpv", "options": map[string]any{"speed": 1.5, "token": "private-option", "title": "private-option-title"}}}
-	if err := ExportDiagnostics(d, []string{cfg, status}, out, buildinfo.Info{Version: "dev"}, snapshot); err != nil {
+	if err := ExportDiagnostics(d, []string{cfg, status}, out, buildinfo.Info{Version: "dev"}, PrivateValues{}, snapshot); err != nil {
 		t.Fatal(err)
 	}
 	files := unzipDiagnostic(t, out)
@@ -161,7 +161,7 @@ func TestDiagnosticsTailAndTotalBudget(t *testing.T) {
 	}
 	cfg := putDiagnostic(t, d, "logger-status.json", `{"dropped":23}`)
 	out := filepath.Join(d, "export.zip")
-	if err := ExportDiagnostics(d, []string{cfg}, out, buildinfo.Info{Version: "dev"}); err != nil {
+	if err := ExportDiagnostics(d, []string{cfg}, out, buildinfo.Info{Version: "dev"}, PrivateValues{Paths: []string{d, filepath.Join(d, "My Library", "My Clip", "video.mp4")}, Titles: []string{"My Clip"}}); err != nil {
 		t.Fatal(err)
 	}
 	st, err := os.Stat(out)
@@ -239,5 +239,45 @@ func TestRedactPathBoundaries(t *testing.T) {
 		if strings.Contains(clean, "secret") || strings.Contains(clean, "My Movies") || !strings.Contains(clean, "<path:") {
 			t.Errorf("redaction failed: %q", clean)
 		}
+	}
+}
+
+func TestDiagnosticsKnownPrivateDictionary(t *testing.T) {
+	d := t.TempDir()
+	home := "/home/Jane Doe"
+	dir := home + "/My Library/My Clip"
+	file := dir + "/video.mp4"
+	win := `C:\Users\Jane Doe\AppData\Local\WallpaperApp\library\x\a.mp4`
+	private := PrivateValues{Paths: []string{home, dir, file, win}, Titles: []string{"My Clip"}}
+	putDiagnostic(t, d, "mpv-display.log", "[1][e][ffmpeg] "+file+": Invalid data found\n")
+	putDiagnostic(t, d, "child-stderr.log", win+": error\n"+strings.ReplaceAll(win, `\`, `\\`)+": escaped error\nplaying My Clip\n")
+	putDiagnostic(t, d, "crash-child.log", strings.ReplaceAll(win, `\`, "/")+": crash\n")
+	cfg := putDiagnostic(t, d, "config.json", `{"message":"playing My Clip","password":"hidden","url":"https://user:pass@example.com"}`)
+	lib := putDiagnostic(t, d, "library.json", `{"items":[{"title":"must never export"}]}`)
+	out := filepath.Join(d, "export.zip")
+	if err := ExportDiagnostics(d, []string{cfg, lib}, out, buildinfo.Info{Version: "dev"}, private, map[string]any{"message": file + ": snapshot error"}); err != nil {
+		t.Fatal(err)
+	}
+	files := unzipDiagnostic(t, out)
+	if len(files) != 7 {
+		t.Fatalf("unexpected ZIP entries (dictionary or library?): %v", files)
+	}
+	for name, body := range files {
+		if strings.Contains(name, "library.json") || strings.Contains(name, "dictionary") {
+			t.Fatal(name)
+		}
+		for _, value := range append(private.Paths, private.Titles...) {
+			for _, form := range []string{value, strings.ReplaceAll(value, `\`, "/"), strings.ReplaceAll(value, `\`, `\\`)} {
+				if strings.Contains(strings.ToLower(name+body), strings.ToLower(form)) {
+					t.Errorf("%s leaked %q", name, form)
+				}
+			}
+		}
+	}
+	if !strings.Contains(files["logs/mpv-display.log"], ">: Invalid data found") || !strings.Contains(files["logs/child-stderr.log"], ">: error") || !strings.Contains(files["assignments.json"], ">: snapshot error") {
+		t.Fatal("lost precise error suffix")
+	}
+	if !json.Valid([]byte(files["config/config.json"])) || strings.Contains(files["config/config.json"], "user:pass") {
+		t.Fatal("JSON/credential scrubbing regressed")
 	}
 }

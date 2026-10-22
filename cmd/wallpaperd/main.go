@@ -381,12 +381,17 @@ func (e *env) exportDiag() (string, error) {
 	}
 	cfgs = append(cfgs, statusPath)
 	// View is a synchronized snapshot; do not read the mutable store here.
+	home, _ := os.UserHomeDir()
+	private := telemetry.PrivateValues{Paths: []string{home, e.paths.Config, e.paths.Library, e.paths.Logs, e.paths.Cache}}
 	assignments := make([]map[string]any, 0)
 	if e.app != nil {
 		view := e.app.View()
+		private.Paths = append(private.Paths, view.Config.Render.MpvPath)
 		types := make(map[string]string, len(view.Library))
 		for _, item := range view.Library {
 			types[item.ID] = item.Type
+			private.Paths = append(private.Paths, item.Dir, filepath.Join(item.Dir, item.Entry))
+			private.Titles = append(private.Titles, item.Title)
 		}
 		for _, display := range view.Displays {
 			kind, backend := types[display.ItemID], display.Backend
@@ -402,7 +407,7 @@ func (e *env) exportDiag() (string, error) {
 			})
 		}
 	}
-	return dst, telemetry.ExportDiagnostics(e.paths.Logs, cfgs, dst, build, assignments)
+	return dst, telemetry.ExportDiagnostics(e.paths.Logs, cfgs, dst, build, private, assignments)
 }
 
 func (e *env) close() {
