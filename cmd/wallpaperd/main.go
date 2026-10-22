@@ -354,7 +354,29 @@ func (e *env) exportDiag() (string, error) {
 		return dst, err
 	}
 	cfgs = append(cfgs, statusPath)
-	return dst, telemetry.ExportDiagnostics(e.paths.Logs, cfgs, dst, build)
+	// View is a synchronized snapshot; do not read the mutable store here.
+	assignments := make([]map[string]any, 0)
+	if e.app != nil {
+		view := e.app.View()
+		types := make(map[string]string, len(view.Library))
+		for _, item := range view.Library {
+			types[item.ID] = item.Type
+		}
+		for _, display := range view.Displays {
+			kind, backend := types[display.ItemID], display.Backend
+			if kind == "" {
+				kind = "unknown"
+			}
+			if backend == "" {
+				backend = "unknown"
+			}
+			assignments = append(assignments, map[string]any{
+				"display": display.ID, "type": kind, "backend": backend,
+				"options": display.Options, "effectiveOptions": display.Effective,
+			})
+		}
+	}
+	return dst, telemetry.ExportDiagnostics(e.paths.Logs, cfgs, dst, build, assignments)
 }
 
 func (e *env) close() {
