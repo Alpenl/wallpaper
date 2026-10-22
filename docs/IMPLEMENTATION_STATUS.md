@@ -14,7 +14,7 @@
 
 | ID | 页面与原规划映射 | 必须可验收的行为 | F-* / 设计依据 | 主要源码 |
 |---|---|---|---|---|
-| UI-01 | 壁纸库 | 搜索/筛选、网格/列表、详情、导入、应用到选定屏/所有屏、优化、删除确认；空库/取消/导入失败有明确状态 | F-06/07/08/11/13/18；[包格式](design/10-package-format.md) | [`library.go`](../internal/ui/library.go)、[`app.go`](../internal/app/app.go)、[`importer`](../internal/importer/) |
+| UI-01 | 壁纸库（紧凑原生布局） | 12px 横向边距、宽窗合并标题/工具栏、窄窗两行紧凑栏；320px 全高属性栏（预览固定、属性独立滚动、38px 固定应用区），左侧 38px 底栏只占内容列；Windows 按 TitleBar inset 留拖动条、macOS/默认标题栏预览贴顶；空库保留属性占位；导入反馈进入底栏；1920×1080 网格至少六列四行的 Tester 回归； 搜索/筛选、网格/列表、详情、导入、应用到选定屏/所有屏、优化、删除确认；空库/取消/导入失败有明确状态 | F-06/07/08/11/13/18；[包格式](design/10-package-format.md) | [`library.go`](../internal/ui/library.go)、[`app.go`](../internal/app/app.go)、[`importer`](../internal/importer/) |
 | UI-02 | 显示器 | 布局选择、稳定 ID 别名、独立壁纸/跟随默认、每屏状态与暂停；Win/mac 原生跨屏空间裁切、切回保留独立分配；不支持宿主明确禁用 | F-03/04/17；[多屏](design/09-multimonitor-dpi-hdr.md) | [`displays.go`](../internal/ui/displays.go)、[`display_test.go`](../internal/app/display_test.go) |
 | UI-03 | 播放与性能 | 档位/FPS、可用后端与路径、支持的缩放/声音/速度；配置写入后实际应用或报错，不支持后端不显示成功 | F-05/06/07/18；[视频管线](design/06-video-pipeline.md) | [`pages.go`](../internal/ui/pages.go)、[`render`](../internal/render/)、[`config`](../internal/config/) |
 | UI-04 | 暂停与电源 | 全屏/遮挡策略、电池 pause/fps15/ignore、低电量阈值、当前原因与恢复；新增应用规则只匹配进程，不采集窗口标题 | F-04/05/19；[状态机](design/07-pause-power-state-machine.md) | [`pages.go`](../internal/ui/pages.go)、[`visibility`](../internal/visibility/)、[`desktop`](../internal/desktop/) |
@@ -33,7 +33,7 @@
 | F-01 | Windows/macOS/Linux 宿主源码存在；Linux 是有限兼容实现，不是全桌面认证 | [`desktop`](../internal/desktop/)、[`app`](../internal/app/) | W-T1/W-T6、M1；图标层级、Explorer 恢复、睡眠/Space 真机 |
 | F-02 | 监管、退避、失败截图兜底和 Windows 子进程约束源码存在 | [`supervisor`](../internal/supervisor/)、[`app_test.go`](../internal/app/app_test.go) | W-T9、真实 TDR、主进程终止后无残留；模拟器不证明驱动恢复 |
 | F-03 | 独立分配、默认壁纸、稳定 ID/别名/迁移、每屏控制已有；新增 Win/mac 每屏裁切原生宿主的空间跨屏，不是复制模式；保留独立分配和按屏暂停 | [跨屏实现与限制](SPANNING.md)、[`spanning.go`](../internal/app/spanning.go)、[`canvas.go`](../internal/desktop/canvas.go) | 真双/三屏、负坐标/混合 DPI、拔插与同数量拓扑变化、静态兜底接缝；不是单解码器或逐帧同步架构；UI-02 |
-| F-04 | 分级状态机及平台信号已有；本轮补每屏手动暂停、全局/每屏原因保留、开关重放原始信号；Windows 信号较完整，macOS/Linux 有能力差异 | [`visibility`](../internal/visibility/)、[`app/options_test.go`](../internal/app/options_test.go)、[`desktop`](../internal/desktop/) | W-T10/M2/M4、≤500 ms、暂停 CPU/GPU 与恢复延迟；真实按屏/系统事件复测 |
+| F-04 | 每屏 ops worker 的等级状态已移入独立指针，主循环复制 screen 不再读取 worker 内存；新增视图/优化请求与 worker 并发回归；Windows mpv/MF 命名管道改为重叠 I/O，Accept 可取消超时，mpv 优先写 deadline；新增 Windows 双向并发读写、关闭和静默管道恢复回归（待 windows-latest 执行）；恢复失败最多重建两次并提示；UI 使用已确认等级，恢复中及其他暂停原因可见；每屏转换日志含后端、耗时、错误；分级状态机及平台信号已有；本轮补每屏手动暂停、全局/每屏原因保留、开关重放原始信号；Windows 信号较完整，macOS/Linux 有能力差异 | [`visibility`](../internal/visibility/)、[`app/options_test.go`](../internal/app/options_test.go)、[`desktop`](../internal/desktop/) | W-T10/M2/M4、≤500 ms、暂停 CPU/GPU 与恢复延迟；真实按屏/系统事件复测 |
 | F-05 | 生产 mpv/MF/AVF 已有 FPS cap，电池/低电量/省电策略已有；不是“限帧未实现” | [`mpv.go`](../internal/render/mpv/mpv.go)、[`mf`](../internal/render/mf/)、[`avf`](../internal/render/avf/)、`TestFPS15BatteryAndSaverProfile` | 真机验证 MF/AVF 限帧、电源事件与功耗；MF 节流呈现不等于少解码；D-07 |
 | F-06 | mpv、MF、AVFoundation 视频路径已有；硬解/循环质量不能仅由参数证明 | [`render`](../internal/render/) | W-T3/M3、`hwdec-current`、丢帧与逐帧循环；D-04/Q-W10 |
 | F-07 | 手动/自动转码、目标分辨率偏好、隔离任务与严格产物校验已接入；mac 默认原生 AVFoundation helper，无需 ffmpeg；可选 ffmpeg 在 Win/mac 分别要求 h264_mf/h264_videotoolbox，不静默换软件路线 | [转换契约](../internal/transcode/README.md)、[`nativeav`](../internal/transcode/nativeav/)、[`encoder.go`](../cmd/wallpaperd/encoder.go)、[`verify.go`](../internal/transcode/verify.go) | 原生编解码/帧率/IDR/音轨/取消真机验证；已接入按屏 backing 像素 center-cover 缓存、manifest、懒编码与单活跃队列、取消/选择/清理；mpv 保进程换源；MF/AVF 换源重建，跨屏/有声音/非 fill 回退共享版本；avconvert 有限回退不满足严格 AC |
@@ -63,13 +63,14 @@
 
 | 控制 | mpv（Windows/Linux） | MF（Windows） | AVF（macOS） | 静态图 |
 |---|---|---|---|---|
+| 每屏 worker 状态隔离 | 独立指针；纯 Go 并发回归 | 同左 | 同左；原生暂停/恢复仍需真机 | 共用编排结构 |
 | fill / fit / stretch | 已接入，可原位调整 | 已接入：源裁切 / MF letterbox / 交换链 stretch，可原位调整 | 已接入，可原位调整 | 单屏自定义不支持；跨屏由图片裁切实现 |
 | 每屏 cover rendition | 相同 key 复用；换源保留进程、位置、暂停与 cap | 选择缓存；换源按现有恢复路径重建 | 选择缓存；原生 helper 支持 cover；换源重建 | 不适用 |
 | 播放速度 | 0.25–4 倍，可原位调整 | 0.25–4 倍，原生 SetPlaybackRate，可原位调整 | 0.25–4 倍，可原位调整 | 不适用 |
 | 静音 / 声音 | 已接入，默认静音 | 已接入，默认静音 | 已接入，默认静音 | 不适用 |
 | 视频帧降采样 | 0.25–1 倍软件滤镜 | 不支持 | 不支持 | 不适用 |
 | FPS cap / 电池 15fps | 已有 fps 滤镜 | 已有 Transfer/Present 节流 | 已有 videoComposition 路径，未真机 | 不需要动态渲染 |
-| 位置记录/恢复 | 按屏+素材持久化检查点；mpv 消费起始位置 | 已接入 Get/SetCurrentTime；等待异步 seek 后播放，L3 保位置；未真机 | 已接入延迟 seek/位置采样路径，真机行为未验 | 不适用 |
+| 位置记录/恢复 | 按屏+素材持久化检查点；L3/换源等待 file-loaded 后应用 pause，IPC 使用重叠 I/O 与写 deadline；静默管道 pause=false 回归待 Windows CI 执行，真机复测仍待完成 | 父/子双端命名管道均使用重叠 I/O；Accept 超时取消；待 Windows CI/真机验证；已接入 Get/SetCurrentTime；seek 完成重新应用播放意图；L3 退出等待与资源释放已有测试，仍待同 HWND 真机复测 | 已接入延迟 seek/位置采样路径，真机行为未验 | 不适用 |
 
 重要边界：
 
@@ -123,6 +124,7 @@
 
 | 范围 | 已实现 | 仍需验证 |
 |---|---|---|
+| 原生紧凑 UI | 隐藏系统标题文字并保留原生窗口按钮，使用 TitleBar insets 和拖动区域；壁纸库全高右栏、独立属性滚动与对齐的 38px 底栏，宽窗标题/工具栏合并；显示器与设置页保持全宽；下拉筛选、32 项演示库、紧凑可关闭错误栏；缺编码器时自动按屏优化跳过，手动请求保留本地化提示 | Windows 真机标题栏拖动、最小化/最大化/关闭、混合 DPI；macOS/Linux 标题栏与桌面环境回退仍需真机验证，离屏截图不证明系统窗口行为 |
 | 标签发布 | 分支/PR CI；master 可达的 SemVer 标签触发；五目标包与 SHA256SUMS；凭据缺失时明确标记未签名预发布；保留原始构建并续传 draft | GitHub hosted 三系统实际运行；真实 Windows/Apple 证书、公证与安装卸载；更新源部署及 macOS 更新后签名完整性。见 [发布说明](releases/README.md) |
 
 ## 配置与数据迁移
@@ -159,3 +161,12 @@
 本次验证（2026-10-22）：使用 Go toolchain 自带 gofmt；`gofmt -l ./internal ./cmd` 无输出。`GOOS=windows/darwin/linux go vet -unsafeptr=false ./...` 分别通过；本机、Windows、Darwin 的 `CGO_ENABLED=0 go build ./cmd/...` 分别通过（`GOCACHE=/tmp/wallpaper-go-cache`）。`go test ./...` 已执行，只有 `internal/update.TestIncrementalUpdateBootRollback` 因沙箱拒绝 `[::1]:0` 本地监听而失败，其他包通过；没有为通过测试弱化或跳过这个用例。`go test -tags shadergpu ./internal/render/shader -run TestMetalGoldenCompilation -v` 因无 Metal device 跳过。
 
 Windows hosted UI 用例已改为点击布局框的稳定无障碍标签“选择显示器 2”，并额外断言选中 `d2`，保留复制后默认壁纸/两屏分配断言。本机 UI 测试通过；GitHub API 网络连接失败，不能读取 hosted 日志或确认 Windows runner 复跑结果。DPI 宿主线程在建窗前显式设为 Per-Monitor V2，防止指针坐标虚拟化。
+
+## 紧凑原生 UI 验证（2026-10-22）
+
+- 32 项演示库；1920×1080、320px 全高属性栏打开、导入状态在底栏时，`TestLibraryDensity` 测得 7 列、5 个可见行、首项顶边 56px（Windows 38px caption inset）；断言至少六列四行、面板顶边不超过 caption inset、底边到达窗口底部、左底栏不进入面板。新增标题栏左右 insets/显示器菜单、错误关闭和缺编码器自动跳过/手动提示回归。
+- 指定的 1920×1080 中文、1100×700 中文、1280×800 英文三组 `cmd/uishots` 均成功输出；另加 `-caption-inset 38` 的 Windows 留白模拟。人工查看库页浅深色、英文工具栏、设置和显示器页面。新增空库固定栏宽/非库页全宽、三种 caption 布局、独立滚动时预览/应用区/网格不移动的 Tester 回归。截图为演示数据离屏渲染，不能替代 Windows 原生窗口与 DPI 验证。
+- 使用 `GOCACHE=/private/tmp/wp-panel-go-cache`：GOROOT 内 `gofmt -l ./internal ./cmd` 无输出；Windows/darwin/Linux 的 `go vet -unsafeptr=false ./...` 全通过；本机、Windows、darwin 的 `CGO_ENABLED=0 go build ./cmd/...` 全通过。
+- `go test ./...` 已执行：除 `internal/update.TestIncrementalUpdateBootRollback` 因沙箱禁止 `listen tcp6 [::1]:0: bind: operation not permitted` 失败外，其余包通过。未跳过或修改该测试来掩盖限制。
+
+本轮恢复回归覆盖：应用层一次恢复失败重建及提示、持续失败上限、60 秒 L3 释放后恢复、300 ms 去抖及排队期间真实视图、MF seek 完成、mpv 换源与 file-loaded/暂停命令顺序。单元测试与跨平台编译不代表 Windows GPU/驱动真机通过；设备仍冻结时请提供 `%LOCALAPPDATA%\WallpaperApp\logs`。
