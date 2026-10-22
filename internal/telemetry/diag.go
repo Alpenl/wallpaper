@@ -40,8 +40,8 @@ type diagnosticManifest struct {
 
 // ExportDiagnostics exports sanitized summaries, then newest log tails. Optional
 // snapshots must contain only diagnostic fields, never the material library.
-func ExportDiagnostics(logsDir string, configFiles []string, dst string, build buildinfo.Info, snapshots ...any) error {
-	entries, err := diagnosticEntries(logsDir, configFiles, build, snapshots)
+func ExportDiagnostics(logsDir string, configFiles []string, dst string, build buildinfo.Info, private PrivateValues, snapshots ...any) error {
+	entries, err := diagnosticEntries(logsDir, configFiles, build, snapshots, newRedactor(private))
 	if err != nil {
 		return err
 	}
@@ -74,14 +74,14 @@ func writeDiagnostics(dst io.WriteCloser, entries []diagnosticEntry) error {
 // costs (no timestamps/extras); reserve the end-of-central-directory separately.
 func entrySize(e diagnosticEntry) int { return len(e.data) + 2*len(e.name) + 30 + 16 + 46 }
 
-func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, snapshots []any) ([]diagnosticEntry, error) {
-	entries := []diagnosticEntry{{"README.txt", []byte(Redact(fmt.Sprintf("wallpaperd %s\nexported %s\nPaths and private fields redacted. Logs contain bounded tails. See manifest.json for omissions.\n", build.String(), time.Now().Format(time.RFC3339))))}}
+func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, snapshots []any, redact func(string) string) ([]diagnosticEntry, error) {
+	entries := []diagnosticEntry{{"README.txt", []byte(redact(fmt.Sprintf("wallpaperd %s\nexported %s\nPaths and private fields redacted. Logs contain bounded tails. See manifest.json for omissions.\n", build.String(), time.Now().Format(time.RFC3339))))}}
 	for i, snapshot := range snapshots {
 		b, err := json.Marshal(snapshot)
 		if err != nil {
 			return nil, err
 		}
-		b, err = scrubJSON(b)
+		b, err = scrubJSONWith(b, redact)
 		if err != nil {
 			return nil, err
 		}
@@ -118,7 +118,7 @@ func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, s
 	sources = append(sources, logs...)
 	manifest := make([]diagnosticManifest, len(sources))
 	for i, s := range sources {
-		manifest[i] = diagnosticManifest{Redact(s.name), "omitted: size/read budget or unavailable"}
+		manifest[i] = diagnosticManifest{redact(s.name), "omitted: size/read budget or unavailable"}
 	}
 	reserve, _ := json.MarshalIndent(manifest, "", "  ")
 	// Reserve ordinary and ZIP64 end records, even for very many tiny files.
@@ -135,7 +135,7 @@ func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, s
 		if readBudget < maxDiagnosticFile {
 			continue
 		}
-		b, truncated, n, err := readDiagnostic(s)
+		b, truncated, n, err := readDiagnostic(s, redact)
 		readBudget -= n
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -146,7 +146,7 @@ func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, s
 			manifest[i].Status = "omitted: unreadable or invalid JSON"
 			continue
 		}
-		e := diagnosticEntry{Redact(s.name), b}
+		e := diagnosticEntry{redact(s.name), b}
 		if used+entrySize(e) > maxDiagnosticZIP {
 			continue
 		}
@@ -162,7 +162,7 @@ func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, s
 	return entries, nil
 }
 
-func readDiagnostic(s diagnosticSource) ([]byte, bool, int64, error) {
+func readDiagnostic(s diagnosticSource, redact func(string) string) ([]byte, bool, int64, error) {
 	f, err := os.Open(s.path)
 	if err != nil {
 		return nil, false, 0, err
@@ -190,7 +190,7 @@ func readDiagnostic(s diagnosticSource) ([]byte, bool, int64, error) {
 		return nil, truncated, n, err
 	}
 	if s.json {
-		b, err = scrubJSON(b)
+		b, err = scrubJSONWith(b, redact)
 		return b, false, n, err
 	}
 	if truncated {
@@ -216,7 +216,7 @@ func readDiagnostic(s diagnosticSource) ([]byte, bool, int64, error) {
 			continue
 		}
 		if !plain && !mpv {
-			clean, err := scrubJSON(line)
+			clean, err := scrubJSONWith(line, redact)
 			if err != nil {
 				out.WriteString("[omitted: invalid JSON record]\n")
 				continue
@@ -227,7 +227,7 @@ func readDiagnostic(s diagnosticSource) ([]byte, bool, int64, error) {
 			}
 			out.Write(compact.Bytes())
 		} else {
-			out.WriteString(Redact(string(line)))
+			out.WriteString(redact(string(line)))
 		}
 		out.WriteByte('\n')
 	}
