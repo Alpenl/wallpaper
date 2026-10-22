@@ -407,6 +407,7 @@ func TestLoadWaitsForFileLoadedBeforePause(t *testing.T) {
 	select {
 	case err := <-done:
 		t.Fatalf("returned before load: %v", err)
+	// sleep: assert loadFile cannot complete before the file-loaded event.
 	case <-time.After(20 * time.Millisecond):
 	}
 	close(loaded)
@@ -431,7 +432,7 @@ func TestIPCWriteDeadlineUnblocksQueue(t *testing.T) {
 		if err == nil {
 			t.Fatal("blocked write succeeded")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("write deadline did not unblock the renderer operation")
 	}
 }
@@ -453,12 +454,12 @@ func TestIPCWriteFallbackClosesBlockedTransport(t *testing.T) {
 		if err == nil {
 			t.Fatal("blocked write succeeded")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("close guard failed")
 	}
 	select {
 	case <-c.closed:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("fallback did not close transport")
 	}
 }

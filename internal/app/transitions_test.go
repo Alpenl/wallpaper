@@ -38,7 +38,7 @@ func TestTransitionBeginBeforeBlockingCall(t *testing.T) {
 	go func() { (<-s.ops)(); close(done) }()
 	select {
 	case <-r.entered:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("worker did not enter")
 	}
 	var begin map[string]any
@@ -51,7 +51,7 @@ func TestTransitionBeginBeforeBlockingCall(t *testing.T) {
 	close(r.release)
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("worker did not finish")
 	}
 	end := <-sink

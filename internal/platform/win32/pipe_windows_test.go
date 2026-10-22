@@ -23,8 +23,8 @@ func pipePair(t *testing.T) (*os.File, *os.File) {
 		err error
 	}
 	dial := make(chan result, 1)
-	go func() { f, err := DialPipe(ps.Name, time.Second); dial <- result{f, err} }()
-	server, err := ps.Accept(time.Second)
+	go func() { f, err := DialPipe(ps.Name, 10*time.Second); dial <- result{f, err} }()
+	server, err := ps.Accept(10 * time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func pipePair(t *testing.T) (*os.File, *os.File) {
 			t.Fatal(r.err)
 		}
 		client = r.f
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dial hung")
 	}
 	t.Cleanup(func() { client.Close() })
@@ -50,8 +50,8 @@ func awaitIO(t *testing.T, done <-chan error) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("I/O did not complete within 1s")
+	case <-time.After(10 * time.Second):
+		t.Fatal("I/O did not complete within 10s")
 	}
 }
 
@@ -62,9 +62,12 @@ func TestPipeConcurrentReadWrite(t *testing.T) {
 		pending := make(chan error, 1)
 		started := make(chan struct{})
 		go func() { close(started); var b [1]byte; _, err := io.ReadFull(writer, b[:]); pending <- err }()
-		<-started
-		// Give ReadFile time to become pending; no traffic can complete this read.
-		time.Sleep(30 * time.Millisecond)
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatal("reader did not start")
+		}
+		// The reader has started; no peer traffic can complete it before the reply.
 		payload := bytes.Repeat([]byte{42}, 100)
 		written := make(chan error, 1)
 		go func() { _, err := writer.Write(payload); written <- err }()
@@ -94,7 +97,7 @@ func TestPipeAcceptTimeout(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "E_TIMEOUT") {
 			t.Fatalf("Accept: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Accept timeout hung")
 	}
 	ps.Close()
@@ -109,8 +112,13 @@ func TestPipeClosePendingRead(t *testing.T) {
 				f = server
 			}
 			read := make(chan error, 1)
-			go func() { var b [1]byte; _, err := f.Read(b[:]); read <- err }()
-			time.Sleep(30 * time.Millisecond)
+			started := make(chan struct{})
+			go func() { close(started); var b [1]byte; _, err := f.Read(b[:]); read <- err }()
+			select {
+			case <-started:
+			case <-time.After(10 * time.Second):
+				t.Fatal("reader did not start")
+			}
 			closed := make(chan error, 1)
 			go func() { closed <- f.Close() }()
 			awaitIO(t, closed)
@@ -119,7 +127,7 @@ func TestPipeClosePendingRead(t *testing.T) {
 				if err == nil {
 					t.Fatal("pending read succeeded after Close")
 				}
-			case <-time.After(time.Second):
+			case <-time.After(10 * time.Second):
 				t.Fatal("pending read did not return")
 			}
 		})

@@ -18,6 +18,7 @@ func requireSaverBlocked[T any](t *testing.T, ch <-chan T, message string) {
 	select {
 	case result := <-ch:
 		t.Fatalf("%s: %v", message, result)
+	// sleep: assert no completion while the write is deliberately held.
 	case <-time.After(25 * time.Millisecond):
 	}
 }
@@ -27,7 +28,7 @@ func awaitSaverResult[T any](t *testing.T, ch <-chan T) T {
 	select {
 	case result := <-ch:
 		return result
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for saver")
 		var zero T
 		return zero

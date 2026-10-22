@@ -112,6 +112,7 @@ func TestStoreOpenReadOnlyAndSaver(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for timer-driven snapshot")
 		}
+		// sleep: bounded polling for the timer-driven snapshot.
 		time.Sleep(time.Millisecond)
 	}
 	if err := s.ConfigSaver.Flush(); err != nil {

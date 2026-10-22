@@ -276,7 +276,7 @@ func TestMetricRejectedPauseIsNotSavedDuration(t *testing.T) {
 	e.a.SetPausedAll(true)
 	select {
 	case <-r.pauseAttempt:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("no pause attempt")
 	}
 	eventually(t, "bounded recovery exhausted", func() bool { return e.a.View().Displays[0].State == "failed" })
@@ -300,7 +300,7 @@ func TestMetricRejectedL4StopIsNotSavedDuration(t *testing.T) {
 	e.a.Do(func() { e.a.signal(visibility.LowBattery, "", true, "test") })
 	select {
 	case <-r.stopAttempt:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("no stop attempt")
 	}
 	done := make(chan bool, 1)

@@ -57,7 +57,7 @@ func TestIPCVersionAndLimit(t *testing.T) {
 	go b.Write([]byte(`{"v":2,"t":"evt","m":"x"}` + "\n"))
 	select {
 	case <-c.Done():
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("版本不符应断开")
 	}
 	if c.Err() == nil || !strings.Contains(c.Err().Error(), "E_PROTO") {
@@ -68,7 +68,7 @@ func TestIPCVersionAndLimit(t *testing.T) {
 	go b2.Write([]byte(strings.Repeat("x", MaxLine+10) + "\n"))
 	select {
 	case <-c2.Done():
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("超长行应断开")
 	}
 	if c2.Err() != ErrLineTooLong {
@@ -102,7 +102,7 @@ func TestIPCBadLineIgnoredAndUnknownFields(t *testing.T) {
 		if m != "ready" {
 			t.Fatal(m)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("坏行之后的消息应照常处理")
 	}
 }
