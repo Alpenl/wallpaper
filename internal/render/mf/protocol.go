@@ -99,3 +99,8 @@ func decodePlayback(p json.RawMessage) (render.PlaybackOptions, error) {
 	}
 	return playbackOptions(*x.Options)
 }
+
+func helloReply(inJob bool) map[string]any {
+	identity := render.Identity()
+	return map[string]any{"pid": identity.PID, "build": identity.Build, "caps": []string{"video", "mf", "fit", "speed", "audio", "resume", "fps", "live-playback"}, "inJob": inJob}
+}

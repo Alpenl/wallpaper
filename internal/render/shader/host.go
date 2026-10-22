@@ -233,7 +233,7 @@ func serve(p pipeIO, g gpu) error {
 		if e != nil {
 			return nil, &ipc.Error{Code: "E_GPU", Msg: e.Error()}
 		}
-		return struct{}{}, nil
+		return controlReply(method), nil
 	}, nil)
 	defer c.Close()
 	timer := time.NewTimer(time.Second / 30)
@@ -268,4 +268,11 @@ func serve(p pipeIO, g gpu) error {
 			timer.Reset(max(time.Millisecond, interval-time.Since(now)))
 		}
 	}
+}
+
+func controlReply(method string) any {
+	if method == "load" {
+		return render.Identity()
+	}
+	return struct{}{}
 }

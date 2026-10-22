@@ -120,8 +120,13 @@ func TestHostLoadIdentity(t *testing.T) {
 	f := &fakeView{}
 	h := hostSession{view: f}
 	b, _ := json.Marshal(request)
-	if _, err := h.handle("load", b); err != nil {
+	reply, err := h.handle("load", b)
+	if err != nil {
 		t.Fatal(err)
+	}
+	identity, ok := reply.(render.HelperIdentity)
+	if !ok || identity.PID <= 0 || identity.Build.Version == "" {
+		t.Fatal(reply)
 	}
 	if len(f.calls) != 1 || f.calls[0] != "load" {
 		t.Fatal(f.calls)
