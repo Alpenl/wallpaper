@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"wpapp/internal/app"
+	"wpapp/internal/buildinfo"
 	"wpapp/internal/config"
 	"wpapp/internal/desktop"
 	"wpapp/internal/importer"
@@ -37,7 +38,9 @@ import (
 	"wpapp/internal/transcode"
 )
 
-var version = "0.3.0-mvp"
+var version = "dev"
+
+var build = buildinfo.Read(version)
 
 // updatePubKey 是 F-15 更新清单的 Ed25519 公钥（base64），构建时注入：-ldflags "-X main.updatePubKey=…"。
 // 为空时不能在线更新（界面会说明）。signedBuild 由签名流水线注入 "1"。
@@ -103,7 +106,7 @@ func main() {
 	f := parseFlags(os.Args[1:])
 	switch {
 	case f.version:
-		fmt.Println("wallpaperd", version, runtime.GOOS+"/"+runtime.GOARCH)
+		fmt.Println("wallpaperd", build.String())
 		return
 	case f.shaderhost:
 		os.Exit(shader.HostMain())
@@ -187,7 +190,7 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 		w = io.MultiWriter(lw, extraLog)
 	}
 	log := telemetry.NewLogger(w, f.debug)
-	log.Info("start", "version", version, "os", runtime.GOOS, "arch", runtime.GOARCH, "headless", f.headless)
+	log.Info("start", "version", build.Version, "commit", build.Revision(), "commit_time", build.CommitTime, "go", build.GoVersion, "pid", os.Getpid(), "os", runtime.GOOS, "arch", runtime.GOARCH, "headless", f.headless)
 	platInit(log)
 	store, err := config.Open(paths)
 	if err != nil {
@@ -332,7 +335,7 @@ func (e *env) exportDiag() (string, error) {
 	e.logw.Sync()
 	dst := filepath.Join(filepath.Dir(e.paths.Logs), "diagnostics-"+time.Now().Format("20060102-150405")+".zip")
 	cfgs := []string{filepath.Join(e.paths.Config, "config.json"), filepath.Join(e.paths.Config, "state.json")}
-	return dst, telemetry.ExportDiagnostics(e.paths.Logs, cfgs, dst, version)
+	return dst, telemetry.ExportDiagnostics(e.paths.Logs, cfgs, dst, build)
 }
 
 func (e *env) close() {

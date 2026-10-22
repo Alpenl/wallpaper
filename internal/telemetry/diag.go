@@ -1,6 +1,8 @@
 package telemetry
 
 import (
+	"wpapp/internal/buildinfo"
+
 	"archive/zip"
 	"bufio"
 	"fmt"
@@ -8,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -32,7 +33,7 @@ func Redact(s string) string {
 
 // ExportDiagnostics 把日志目录（清洗后）和指定的配置文件打成 zip（F-16）。
 // mpv 日志只保留警告/错误行。素材库（library.json）不导出。
-func ExportDiagnostics(logsDir string, configFiles []string, dst string, version string) error {
+func ExportDiagnostics(logsDir string, configFiles []string, dst string, build buildinfo.Info) error {
 	f, err := os.Create(dst)
 	if err != nil {
 		return err
@@ -40,7 +41,7 @@ func ExportDiagnostics(logsDir string, configFiles []string, dst string, version
 	defer f.Close()
 	z := zip.NewWriter(f)
 	w, _ := z.Create("README.txt")
-	fmt.Fprintf(w, "wallpaperd %s %s/%s\nexported %s\n路径已替换为 sha256 前缀，标题类字段已去除（16.4）。\n", version, runtime.GOOS, runtime.GOARCH, time.Now().Format(time.RFC3339))
+	fmt.Fprintf(w, "wallpaperd %s\nexported %s\n路径已替换为 sha256 前缀，标题类字段已去除（16.4）。\n", build.String(), time.Now().Format(time.RFC3339))
 	ents, _ := os.ReadDir(logsDir)
 	var names []string
 	for _, e := range ents {

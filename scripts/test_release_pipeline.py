@@ -68,3 +68,18 @@ class RestoreTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RuntimeVersionTests(unittest.TestCase):
+    def test_release_runtime_version_contract(self):
+        # Exercise the actual assertion embedded in the release verifier.
+        source = (SCRIPTS / 'release-verify.sh').read_text()
+        assertion = next(line.strip() for line in source.splitlines()
+                         if line.strip().startswith('assert re.fullmatch('))
+        import re
+        good = 'wallpaperd 1.2.3 commit=abc+dirty commit_time=unknown go=go1.27.3 linux/amd64'
+        exec(assertion, dict(re=re, version='1.2.3', native_version=good))
+        for bad in [good.replace('1.2.3', 'dev'), good.replace('1.2.3', '1.2.30'),
+                    good.replace('linux/amd64', 'darwin/arm64'), 'wallpaperd 1.2.3 linux/amd64']:
+            with self.assertRaises(AssertionError):
+                exec(assertion, dict(re=re, version='1.2.3', native_version=bad))

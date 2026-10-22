@@ -180,3 +180,43 @@ func TestPathsPlatforms(t *testing.T) {
 		t.Fatal(p)
 	}
 }
+
+func TestConfigAndAssignmentsFutureSchemaUnchanged(t *testing.T) {
+	for _, name := range []string{"config.json", "assignments.json"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("WPAPP_HOME", t.TempDir())
+			p, err := DefaultPaths()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.Ensure(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(p.Config, name)
+			before := []byte("{\n  \"schemaVersion\": 99, \"future\": [1, 2, 3]\n}\n")
+			if err := os.WriteFile(path, before, 0600); err != nil {
+				t.Fatal(err)
+			}
+			s, err := Open(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saver, value := s.ConfigSaver, any(s.Config)
+			if name == "assignments.json" {
+				saver, value = s.AssignSaver, s.Assign
+			}
+			if !saver.ReadOnly {
+				t.Fatal("future schema must be read-only")
+			}
+			saver.Schedule(func() any { return value })
+			s.FlushAll()
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("future schema file changed")
+			}
+		})
+	}
+}

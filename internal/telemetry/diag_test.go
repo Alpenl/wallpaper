@@ -1,6 +1,8 @@
 package telemetry
 
 import (
+	"wpapp/internal/buildinfo"
+
 	"archive/zip"
 	"io"
 	"os"
@@ -24,7 +26,8 @@ func TestExportDiagnosticsHasNoPaths(t *testing.T) {
 	lib := filepath.Join(d, "library.json")
 	os.WriteFile(lib, []byte(`{"items":[{"title":"x"}]}`), 0o644)
 	out := filepath.Join(d, "diag.zip")
-	if err := ExportDiagnostics(logs, []string{cfg}, out, "test"); err != nil {
+	identity := buildinfo.Info{Version: "1.2.3", Commit: "abcdef012345", Modified: true, CommitTime: "2026-10-22T00:00:00Z", GoVersion: "go1.27.3"}
+	if err := ExportDiagnostics(logs, []string{cfg}, out, identity); err != nil {
 		t.Fatal(err)
 	}
 	z, err := zip.OpenReader(out)
@@ -42,6 +45,9 @@ func TestExportDiagnosticsHasNoPaths(t *testing.T) {
 		all.Write(b)
 	}
 	s := all.String()
+	if !strings.Contains(s, "wallpaperd "+identity.String()) {
+		t.Fatal("missing build identity", s)
+	}
 	for _, bad := range []string{"bob", "假期", "beach", "clip.mp4", `D:\tools`, "Command line"} {
 		if strings.Contains(s, bad) {
 			t.Errorf("diagnostics leak %q:\n%s", bad, s)

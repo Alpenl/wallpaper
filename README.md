@@ -1,8 +1,10 @@
 # Wallpaper
 
+[工程规则](docs/ENGINEERING.md)
+
 > **实现基线**：主分支 `master` 的 `2710033ef169852bd7c4a1b5c063d29f3f3e89fd`。`ui` 分支只提供 [React 设计稿](https://github.com/Alpenl/wallpaper/tree/5f00d334cd32412291964d228fad4f3b9461cc7b/web)，不作为应用代码或产品运行入口；正式界面只能使用原生 MyGo。
 
-跨平台动态壁纸桌面应用：Go + MyGo 原生设置界面，Windows 使用 mpv/可选 Media Foundation，macOS 使用 AVFoundation，Linux 提供有限的 X11 兼容实现。本轮版本为 `0.3.0-mvp`，保持未签名预发布定位；发布范围、安装依赖和验证限制见 [版本说明](docs/releases/v0.3.0-mvp.md)。
+跨平台动态壁纸桌面应用：Go + MyGo 原生设置界面，Windows 使用 mpv/可选 Media Foundation，macOS 使用 AVFoundation，Linux 提供有限的 X11 兼容实现。发布版本由 release tag 注入；普通构建为 `dev`，不参与自动更新排序。发布范围、安装依赖和验证限制见 [版本说明](docs/releases/README.md)。
 
 本轮按 UI 设计稿将原生设置重组为七页，补充每屏播放/暂停、原生空间跨屏、UTC 周暂停统计、macOS 原生隔离转码、应用规则、批量导入、元数据检索、存储管理和双语控件。研究文档已区分当前实现、验收目标和历史证据。**源码完成、自动化通过、真机验收和公开发布是四件不同的事。** 当前范围/缺口见 [实现验收矩阵](docs/IMPLEMENTATION_STATUS.md)，本轮实跑结果见 [验证记录](docs/VALIDATION.md)。
 

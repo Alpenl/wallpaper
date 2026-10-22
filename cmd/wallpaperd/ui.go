@@ -56,7 +56,7 @@ func runUI(f *flags) int {
 	settings.OpenPath = mygo.Shell.OpenPath
 	settings.ShowInFolder = mygo.Shell.ShowItemInFolder
 	e.updateHooks(&settings.Hooks, quit)
-	settings.Info = ui.Info{Version: version, Platform: runtime.GOOS + "/" + runtime.GOARCH, EncoderName: e.enc,
+	settings.Info = ui.Info{Version: build.Version, Commit: build.Revision(), Platform: runtime.GOOS + "/" + runtime.GOARCH, EncoderName: e.enc,
 		DataDir: filepath.Dir(e.paths.Logs), LogsDir: e.paths.Logs, SignedBuild: signedBuild == "1", UpdateKey: updatePub() != nil}
 	if runtime.GOOS != "darwin" {
 		settings.Info.MpvPath = e.mpvPath(e.configSnapshot())

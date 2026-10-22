@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// ProtocolMajor is the NDJSON envelope protocol version.
+const ProtocolMajor = 1
+
 // MaxLine 是单条消息上限。
 const MaxLine = 1 << 20
 
@@ -79,7 +82,7 @@ func (c *Conn) Err() error {
 func (c *Conn) Close() error { return c.rw.Close() }
 
 func (c *Conn) write(m Msg) error {
-	m.V = 1
+	m.V = ProtocolMajor
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -106,7 +109,7 @@ func (c *Conn) readLoop() {
 		if json.Unmarshal(line, &m) != nil {
 			continue // 坏行忽略
 		}
-		if m.V != 1 {
+		if m.V != ProtocolMajor {
 			c.fail(fmt.Errorf("E_PROTO: version %d", m.V))
 			return
 		}
