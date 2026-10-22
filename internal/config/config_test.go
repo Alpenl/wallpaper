@@ -107,7 +107,16 @@ func TestStoreOpenReadOnlyAndSaver(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		s.ConfigSaver.Schedule(func() any { n.Add(1); return s.Config })
 	}
-	time.Sleep(100 * time.Millisecond)
+	deadline := time.Now().Add(10 * time.Second)
+	for n.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for timer-driven snapshot")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := s.ConfigSaver.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	if n.Load() != 1 {
 		t.Fatalf("1 s 内的多次修改应合并成一次写，实际 %d 次", n.Load())
 	}
