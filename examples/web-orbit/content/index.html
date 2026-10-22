@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Quiet orbit</title>
+<style>html,body{margin:0;overflow:hidden;background:#101c29;color:#d4e2eb;font:24px system-ui}canvas{display:block}p{position:absolute;bottom:8%;width:100%;text-align:center;letter-spacing:.12em}</style>
+<canvas></canvas><p>Quiet orbit</p>
+<script>
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d'),caption=document.querySelector('p');
+let props={speed:1,tint:'#84c5e8',mode:'orbit',showCaption:true,caption:'Quiet orbit'};
+window.wpk={onProps(p){props=p;caption.textContent=p.caption;caption.hidden=!p.showCaption}};
+function draw(t){canvas.width=innerWidth;canvas.height=innerHeight;const a=t*.0002*props.speed;ctx.fillStyle=props.tint;ctx.beginPath();ctx.arc(innerWidth/2+Math.cos(a)*innerWidth*.18,innerHeight/2+Math.sin(props.mode==='orbit'?a:a*.4)*innerHeight*.18,Math.min(innerWidth,innerHeight)*.12,0,Math.PI*2);ctx.fill();requestAnimationFrame(draw)}requestAnimationFrame(draw);
+</script></html>

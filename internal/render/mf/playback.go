@@ -38,6 +38,7 @@ func resumePosition(seconds, duration float64) float64 {
 type playbackAPI struct {
 	rate     func(float64) error
 	mute     func(bool) error
+	volume   func(float64) error // 0–1
 	fit      func(string) error
 	seek     func(float64) error
 	play     func() error
@@ -131,6 +132,9 @@ func (s *playbackState) update(api playbackAPI, o render.PlaybackOptions) error 
 	}
 	if o.Muted != old.Muted {
 		changes = append(changes, change{"mute", func() error { return api.mute(o.Muted) }, func() error { return api.mute(old.Muted) }})
+	}
+	if o.Volume != old.Volume {
+		changes = append(changes, change{"volume", func() error { return api.volume(float64(o.Volume) / 100) }, func() error { return api.volume(float64(old.Volume) / 100) }})
 	}
 	if o.Fit != old.Fit {
 		changes = append(changes, change{"fit", func() error { return api.fit(o.Fit) }, func() error { return api.fit(old.Fit) }})

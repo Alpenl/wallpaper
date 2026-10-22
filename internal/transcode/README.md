@@ -29,7 +29,7 @@ The `avconvert` fallback has `Strict`, `GIF`, `FPS30`, `TargetSize` and `Removes
 
 `VerifyOutput` checks the actual MP4 sample tables: one H.264 video track, no audio, dimensions, complete timing table/CFR, frame count/duration consistency and sync-sample spacing. This is not a full bitstream decoder. The cloud tests independently use ffprobe, decode the converted GIF, and inspect H.264 NAL units with FFmpeg's `trace_headers` filter to verify IDR output on the tested Linux software route.
 
-Bounding-box sizing intentionally preserves fit-mode choices. It is not the separate per-display cover-cropped rendition/cache policy described in the broader design document.
+Bounding-box sizing preserves the shared fallback for every fit mode. `CoverEncoder` additionally produces exact even-pixel center-cover renditions, with enlargement allowed. The app derives versioned keys from item/source revision, physical display size and crop rule, serializes these jobs with shared conversion/imports, verifies output through the isolated probe and `VerifyCover`, and publishes each MP4 with a manifest under `cache/<id>/renditions/<key>/`. Equal keys are reused. Non-fill, audible and spanning playback retain the shared/original source; unavailable or failed cover jobs never replace it. Cache cleanup pins desired, loaded and queued keys, while item deletion removes all variants.
 
 ## Native macOS helper
 

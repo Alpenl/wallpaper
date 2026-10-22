@@ -46,7 +46,8 @@ type Deps struct {
 	// Transcode 是 F-07 的系统/用户编码器（transcode.Encoder）；nil 表示本机没有可用编码器。
 	Transcode func(ctx context.Context, src, dst string) error
 	// TranscodeExt 是转码产物扩展名（mac avconvert 输出 .mov，其余 .mp4）。
-	TranscodeExt string
+	TranscodeExt    string
+	EncodeRendition func(context.Context, string, string, transcode.Target) error
 	// ResolveEncoder resolves user-selected encoders again when FFmpegPath changes.
 	ResolveEncoder func(config.Config) (func(context.Context, string, string) error, string)
 	EncoderInfo    func(config.Config) transcode.Capabilities
@@ -75,11 +76,12 @@ type DisplayView struct {
 	HWDec          string
 	Dropped        uint64
 	Metrics        DisplayMetricsView
-	X, Y           int    // 虚拟屏坐标（布局示意图）
-	Reasons        string // 当前生效的暂停/限帧原因（07 章名称，| 分隔）
-	FPSCap         int    // 当前生效的限帧，0 = 不限
-	Note           string // 例如“此后端不支持限帧”
-	Options        config.DisplayOptions
+	X, Y           int                   // 虚拟屏坐标（布局示意图）
+	Reasons        string                // 当前生效的暂停/限帧原因（07 章名称，| 分隔）
+	FPSCap         int                   // 当前生效的限帧，0 = 不限
+	Note           string                // 例如“此后端不支持限帧”
+	Options        config.DisplayOptions // 这块屏的覆盖项（空值 = 跟随壁纸）
+	Effective      config.Playback       // 覆盖项 + 壁纸组属性解析后的实际值
 	Playback       render.Capabilities
 }
 
@@ -93,8 +95,11 @@ type Power struct {
 
 // View 是 UI 用的整体快照。
 type View struct {
-	Layout     string // effective independent | span
-	LayoutNote string // unsupported saved preference/topology
+	SignalConsent  *SignalConsent
+	NetworkConsent *NetworkConsent
+	Renditions     []RenditionView
+	Layout         string // effective independent | span
+	LayoutNote     string // unsupported saved preference/topology
 
 	ImportQueued     int
 	Capabilities     desktop.Caps
@@ -118,7 +123,8 @@ type View struct {
 }
 
 type screen struct {
-	canvas image.Rectangle // empty = independent native surface
+	mediaPath string
+	canvas    image.Rectangle // empty = independent native surface
 
 	n            int // 状态机里的编号（单调递增，不复用）
 	d            desktop.Display
@@ -141,6 +147,10 @@ type screen struct {
 
 // App 是编排器。
 type App struct {
+	signalConsent  *SignalConsent
+	signalAnswer   chan bool
+	networkConsent *NetworkConsent
+	networkAnswer  chan bool
 	itemGeneration map[string]uint64
 	removing       map[string]uint64
 	d              Deps
@@ -166,10 +176,16 @@ type App struct {
 	storageDirty     bool
 	ctx              context.Context
 	importing        bool
+	importCancel     context.CancelFunc
+	importCancelled  bool
 	importQueue      []importRequest
+	renditionQueue   []*renditionJob
+	renditionJobs    map[string]*renditionJob
+	activeRendition  *renditionJob
 	transcodeQueue   []string
 	transcodingID    string
 	transcodeCancel  context.CancelFunc
+	transcodeDone    <-chan struct{}
 	cleaning         bool
 	lastImp          string
 	lastErr          string
@@ -316,7 +332,7 @@ func (a *App) syncDisplays() {
 	newOwner := topologyOwner(want)
 	ownerChanged := !canvas.Empty() && a.spanOwner != newOwner
 	for id, s := range a.screens {
-		if d, ok := want[id]; !ok || d.Bounds != s.d.Bounds || d.Scale != s.d.Scale || d.PixelSize() != s.d.PixelSize() || canvas != s.canvas || ownerChanged || (!canvas.Empty() && d.Primary != s.d.Primary) {
+		if d, ok := want[id]; !ok || d.Bounds != s.d.Bounds || d.Scale != s.d.Scale || (!canvas.Empty() && d.PixelSize() != s.d.PixelSize()) || canvas != s.canvas || ownerChanged || (!canvas.Empty() && d.Primary != s.d.Primary) {
 			a.log.Info("display removed/changed", "display", id)
 			a.closeScreen(s, true)
 			a.ctl.RemoveDisplay(a.now(), s.n)
@@ -326,7 +342,13 @@ func (a *App) syncDisplays() {
 	a.spanOwner = newOwner
 	for id, d := range want {
 		if s := a.screens[id]; s != nil {
-			s.d = d // 名字、主屏标记可能变了（几何没变）
+			pixelsChanged := s.d.PixelSize() != d.PixelSize()
+			s.d = d // Geometry is unchanged; backing raster may change independently.
+			if pixelsChanged && s.item != nil {
+				if !a.updateScreenPlayback(s) {
+					a.restartPlayback(s)
+				}
+			}
 		}
 	}
 	// Register the complete topology before starting any renderer. Spanning audio
@@ -472,6 +494,15 @@ func (a *App) assignItem(s *screen) {
 		if it := a.d.Store.Library.Find(id); it != nil {
 			cp := *it
 			s.item = &cp
+			if m := a.ctl.Display(s.n); m != nil {
+				kind := visibility.Video
+				if cp.Type == "web" {
+					kind = visibility.Web
+				} else if cp.Type == "shader" {
+					kind = visibility.Shader
+				}
+				m.SetKind(kind)
+			}
 		}
 	}
 	a.installSystemWallpaper(s)
@@ -555,14 +586,16 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 	}
 	s.watchStop = make(chan struct{})
 	s.r, s.started, s.metricsReady = r, false, false
-	it := render.Item{ID: s.item.ID, Kind: s.item.Type, Path: filepath.Join(s.item.Dir, filepath.FromSlash(s.item.Entry)),
-		Start: a.d.Store.State.Positions[a.positionKey(s)]}
+	it := render.Item{PackageDir: s.item.Dir, ID: s.item.ID, Kind: s.item.Type, Path: a.renditionPath(s, true),
+		SignalsBlocked: a.signalsBlocked(s), AudioEnabled: signalGrant(s.item, a.d.Store.Config, "audio"), InputEnabled: signalGrant(s.item, a.d.Store.Config, "input"), Viewport: s.d.Bounds,
+		Start: a.d.Store.State.Positions[a.positionKey(s)], NetworkGranted: s.item.NetworkGranted, FPSCap: a.screenFPSCap(s), Properties: s.item.Props.WebValues}
 	if !a.d.Store.Config.Render.ResumePosition {
 		it.Start = 0
 	}
 	if cp, ok := r.(render.CapabilityProvider); ok && !cp.Capabilities().Resume {
 		it.Start = 0
 	}
+	s.mediaPath = it.Path
 	options, note := a.playbackOptions(s, r)
 	s.note = note
 	surf := s.surf
@@ -657,15 +690,25 @@ func EffectiveCap(a, b int) int {
 }
 
 // applyCap 把“档位 ∧ 状态机”的限帧下发给渲染器（F-05）。
-func (a *App) applyCap(s *screen) {
+func (a *App) screenFPSCap(s *screen) int {
 	cfg := a.d.Store.Config
 	if profile := a.d.Store.Assign.OptionsFor(string(s.d.ID)).Profile; profile != "" {
 		cfg.Perf.Profile = profile
+	}
+	if s.item != nil && s.item.Type == "shader" {
+		cfg.Perf.FPSCap = s.item.Props.ShaderFPS
+		if cfg.Perf.FPSCap == 0 {
+			cfg.Perf.FPSCap = 30
+		}
 	}
 	want := EffectiveCap(ProfileCap(cfg), s.machCap)
 	if a.foregroundAction == "saver" {
 		want = EffectiveCap(want, 15)
 	}
+	return want
+}
+func (a *App) applyCap(s *screen) {
+	want := a.screenFPSCap(s)
 	r := s.r
 	if r == nil || !s.started || want == s.curCap {
 		return
@@ -744,8 +787,10 @@ func (a *App) runActions() {
 			switch act.Kind {
 			case visibility.ActCaptureFrame:
 				// 首帧截图在导入时已生成并设为系统壁纸（2.5），这里不再每次截帧
-			case visibility.ActPause, visibility.ActFreeze:
+			case visibility.ActPause:
 				a.applyLevel(s, visibility.L1)
+			case visibility.ActFreeze:
+				a.applyLevel(s, visibility.L2)
 			case visibility.ActRelease:
 				a.applyLevel(s, visibility.L3)
 			case visibility.ActSnapshot:
@@ -867,6 +912,12 @@ func (a *App) signal(r visibility.Reason, disp desktop.DisplayID, on bool, src s
 	} else {
 		a.global[r] = on
 	}
+	for _, screen := range a.sortedScreens() {
+		if updater, ok := screen.r.(render.SignalPolicyUpdater); ok {
+			blocked := a.signalsBlocked(screen)
+			screen.ops <- func() { _ = updater.BlockSignals(blocked) }
+		}
+	}
 	effective := on
 	if idx >= 0 {
 		effective = on && a.reasonEnabled(r)
@@ -964,8 +1015,7 @@ func (a *App) saveConfig() {
 func (a *App) saveLibrary() {
 	l := config.Library{SchemaVersion: config.LibraryVersion, Items: append([]config.Item(nil), a.d.Store.Library.Items...)}
 	for i := range l.Items {
-		l.Items[i].Tags = append([]string(nil), l.Items[i].Tags...)
-		l.Items[i].Colors = append([]string(nil), l.Items[i].Colors...)
+		l.Items[i] = l.Items[i].Clone()
 	}
 	a.d.Store.LibrarySaver.Schedule(func() any { return l })
 }
@@ -1012,7 +1062,7 @@ func levelName(m *visibility.Machine) (string, string) {
 
 func (a *App) publish() {
 	a.sampleMetrics(time.Now())
-	v := View{ImportQueued: len(a.importQueue), Config: a.d.Store.Config.Clone(), Capabilities: a.d.Host.Caps(), Paths: a.d.Store.Paths, Storage: a.storage, ForegroundAction: a.foregroundAction, PausedAll: a.pausedAll, SafeMode: a.d.SafeMode, Importing: a.importing,
+	v := View{SignalConsent: a.signalConsent, NetworkConsent: a.networkConsent, ImportQueued: len(a.importQueue), Config: a.d.Store.Config.Clone(), Capabilities: a.d.Host.Caps(), Paths: a.d.Store.Paths, Storage: a.storage, ForegroundAction: a.foregroundAction, PausedAll: a.pausedAll, SafeMode: a.d.SafeMode, Importing: a.importing,
 		LastImport: a.lastImp, LastError: a.lastErr, ReadOnly: a.d.Store.ReadOnlyWarn,
 		Library: append([]config.Item(nil), a.d.Store.Library.Items...), HasEncoder: a.d.Transcode != nil, Encoder: a.encoderInfo, Default: a.d.Store.Assign.Default,
 		Power:       Power{OnBattery: a.onBattery, Percent: a.battPct, Saver: a.power[visibility.BatterySaver]},
@@ -1029,6 +1079,7 @@ func (a *App) publish() {
 	case a.power[visibility.ThermalSerious]:
 		v.Power.Thermal = "ThermalSerious"
 	}
+	v.Renditions = a.renditionViews()
 	for k, x := range a.transc {
 		v.Transcoding[k] = x
 	}
@@ -1038,7 +1089,7 @@ func (a *App) publish() {
 		_, custom := a.d.Store.Assign.Displays[string(s.d.ID)]
 		dv := DisplayView{ID: string(s.d.ID), Index: i + 1, Name: DisplayName(alias, s.d.Name, i+1), Friendly: s.d.Name, Alias: alias,
 			Device: s.d.Device, Custom: custom, W: s.d.Bounds.Dx(), H: s.d.Bounds.Dy(), PixelW: s.d.PixelSize().X, PixelH: s.d.PixelSize().Y, Primary: s.d.Primary,
-			Metrics: a.displayMetrics(string(s.d.ID)), Level: lv, State: st, X: s.d.Bounds.Min.X, Y: s.d.Bounds.Min.Y, FPSCap: s.curCap, Note: s.note, Options: a.displayOptions(s)}
+			Metrics: a.displayMetrics(string(s.d.ID)), Level: lv, State: st, X: s.d.Bounds.Min.X, Y: s.d.Bounds.Min.Y, FPSCap: s.curCap, Note: s.note, Options: a.displayOptions(s), Effective: a.effectivePlayback(s)}
 		if m := a.ctl.Display(s.n); m != nil {
 			dv.Reasons = reasonsString(m.Effective())
 		}
@@ -1050,6 +1101,9 @@ func (a *App) publish() {
 				dv.Playback = c.Capabilities()
 			}
 			stt := s.r.Stats()
+			if stt.LastErr != "" {
+				dv.Note = joinNotes([]string{dv.Note, stt.LastErr})
+			}
 			dv.Backend, dv.HWDec, dv.Dropped = stt.Backend, stt.HWDec, stt.Dropped
 		}
 		if !s.canvas.Empty() {
@@ -1193,6 +1247,19 @@ func (a *App) Import(path, applyTo string) {
 	})
 }
 
+// CancelImports stops the active importer and drops queued requests. Completed
+// items remain in the library; cancellation never auto-applies a partial batch.
+func (a *App) CancelImports() {
+	a.Do(func() {
+		a.importQueue = nil
+		a.importCancelled = true
+		if a.importCancel != nil {
+			a.importCancel()
+		}
+		a.lastImp = "导入已取消；已完成的项目保留在壁纸库"
+	})
+}
+
 // Imports may replace complete item directories, so they are serialized with
 // encoder commits and removals. Finite import requests take priority over queued
 // optimizations; after the import queue drains, one encoder starts at a time.
@@ -1218,9 +1285,12 @@ func (a *App) beginImport(path, applyTo string) {
 		return
 	}
 	a.importing = true
+	a.importCancelled = false
 	a.lastImp = "正在导入 " + filepath.Base(path) + " …"
-	ctx := a.ctx
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.importCancel = cancel
 	go func() {
+		defer cancel()
 		paths := []string{path}
 		var err error
 		if st, e := os.Stat(path); e == nil && st.IsDir() {
@@ -1228,9 +1298,13 @@ func (a *App) beginImport(path, applyTo string) {
 		}
 		if err != nil {
 			a.Do(func() {
-				a.importing = false
+				a.importing, a.importCancel = false, nil
 				a.lastImp = "导入失败: " + err.Error()
-				a.lastErr = a.lastImp
+				if a.importCancelled {
+					a.lastImp = "导入已取消；已完成的项目保留在壁纸库"
+				} else {
+					a.lastErr = a.lastImp
+				}
 				a.advanceJobs()
 			})
 			return
@@ -1268,7 +1342,11 @@ func (a *App) beginImport(path, applyTo string) {
 			progress := fmt.Sprintf("正在导入 %d/%d：%s", i+1, len(paths), res.Item.Title)
 			result := *res
 			a.Do(func() {
-				replacing := a.d.Store.Library.Find(result.Item.ID) != nil
+				old := a.d.Store.Library.Find(result.Item.ID)
+				replacing := old != nil
+				if replacing && result.Item.Props == (config.ItemProps{}) {
+					result.Item.Props = old.Props // 重新导入同一壁纸时保留用户调好的组属性
+				}
 				a.invalidateItemWork(result.Item.ID)
 				a.d.Store.Library.Upsert(result.Item)
 				if replacing {
@@ -1281,9 +1359,15 @@ func (a *App) beginImport(path, applyTo string) {
 				}
 			})
 		}
+		cancelled := ctx.Err() != nil
 		a.Do(func() {
-			a.importing = false
+			a.importing, a.importCancel = false, nil
 			defer a.advanceJobs()
+			if cancelled || a.importCancelled {
+				a.lastImp = "导入已取消；已完成的项目保留在壁纸库"
+				a.refreshStorage()
+				return
+			}
 			switch {
 			case imported == 1 && failed == 0:
 				a.lastImp = "已导入「" + firstTitle + "」"
@@ -1347,6 +1431,11 @@ func (a *App) Remove(itemID string) {
 		generation := a.itemGeneration[itemID]
 		a.removing[itemID] = generation
 		var wait sync.WaitGroup
+		if a.transcodingID == itemID && a.transcodeDone != nil {
+			done := a.transcodeDone
+			wait.Add(1)
+			go func() { <-done; wait.Done() }()
+		}
 		for _, s := range a.screens {
 			if s.item != nil && s.item.ID == itemID {
 				a.closeScreen(s, false)
@@ -1389,6 +1478,14 @@ func (a *App) removeItemNow(itemID string, generation uint64) {
 			} else if moved != "" {
 				tombstones = append(tombstones, moved)
 			}
+		}
+	}
+	cacheDir := filepath.Join(a.d.Store.Paths.Cache, itemID)
+	if managedChild(a.d.Store.Paths.Cache, cacheDir) {
+		if moved, err := tombstone(cacheDir); err == nil && moved != "" {
+			tombstones = append(tombstones, moved)
+		} else if err != nil {
+			a.lastErr = err.Error()
 		}
 	}
 	a.d.Store.Library.Remove(itemID)
@@ -1460,6 +1557,11 @@ func (a *App) refreshItemScreens(itemID string) {
 
 // Invalidate queued/running work before replacing or removing a library identity.
 func (a *App) invalidateItemWork(itemID string) {
+	for _, j := range a.renditionJobs {
+		if j.item == itemID {
+			j.state = "已取消"
+		}
+	}
 	delete(a.removing, itemID)
 	a.itemGeneration[itemID]++
 	if a.transcodingID == itemID && a.transcodeCancel != nil {
@@ -1514,8 +1616,12 @@ func (a *App) UpdateConfig(fn func(*config.Config)) {
 				a.applyCap(s)
 			}
 		}
-		if c.Render.WindowsBackend != old.Render.WindowsBackend || c.Render.MpvPath != old.Render.MpvPath || c.Render.Hwdec != old.Render.Hwdec || c.Render.Muted != old.Render.Muted || c.Render.ResumePosition != old.Render.ResumePosition || c.Perf.RenderScale != old.Perf.RenderScale {
+		playbackChanged := c.Render.WindowsBackend != old.Render.WindowsBackend || c.Render.MpvPath != old.Render.MpvPath || c.Render.Hwdec != old.Render.Hwdec || c.Render.Muted != old.Render.Muted || c.Render.ResumePosition != old.Render.ResumePosition || c.Perf.RenderScale != old.Perf.RenderScale
+		if c.Privacy.AudioReactive != old.Privacy.AudioReactive || c.Privacy.MouseInput != old.Privacy.MouseInput || playbackChanged {
 			for _, s := range a.sortedScreens() {
+				if !playbackChanged && (s.item == nil || (s.item.Type != "shader" && s.item.Type != "web")) {
+					continue
+				}
 				if c.Render.WindowsBackend != old.Render.WindowsBackend {
 					a.installSystemWallpaper(s)
 				}
@@ -1547,7 +1653,10 @@ func (a *App) rebuildMachines() {
 	a.ctl = visibility.NewController(VisConfig(a.d.Store.Config))
 	a.updateLowBattery()
 	for _, s := range a.sortedScreens() {
-		a.ctl.AddDisplay(now, s.n)
+		m := a.ctl.AddDisplay(now, s.n)
+		if s.item != nil && s.item.Type == "web" {
+			m.SetKind(visibility.Web)
+		}
 	}
 	for r, on := range a.global {
 		if on {
@@ -1672,6 +1781,7 @@ func (a *App) startNextTranscode() {
 			return
 		}
 	}
+	a.startNextRendition()
 }
 
 func (a *App) beginTranscode(itemID string) {
@@ -1688,6 +1798,8 @@ func (a *App) beginTranscode(itemID string) {
 	a.transcodingID = itemID
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.transcodeCancel = cancel
+	done := make(chan struct{})
+	a.transcodeDone = done
 	ext := a.d.TranscodeExt
 	if ext == "" {
 		ext = ".mp4"
@@ -1720,6 +1832,9 @@ func (a *App) beginTranscode(itemID string) {
 		if err == nil && ctx.Err() != nil {
 			err = ctx.Err()
 		}
+		// The encoder and probe have returned and released their file handles.
+		// Removal must wait for this before renaming the source directory on Windows.
+		close(done)
 		committed := make(chan struct{})
 		a.Do(func() {
 			defer close(committed)

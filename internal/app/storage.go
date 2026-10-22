@@ -82,6 +82,10 @@ func (a *App) ClearCache() {
 			a.lastErr = "请等待导入或清理完成后再清理缓存"
 			return
 		}
+		if err := a.cleanRenditions(); err != nil {
+			a.lastErr = err.Error()
+			return
+		}
 		a.cleaning = true
 		keep := map[string]bool{}
 		for _, it := range a.d.Store.Library.Items {

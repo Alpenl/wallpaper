@@ -8,7 +8,7 @@ import (
 
 func TestPlaybackOptionsDefaults(t *testing.T) {
 	d := DefaultPlaybackOptions()
-	if d.Fit != "fill" || d.Speed != 1 || !d.Muted || d.Scale != 1 {
+	if d.Fit != "fill" || d.Speed != 1 || !d.Muted || d.Volume != 100 || d.Scale != 1 {
 		t.Fatalf("unsafe defaults: %+v", d)
 	}
 	o, err := NormalizePlaybackOptions(PlaybackOptions{Muted: true})
@@ -34,6 +34,7 @@ func TestPlaybackOptionsValidation(t *testing.T) {
 	for _, o := range []PlaybackOptions{
 		{Fit: "crop"}, {Speed: -.5}, {Speed: .1}, {Speed: 5}, {Speed: math.NaN()}, {Speed: math.Inf(1)},
 		{Scale: -.5}, {Scale: .1}, {Scale: 1.1}, {Scale: math.NaN()}, {Scale: math.Inf(-1)},
+		{Volume: -1}, {Volume: 101},
 	} {
 		if _, err := NormalizePlaybackOptions(o); err == nil {
 			t.Errorf("accepted invalid options: %+v", o)

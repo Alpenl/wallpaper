@@ -284,6 +284,59 @@ func TestLiveDisplayOptionsDoNotReloadOrResume(t *testing.T) {
 	eventually(t, "unsupported fallback", func() bool { return current() != first && current().isLoaded() })
 }
 
+// Wallpaper-group props travel with the item; a display override wins only for
+// the property it sets, and clearing it falls back to the group's value.
+func TestItemPropsApplyAndDisplayOverridesWin(t *testing.T) {
+	var mu sync.Mutex
+	var rs []*liveRenderer
+	e := setupWith(t, 1, true, func(d *Deps) {
+		d.NewRenderer = func(_ string, _ config.Config, id desktop.DisplayID) render.Renderer {
+			r := &liveRenderer{optionRenderer: &optionRenderer{fakeR: &fakeR{display: id, done: make(chan error, 1)}}}
+			mu.Lock()
+			rs = append(rs, r)
+			mu.Unlock()
+			return r
+		}
+	})
+	current := func() *liveRenderer {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(rs) == 0 {
+			return nil
+		}
+		return rs[len(rs)-1]
+	}
+	options := func() render.PlaybackOptions {
+		r := current()
+		r.lock.Lock()
+		defer r.lock.Unlock()
+		return r.options
+	}
+	eventually(t, "started", func() bool { return current() != nil && current().isLoaded() })
+	item := byID(e.a.View(), "A").ItemID
+	e.a.SetItemProps(item, config.ItemProps{Fit: "stretch", Speed: 1.5, Volume: 40, Audio: "sound"})
+	eventually(t, "group props applied", func() bool {
+		o := options()
+		return o.Fit == "stretch" && o.Speed == 1.5 && o.Volume == 40 && !o.Muted
+	})
+	if p := e.a.View().Library[0].Props; p.Volume != 40 || p.Audio != "sound" {
+		t.Fatal("props not stored on the item", p)
+	}
+	e.a.SetDisplayOptions("A", config.DisplayOptions{Fit: "fit", Audio: "mute"})
+	eventually(t, "override wins", func() bool {
+		o := options()
+		return o.Fit == "fit" && o.Speed == 1.5 && o.Muted
+	})
+	if eff := byID(e.a.View(), "A").Effective; eff.Fit != "fit" || eff.Speed != 1.5 || !eff.Muted || eff.Volume != 40 {
+		t.Fatal("view effective playback", eff)
+	}
+	e.a.SetDisplayOptions("A", config.DisplayOptions{})
+	eventually(t, "cleared override follows group", func() bool {
+		o := options()
+		return o.Fit == "stretch" && !o.Muted
+	})
+}
+
 func TestAppearanceChangeDoesNotRebuildPauseMachines(t *testing.T) {
 	e := setup(t, 1, true)
 	eventually(t, "started", func() bool { return e.cur("A") != nil && e.cur("A").isLoaded() })

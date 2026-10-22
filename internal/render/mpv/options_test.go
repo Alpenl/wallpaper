@@ -50,7 +50,7 @@ func TestPlaybackArgs(t *testing.T) {
 
 func TestConfigure(t *testing.T) {
 	r := New(Options{})
-	p := render.PlaybackOptions{Fit: "fit", Speed: 2, Muted: false, Scale: .75}
+	p := render.PlaybackOptions{Fit: "fit", Speed: 2, Muted: false, Volume: 60, Scale: .75}
 	if err := r.Configure(p); err != nil {
 		t.Fatal(err)
 	}
@@ -71,10 +71,10 @@ func TestConfigure(t *testing.T) {
 }
 
 func TestResumeOptionsPreservePlaybackAndFilters(t *testing.T) {
-	p := render.PlaybackOptions{Fit: "stretch", Speed: .5, Muted: true, Scale: .75}
+	p := render.PlaybackOptions{Fit: "stretch", Speed: .5, Muted: true, Volume: 40, Scale: .75}
 	o := Options{Hwdec: "vaapi", Playback: &p}
 	got := resumeOptions(o, 3.25, 15)
-	want := map[string]string{"start": "3.250", "speed": "0.5", "mute": "yes", "aid": "no", "keepaspect": "no", "panscan": "0", "hwdec": "vaapi-copy", "vf": scaleFilter(.75) + ",@wpcap:fps=15"}
+	want := map[string]string{"start": "3.250", "speed": "0.5", "mute": "yes", "aid": "no", "keepaspect": "no", "panscan": "0", "hwdec": "vaapi-copy", "volume": "40", "vf": scaleFilter(.75) + ",@wpcap:fps=15"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resume options=%v want=%v", got, want)
 	}
@@ -308,5 +308,44 @@ func TestLivePlaybackValidationAndStoppedPlayer(t *testing.T) {
 		if err := r.UpdatePlayback(p); err == nil || errors.Is(err, render.ErrUnsupported) {
 			t.Fatalf("wrong error: %v", err)
 		}
+	}
+}
+
+func TestSourceSwapPreservesPausePositionAndCap(t *testing.T) {
+	r := New(Options{})
+	r.level.Store(int32(visibility.L1))
+	r.cap.Store(15)
+	commands := make(chan []json.RawMessage, 16)
+	r.c = fakeIPC(t, func(c []json.RawMessage) (any, string) {
+		commands <- c
+		if string(c[0]) == `"get_property_string"` {
+			return "12.5", ""
+		}
+		return nil, ""
+	})
+	if err := r.UpdateSource(render.Item{Path: "cover.mp4"}, visibility.L1); err != nil {
+		t.Fatal(err)
+	}
+	<-commands
+	load := <-commands
+	if string(load[0]) != `"loadfile"` || string(load[1]) != `"cover.mp4"` {
+		t.Fatal(load)
+	}
+	var opts map[string]string
+	if err := json.Unmarshal(load[4], &opts); err != nil {
+		t.Fatal(err)
+	}
+	if opts["start"] != "12.500" || opts["pause"] != "yes" || !strings.Contains(opts["vf"], "fps=15") {
+		t.Fatal(opts)
+	}
+	pause := <-commands
+	if string(pause[1]) != `"pause"` || string(pause[2]) != "true" {
+		t.Fatal(pause)
+	}
+	if err := r.UpdateSource(render.Item{Path: "later.mp4", Start: 12.5}, visibility.L3); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 0 || r.item.Path != "later.mp4" {
+		t.Fatal("L3 should defer load")
 	}
 }

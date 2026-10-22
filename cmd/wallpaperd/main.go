@@ -31,7 +31,10 @@ import (
 	imgr "wpapp/internal/render/image"
 	"wpapp/internal/render/mf"
 	"wpapp/internal/render/mpv"
+	"wpapp/internal/render/shader"
+	webwall "wpapp/internal/render/web"
 	"wpapp/internal/telemetry"
+	"wpapp/internal/transcode"
 )
 
 var version = "0.3.0-mvp"
@@ -47,6 +50,8 @@ type flags struct {
 	importPath    string
 	duration      time.Duration
 	debug         bool
+	shaderhost    bool
+	webhost       bool
 	mfhost        bool
 	pipe, swap    string
 	logPath       string
@@ -54,6 +59,7 @@ type flags struct {
 	in            string
 	out           string
 	width, height int
+	cover         bool
 	version       bool
 	statusOut     string
 	exportDiag    bool
@@ -72,6 +78,8 @@ func parseFlags(args []string) *flags {
 	fs.DurationVar(&f.duration, "duration", 0, "headless：运行时长（0=直到 Ctrl+C）")
 	fs.StringVar(&f.statusOut, "status", "", "headless：退出前把状态 JSON 写到此文件（- 为 stdout）")
 	fs.BoolVar(&f.debug, "debug", false, "调试日志")
+	fs.BoolVar(&f.shaderhost, "shaderhost", false, "internal: isolated native shader renderer")
+	fs.BoolVar(&f.webhost, "webhost", false, "internal: isolated web renderer")
 	fs.BoolVar(&f.mfhost, "mfhost", false, "内部：MF 渲染子进程")
 	fs.StringVar(&f.pipe, "pipe", "", "内部：管道名")
 	fs.StringVar(&f.swap, "swap", "flip", "内部：MF 交换链模式")
@@ -79,6 +87,7 @@ func parseFlags(args []string) *flags {
 	fs.StringVar(&f.helper, "helper", "", "内部：probe / transcode")
 	fs.StringVar(&f.in, "in", "", "内部：helper 输入文件")
 	fs.StringVar(&f.out, "out", "", "内部：helper 输出文件")
+	fs.BoolVar(&f.cover, "cover", false, "内部：居中裁切")
 	fs.IntVar(&f.width, "width", 3840, "内部：转换目标宽度")
 	fs.IntVar(&f.height, "height", 2160, "内部：转换目标高度")
 	fs.BoolVar(&f.version, "version", false, "打印版本")
@@ -96,8 +105,18 @@ func main() {
 	case f.version:
 		fmt.Println("wallpaperd", version, runtime.GOOS+"/"+runtime.GOARCH)
 		return
+	case f.shaderhost:
+		os.Exit(shader.HostMain())
+	case f.webhost:
+		os.Exit(webwall.HostMain())
 	case f.mfhost:
 		os.Exit(mf.HostMain(f.pipe, f.swap, f.logPath))
+	case f.helper == "shader-preview":
+		if err := shader.PreviewMain(f.in, f.out); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
 	case f.helper == "probe":
 		info, err := media.ProbeFile(f.in)
 		if err != nil {
@@ -184,7 +203,7 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 	exe, _ := os.Executable()
 	e := &env{paths: paths, store: store, log: log, logw: lw, exe: exe, initialConfig: store.Config.Clone()}
 	e.host = newHost(f, log)
-	imp := importer.Options{Library: paths.Library, Cache: paths.Cache, GOOS: runtime.GOOS, Lang: store.Config.UI.Lang,
+	imp := importer.Options{ShaderSnapshot: func(dir, dst string) error { return shader.Preview(e.exe, dir, dst) }, Library: paths.Library, Cache: paths.Cache, GOOS: runtime.GOOS, Lang: store.Config.UI.Lang,
 		Probe: e.probe}
 	imp.Snapshot = e.snapshot
 	enc, ext, encName := e.encoder(store.Config)
@@ -195,12 +214,25 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 			fn, ext, _ := e.encoder(cfg)
 			return fn, ext
 		},
+		EncodeRendition: func(ctx context.Context, src, dst string, target transcode.Target) error {
+			cfg := e.configSnapshot()
+			fn, _, _ := transcode.CoverEncoder(runtime.GOOS, cfg.Render.FFmpegPath, e.nativeEncoderHelper(), target)
+			if fn == nil {
+				return transcode.ErrNoEncoder
+			}
+			return fn(ctx, src, dst)
+		},
 		EncoderInfo: e.encoderCapabilities,
 		ProbeMedia:  e.probeContext,
 		Import: func(ctx context.Context, src string) (*importer.Result, error) {
 			opts := imp
 			cfg := e.configSnapshot()
 			opts.Lang = cfg.UI.Lang
+			opts.BeforeReplace = func(id string) error { return e.app.PreparePackageReplacement(ctx, id) }
+			if !f.headless {
+				opts.ConsentSignal = func(title, permission string) bool { return e.app.RequestSignalConsent(ctx, title, permission) }
+				opts.ConsentNetwork = func(title string, hosts []string) bool { return e.app.RequestNetworkConsent(ctx, title, hosts) }
+			}
 			opts.Transcode, opts.TranscodeExt, _ = e.encoder(cfg)
 			opts.CanTranscodeGIF = e.encoderCapabilities(cfg).GIF
 			return importer.Import(ctx, src, opts)
@@ -270,6 +302,12 @@ func (e *env) snapshot(src, dst string) error {
 }
 
 func (e *env) newRenderer(kind string, cfg config.Config, d desktop.DisplayID) render.Renderer {
+	if kind == "shader" {
+		return shader.New(e.exe)
+	}
+	if kind == "web" {
+		return webwall.New(e.exe)
+	}
 	if kind == "image" {
 		return imgr.New()
 	}

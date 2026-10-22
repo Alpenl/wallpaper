@@ -111,7 +111,7 @@ func playbackArgs(p render.PlaybackOptions) []string {
 		keep, pan = "no", "0"
 	}
 	a := []string{"--keepaspect=" + keep, "--panscan=" + pan,
-		"--speed=" + strconv.FormatFloat(p.Speed, 'f', -1, 64), "--mute=" + yesno(p.Muted)}
+		"--speed=" + strconv.FormatFloat(p.Speed, 'f', -1, 64), "--mute=" + yesno(p.Muted), "--volume=" + strconv.Itoa(p.Volume)}
 	if p.Muted {
 		// No audio track means no needless audio decode/device work by default.
 		a = append(a, "--no-audio")
@@ -176,6 +176,9 @@ func (r *Renderer) UpdatePlayback(p render.PlaybackOptions) error {
 	}
 	if p.Speed != old.Speed {
 		changes = append(changes, change{"speed", old.Speed, p.Speed})
+	}
+	if p.Volume != old.Volume {
+		changes = append(changes, change{"volume", old.Volume, p.Volume})
 	}
 	for i, ch := range changes {
 		if _, err := r.c.cmd("set_property", ch.name, ch.next); err != nil {
@@ -364,7 +367,7 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 func resumeOptions(o Options, pos float64, fps int) map[string]string {
 	p := playbackOptions(o)
 	options := map[string]string{"start": strconv.FormatFloat(pos, 'f', 3, 64),
-		"speed": strconv.FormatFloat(p.Speed, 'f', -1, 64), "mute": yesno(p.Muted),
+		"speed": strconv.FormatFloat(p.Speed, 'f', -1, 64), "mute": yesno(p.Muted), "volume": strconv.Itoa(p.Volume),
 		"keepaspect": "yes", "panscan": "1", "aid": "auto", "hwdec": playbackHwdec(o)}
 	if p.Muted {
 		options["aid"] = "no"
@@ -518,3 +521,32 @@ var _ render.Configurable = (*Renderer)(nil)
 var _ render.PlaybackUpdater = (*Renderer)(nil)
 var _ render.CapabilityProvider = (*Renderer)(nil)
 var _ io.Closer = (*client)(nil)
+
+// UpdateSource keeps the mpv process/surface and restores the sampled position,
+// effective options, cap and pause policy. L3 changes only the deferred source.
+func (r *Renderer) UpdateSource(it render.Item, level visibility.Level) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.c == nil {
+		return render.ErrUnsupported
+	}
+	if level >= visibility.L3 {
+		r.item = it
+		r.pos = it.Start
+		return nil
+	}
+	if pos, err := r.c.getFloat("time-pos"); err == nil {
+		it.Start = pos
+	}
+	options := resumeOptions(r.o, it.Start, int(r.cap.Load()))
+	options["pause"] = yesno(level > visibility.L0)
+	if _, err := r.c.cmd("loadfile", it.Path, "replace", -1, options); err != nil {
+		return err
+	}
+	if err := r.c.setPause(level > visibility.L0); err != nil {
+		return err
+	}
+	r.item = it
+	r.pos = it.Start
+	return nil
+}

@@ -1,8 +1,8 @@
-// Package importer 实现 F-11（MVP 只导入视频/图片）与拖入 mp4/mov：
+// Package importer 实现本地媒体与安全壁纸包导入（F-11/F-12）：
 //   - 普通视频或图片文件：探测 → 判断是否需要转码 → 生成 manifest v0 的包目录 → 首帧截图；
-//   - .wpk：wpk.Extract 安全解压；
-//   - Lively zip 或目录（LivelyInfo.json）：只接受 video/gif/picture；
-//   - Wallpaper Engine 项目目录（project.json）：只接受 type=video。
+//   - .wpk / manifest 目录：共享 wpk 安全校验；
+//   - Lively zip 或目录：video/gif/picture 与纯本地 web；
+//   - Wallpaper Engine 项目目录：video 与不要求音频处理的本地 web。
 //
 // 媒体探测与截图通过 Options 里的函数完成，产品里它们都在 helper 子进程里运行（10.4）。
 package importer
@@ -28,6 +28,7 @@ import (
 
 // Options 是导入依赖。
 type Options struct {
+	ShaderSnapshot  func(packageDir, dst string) error
 	Library         string
 	Cache           string
 	GOOS            string
@@ -36,6 +37,9 @@ type Options struct {
 	Transcode       func(ctx context.Context, src, dst string) error // 可为 nil（本平台无系统编码器）
 	TranscodeExt    string                                           // .mp4/.mov/.m4v; empty preserves the legacy .mov contract
 	CanTranscodeGIF bool                                             // only advertise when this encoder accepts GIF sources
+	BeforeReplace   func(id string) error
+	ConsentSignal   func(title, permission string) bool     // nil means deny
+	ConsentNetwork  func(title string, hosts []string) bool // nil means deny; called only for a declared permission
 	Lang            string
 }
 
@@ -45,14 +49,14 @@ type Result struct {
 	Warnings []string
 }
 
-// ErrUnsupported 表示素材类型不在 MVP 范围内（例如 Web 壁纸）。
+// ErrUnsupported 表示素材要求未实现的类型或功能（例如可执行程序、音频可视化）。
 var ErrUnsupported = errors.New("import: not supported in this version")
 
 // ErrNeedsTranscode 表示本平台播放器不能直接播放，且没有可用的系统编码器。
 var ErrNeedsTranscode = errors.New("import: needs transcoding")
 
 // SupportedExts 是可以拖入的扩展名。
-var SupportedExts = []string{".mp4", ".mov", ".m4v", ".webm", ".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".wpk", ".zip"}
+var SupportedExts = []string{".mp4", ".mov", ".m4v", ".webm", ".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".wpk", ".zip", ".glsl", ".frag"}
 
 // Import 按来源分派。
 func Import(ctx context.Context, src string, o Options) (*Result, error) {
@@ -67,11 +71,13 @@ func Import(ctx context.Context, src string, o Options) (*Result, error) {
 		case exists(filepath.Join(src, "project.json")):
 			return importWE(ctx, src, o)
 		case exists(filepath.Join(src, "manifest.json")):
-			return nil, fmt.Errorf("%w: 请导入打包好的 .wpk 文件", ErrUnsupported)
+			return importFolder(src, o)
 		}
 		return nil, fmt.Errorf("%w: 目录里没有 LivelyInfo.json 或 project.json", ErrUnsupported)
 	}
 	switch strings.ToLower(filepath.Ext(src)) {
+	case ".glsl", ".frag":
+		return importShader(src, o)
 	case ".wpk":
 		return importWPK(src, o)
 	case ".zip":
@@ -131,22 +137,50 @@ func importWPK(src string, o Options) (*Result, error) {
 				zr.Close()
 				return nil, e
 			}
-			if m.Type != "video" && m.Type != "image" {
+			if e := supportedManifest(m); e != nil {
 				zr.Close()
-				return nil, fmt.Errorf("%w: %s 类型的壁纸", ErrUnsupported, m.Type)
+				return nil, e
 			}
 			break
 		}
 	}
 	zr.Close()
-	r, err := wpk.Extract(src, o.Library)
+	if err := validateShaderArchive(src); err != nil {
+		return nil, err
+	}
+	granted := false
+	audioGranted, inputGranted := false, false
+	r, err := wpk.ExtractChecked(src, o.Library, func(m *wpk.Manifest) error {
+		if err := supportedManifest(m); err != nil {
+			return err
+		}
+		if m.Type == "web" {
+			for _, p := range m.Web.Permissions {
+				if p == "network" && o.ConsentNetwork != nil {
+					granted = o.ConsentNetwork(m.Title.Pick(o.Lang), append([]string(nil), m.Web.NetworkAllow...))
+				}
+			}
+		}
+		if o.ConsentSignal != nil {
+			if m.Declares("audio") {
+				audioGranted = o.ConsentSignal(m.Title.Pick(o.Lang), "audio")
+			}
+			if m.Declares("input") {
+				inputGranted = o.ConsentSignal(m.Title.Pick(o.Lang), "input")
+			}
+		}
+		if o.BeforeReplace != nil {
+			return o.BeforeReplace(m.ID)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
 	m := r.Manifest
-	if m.Type != "video" && m.Type != "image" {
+	if e := supportedManifest(m); e != nil {
 		os.RemoveAll(r.Dir)
-		return nil, fmt.Errorf("%w: %s 类型的壁纸", ErrUnsupported, m.Type)
+		return nil, e
 	}
 	it := config.Item{ID: m.ID, Dir: r.Dir, Schema: *m.Schema, Origin: "native", Title: m.Title.Pick(o.Lang), Type: m.Type,
 		Entry: m.Entry, Transcode: "none", AddedAt: time.Now().UTC()}
@@ -157,6 +191,33 @@ func importWPK(src string, o Options) (*Result, error) {
 		it.Codec = m.Video.Codec
 	}
 	applyMetadata(&it, m)
+	if m.Type == "shader" {
+		preview := filepath.Join(it.Dir, "preview.png")
+		if o.ShaderSnapshot == nil || o.ShaderSnapshot(it.Dir, preview) != nil {
+			b, _ := os.ReadFile(filepath.Join(it.Dir, filepath.FromSlash(m.Entry)))
+			if e := shaderPlaceholder(preview, b); e != nil {
+				return nil, e
+			}
+		}
+	}
+	if m.Type == "web" || m.Type == "shader" {
+		it.Web = m.Web
+		it.PropertyDefs = m.Properties
+		it.NetworkGranted = granted
+		it.AudioGranted, it.InputGranted = audioGranted, inputGranted
+		for _, p := range []string{"audio", "input"} {
+			if m.Declares(p) {
+				it.Permissions = append(it.Permissions, p)
+			}
+		}
+		for _, name := range []string{"preview.png", "preview.webp"} {
+			if exists(filepath.Join(it.Dir, name)) {
+				it.Snapshot = filepath.Join(it.Dir, name)
+				break
+			}
+		}
+		return &Result{Item: it}, nil
+	}
 	res := &Result{Item: it}
 	snapshotItem(o, &res.Item, filepath.Join(r.Dir, filepath.FromSlash(m.Entry)), res)
 	return res, nil
@@ -437,6 +498,12 @@ func importLively(ctx context.Context, dir string, o Options) (*Result, error) {
 		return nil, fmt.Errorf("import: LivelyInfo.json: %w", err)
 	}
 	t := li.typeName()
+	if t == "web" {
+		if li.IsAbsolutePath {
+			return nil, fmt.Errorf("%w: web entry must be inside its package", ErrUnsupported)
+		}
+		return importWeb(dir, li.FileName, li.Title, "lively", o)
+	}
 	switch t {
 	case "video", "gif", "picture":
 	default:
@@ -489,6 +556,9 @@ func importWE(ctx context.Context, dir string, o Options) (*Result, error) {
 	var p weProject
 	if err := readJSON(filepath.Join(dir, "project.json"), &p); err != nil {
 		return nil, fmt.Errorf("import: project.json: %w", err)
+	}
+	if strings.EqualFold(p.Type, "web") {
+		return importWeb(dir, p.File, p.Title, "we", o)
 	}
 	if !strings.EqualFold(p.Type, "video") {
 		return nil, fmt.Errorf("%w: Wallpaper Engine 类型 %s（MVP 只导入 video）", ErrUnsupported, p.Type)

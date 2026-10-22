@@ -32,14 +32,14 @@ func main() {
 		panic(err)
 	}
 	thumbs := map[string]string{}
-	for i, id := range []string{"aurora", "ocean", "city", "forest", "pixel", "mount"} {
+	for i, id := range []string{"aurora", "ocean", "city", "forest", "pixel", "mount", "web-orbit", "shader-waves"} {
 		p := filepath.Join(*out, ".thumbs", id+".png")
 		os.MkdirAll(filepath.Dir(p), 0o755)
 		save(p, scene(i, 640, 360))
 		thumbs[id] = p
 	}
 	shots := []struct{ name, page, sel string }{
-		{"01-library", "library", "ocean"}, {"02-displays", "displays", ""}, {"02b-displays-rename", "displays", ""}, {"02c-displays-alias", "displays", ""},
+		{"01-library", "library", "ocean"}, {"01b-web", "library", "web-orbit"}, {"01c-shader", "library", "shader-waves"}, {"02-displays", "displays", ""}, {"02b-displays-rename", "displays", ""}, {"02c-displays-alias", "displays", ""},
 		{"03-playback", "playback", ""}, {"04-rules", "rules", ""}, {"05-general", "general", ""}, {"06-versions", "versions", ""}, {"07-about", "about", ""},
 	}
 	for _, mode := range []string{"light", "dark"} {

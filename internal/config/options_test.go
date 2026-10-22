@@ -28,6 +28,49 @@ func TestDisplayOptionsNormalizeAndMigration(t *testing.T) {
 	}
 }
 
+func TestResolvePlaybackPrecedence(t *testing.T) {
+	if p := ResolvePlayback(ItemProps{}, DisplayOptions{}, true); p != (Playback{Fit: "fill", Speed: 1, Volume: 100, Muted: true}) {
+		t.Fatal("defaults", p)
+	}
+	item := ItemProps{Fit: "fit", Speed: 2, Volume: 30, Audio: "sound"}
+	if p := ResolvePlayback(item, DisplayOptions{}, true); p != (Playback{Fit: "fit", Speed: 2, Volume: 30, Muted: false}) {
+		t.Fatal("group props", p)
+	}
+	if p := ResolvePlayback(item, DisplayOptions{Fit: "stretch", Audio: "mute"}, false); p != (Playback{Fit: "stretch", Speed: 2, Volume: 30, Muted: true}) {
+		t.Fatal("display overrides only what it sets", p)
+	}
+	if p := ResolvePlayback(ItemProps{Fit: "crop", Speed: 9, Volume: 500, Audio: "loud"}, DisplayOptions{Speed: math.NaN()}, false); p != (Playback{Fit: "fill", Speed: 1, Volume: 100, Muted: false}) {
+		t.Fatal("invalid values fall back to defaults", p)
+	}
+}
+
+// v2 options always stored fill/1; those were the defaults, so v3 treats them as
+// "follow the wallpaper" while real overrides survive.
+func TestAssignmentsV2OptionsBecomeInheritable(t *testing.T) {
+	t.Setenv("WPAPP_HOME", t.TempDir())
+	p, _ := DefaultPaths()
+	if err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"schemaVersion":2,"displays":{},"spanOptions":{"fit":"fill","speed":1,"paused":false},"options":{"A":{"fit":"fill","speed":1,"paused":true},"B":{"fit":"stretch","speed":2,"paused":false}}}`
+	if err := os.WriteFile(filepath.Join(p.Config, "assignments.json"), []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := s.Assign.Options["A"]; a != (DisplayOptions{Paused: true}) {
+		t.Fatal("defaults should become inherit", a)
+	}
+	if b := s.Assign.Options["B"]; b.Fit != "stretch" || b.Speed != 2 {
+		t.Fatal("explicit values must stay overrides", b)
+	}
+	if s.Assign.SpanOptions.Overrides() || s.Assign.SchemaVersion != AssignmentsVersion {
+		t.Fatal("span options", s.Assign.SpanOptions, s.Assign.SchemaVersion)
+	}
+}
+
 func TestOldConfigSeedsNewPrivacySafeDefaults(t *testing.T) {
 	t.Setenv("WPAPP_HOME", t.TempDir())
 	p, _ := DefaultPaths()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path"
 	"regexp"
 	"strings"
@@ -79,14 +80,15 @@ type Shader struct {
 }
 
 type Prop struct {
-	Key     string            `json:"key"`
-	Type    string            `json:"type"`
-	Label   I18n              `json:"label,omitempty"`
-	Default json.RawMessage   `json:"default"`
-	Min     *float64          `json:"min,omitempty"`
-	Max     *float64          `json:"max,omitempty"`
-	Step    *float64          `json:"step,omitempty"`
-	Options []json.RawMessage `json:"options,omitempty"`
+	MaxLength int               `json:"maxLength,omitempty"`
+	Key       string            `json:"key"`
+	Type      string            `json:"type"`
+	Label     I18n              `json:"label,omitempty"`
+	Default   json.RawMessage   `json:"default"`
+	Min       *float64          `json:"min,omitempty"`
+	Max       *float64          `json:"max,omitempty"`
+	Step      *float64          `json:"step,omitempty"`
+	Options   []json.RawMessage `json:"options,omitempty"`
 }
 
 type Perf struct {
@@ -102,6 +104,7 @@ type Origin struct {
 
 // Manifest 是 manifest.json v0（10.3）。Raw 保留原始字节，再次导出时不丢失未知字段。
 type Manifest struct {
+	Permissions []string `json:"permissions,omitempty"`
 	Format      string   `json:"format"`
 	Schema      *int     `json:"schema"`
 	MinApp      string   `json:"minApp,omitempty"`
@@ -161,6 +164,14 @@ func validI18n(t I18n, field string, required bool) error {
 
 // Validate 实现 schema 的全部约束（路径规则用 CheckPath）。
 func (m *Manifest) Validate() error {
+	seenPermissions := map[string]bool{}
+	for _, p := range m.Permissions {
+		if (m.Type != "shader" && m.Type != "web") || (p != "audio" && p != "input") || seenPermissions[p] {
+			return bad("bad permission %q", p)
+		}
+		seenPermissions[p] = true
+	}
+
 	if m.Format != "wpk" {
 		return bad("format must be \"wpk\"")
 	}
@@ -236,7 +247,7 @@ func (m *Manifest) Validate() error {
 		}
 		seen := map[string]bool{}
 		for _, p := range m.Web.Permissions {
-			if p != "network" && p != "audio-reactive" || seen[p] {
+			if p != "network" && p != "audio-reactive" && p != "audio" && p != "input" || seen[p] {
 				return bad("bad web permission %q", p)
 			}
 			seen[p] = true
@@ -262,7 +273,12 @@ func (m *Manifest) Validate() error {
 	if len(m.Properties) > 64 {
 		return bad("at most 64 properties")
 	}
+	keys := map[string]bool{}
 	for _, p := range m.Properties {
+		if keys[p.Key] {
+			return bad("duplicate property key %q", p.Key)
+		}
+		keys[p.Key] = true
 		if err := p.validate(); err != nil {
 			return err
 		}
@@ -295,12 +311,20 @@ func (p Prop) validate() error {
 	if err := validI18n(p.Label, "property label", false); err != nil {
 		return err
 	}
+	if p.MaxLength < 0 || p.MaxLength > 2000 {
+		return bad("invalid maxLength")
+	}
 	var d any
-	_ = json.Unmarshal(p.Default, &d)
+	if err := json.Unmarshal(p.Default, &d); err != nil {
+		return bad("invalid property default")
+	}
 	switch p.Type {
 	case "slider":
 		if p.Min == nil || p.Max == nil {
 			return bad("slider %s: min/max required", p.Key)
+		}
+		if math.IsNaN(*p.Min) || math.IsInf(*p.Min, 0) || math.IsNaN(*p.Max) || math.IsInf(*p.Max, 0) || *p.Min > *p.Max || p.Step != nil && (math.IsNaN(*p.Step) || math.IsInf(*p.Step, 0) || *p.Step <= 0) {
+			return bad("invalid slider range/step")
 		}
 		if _, ok := d.(float64); !ok {
 			return bad("slider %s: default must be number", p.Key)
@@ -310,6 +334,18 @@ func (p Prop) validate() error {
 			return bad("bool %s: default must be boolean", p.Key)
 		}
 	case "select":
+		for _, o := range p.Options {
+			var option struct {
+				Value json.RawMessage `json:"value"`
+				Label I18n            `json:"label"`
+			}
+			if json.Unmarshal(o, &option) != nil || option.Value == nil {
+				return bad("select options require value")
+			}
+			if err := validI18n(option.Label, "option label", false); err != nil {
+				return err
+			}
+		}
 		if len(p.Options) == 0 {
 			return bad("select %s: options required", p.Key)
 		}
@@ -324,7 +360,7 @@ func (p Prop) validate() error {
 	default:
 		return bad("property %s: unknown type %q", p.Key, p.Type)
 	}
-	return nil
+	return p.ValidateValue(p.Default)
 }
 
 // 入口扩展名与 type 匹配（10.4 语义校验）。
@@ -358,3 +394,20 @@ func IsVideoExt(name string) bool {
 }
 
 func marshalManifest(m *Manifest) ([]byte, error) { return json.MarshalIndent(m, "", "  ") }
+
+// Declares checks native permissions and the legacy web permission location.
+func (m *Manifest) Declares(permission string) bool {
+	for _, p := range m.Permissions {
+		if p == permission {
+			return true
+		}
+	}
+	if m.Type == "web" && m.Web != nil {
+		for _, p := range m.Web.Permissions {
+			if p == permission {
+				return true
+			}
+		}
+	}
+	return false
+}

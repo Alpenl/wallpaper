@@ -12,6 +12,49 @@ import (
 // English UI catalog. User-authored titles, paths, and backend error details
 // are deliberately not rewritten when they have no exact catalog entry.
 var english = map[string]string{
+	"允许": "Allow", "拒绝": "Deny",
+	"允许音频响应？": "Allow audio response?",
+	"允许鼠标交互？": "Allow mouse interaction?",
+	"仅在启用总开关且壁纸可见时采集系统音频。原始音频留在渲染进程，可在属性中撤销。": "Capture system audio only when the master switch is on and the wallpaper is visible. Raw audio stays in the renderer. Revoke access in properties.",
+	"仅在启用总开关且指针下的桌面可见时传递鼠标位置和按钮，不读取键盘。":       "Share mouse position and buttons only when the master switch is on and the desktop under the pointer is visible. Keyboard input is never read.",
+	"音频响应": "Audio response", "鼠标交互": "Mouse interaction", "撤销音频权限": "Revoke audio access", "撤销鼠标权限": "Revoke mouse access", "权限未授予": "Permission not granted",
+	"壁纸交互": "Wallpaper interaction", "需在导入时单独授权；默认关闭": "Requires separate consent at import; off by default",
+	"系统音频仅在隔离渲染进程中处理": "System audio is processed only in the isolated renderer",
+	"仅传递桌面上的鼠标位置和按钮":  "Share only mouse position and buttons on the desktop",
+
+	"视频 / 图片 / Shader / 壁纸包": "Video / Image / Shader / Wallpaper package",
+	"支持视频、图片、.glsl / .frag Shader、.wpk、Lively 壁纸包和 Wallpaper Engine 本地壁纸":           "Supports videos, images, .glsl / .frag shaders, .wpk, Lively packages, and local Wallpaper Engine wallpapers",
+	"网页使用独立 WebView 宿主，联网默认拒绝。Shader 在 Windows 使用 D3D11、macOS 使用 Metal；Linux 暂不支持。": "Web wallpapers use isolated WebView hosts with network access denied by default. Shaders use D3D11 on Windows and Metal on macOS; Linux is not supported.",
+	"渲染比例":   "Render scale",
+	"Shader": "Shader",
+	"将此屏壁纸复制到所有显示器": "Copy this display’s wallpaper to all displays",
+	"属性值": "Value",
+	"本地网页壁纸在 Windows 和 macOS 的独立沙箱宿主中播放，联网默认拒绝。Linux 不支持网页播放；Shader 尚未实现。": "Local web wallpapers run in isolated hosts on Windows and macOS, with network access denied by default. Linux web playback and Shader rendering are unsupported.",
+	"开关":       "Switch",
+	"选择显示器 %d": "Select display %d",
+	"网络访问":     "Network access",
+	"已拒绝联网":    "Network access denied",
+	"撤销联网权限":   "Revoke network access",
+	"允许壁纸联网？":  "Allow this wallpaper to access the network?",
+	"拒绝联网":     "Deny network access",
+	"允许联网":     "Allow network access",
+	"该壁纸请求联网。默认拒绝；允许后可在属性中撤销。": "This wallpaper requests network access. Denied by default; you can revoke access in Properties.",
+	"已取消":       "Cancelled",
+	"为每块屏优化":    "Optimize for each display",
+	"正在优化屏幕版本…": "Optimizing display renditions…",
+	"取消屏幕优化":    "Cancel display optimization",
+	"优化屏幕版本":    "Optimize display renditions",
+	"使用共享版本":    "Using shared rendition",
+	"尚未优化":      "Not optimized",
+	"优化失败":      "Optimization failed",
+
+	"当前暂停原因":             "Current pause reasons",
+	"继续后仍会遵循自动暂停规则":      "Automatic pause policies still apply after resuming.",
+	"导入已取消；已完成的项目保留在壁纸库": "Import cancelled; completed items remain in the library",
+	"已取消文件选择":            "File selection cancelled",
+	"取消导入":               "Cancel import",
+	"文件选择失败：":            "File selection failed: ",
+
 	"mpv 路径":      "mpv path",
 	"mpv 可执行文件路径": "mpv executable path",
 	"保存 mpv 路径":   "Save mpv path",
@@ -21,7 +64,48 @@ var english = map[string]string{
 	"Windows 请选择 mpv.exe，并保留所需 DLL 等配套文件；不要选择 libmpv DLL。macOS 使用系统 AVFoundation，不需要 mpv。": "On Windows, select mpv.exe and keep its required DLLs and support files together, not a libmpv DLL. macOS uses system AVFoundation and does not need mpv.",
 	"找不到可执行的 mpv，请检查路径和文件权限。":                                                              "Could not find an executable mpv. Check its path and permissions.",
 
-	"删除「%s」？":           "Remove “%s”?",
+	"删除「%s」？":   "Remove “%s”?",
+	"壁纸组内容":     "In this wallpaper",
+	"画面":        "Visual",
+	"声音":        "Sound",
+	"图片壁纸没有声音":  "Image wallpapers have no sound",
+	"播放声音":      "Play sound",
+	"播放属性":      "Playback",
+	"速度":        "Speed",
+	"详细信息":      "Details",
+	"目标显示器":     "Target display",
+	"开始使用":      "Get started",
+	"选择显示器":     "Select display",
+	"导入文件夹":     "Import folder",
+	"排序":        "Sort",
+	"最近导入":      "Recently added",
+	"属性":        "Properties",
+	"应用到所有显示器":  "Apply to all displays",
+	"时长":        "Duration",
+	"屏 ":        "Display ",
+	"壁纸组属性":     "Wallpaper properties",
+	"静音":        "Muted",
+	"跟随壁纸":      "Follow wallpaper",
+	"音量":        "Volume",
+	"、":         ", ",
+	"这张壁纸自己的设置": "This wallpaper's own setting",
+	"未单独设置，跟随默认静音设置":    "Not set; follows the default mute setting",
+	"随壁纸保存，应用到任何显示器都生效": "Saved with the wallpaper and used on every display",
+	"壁纸填充方式":            "Wallpaper fit",
+	"壁纸播放速度":            "Wallpaper playback speed",
+	"静态图片不支持速度":         "Still images have no speed",
+	"速度 %g 倍":           "speed %g×",
+	"%s 单独覆盖了：%s":       "%s overrides: %s",
+	"在这块屏上以覆盖为准，其他屏使用壁纸自带的属性。": "This display uses its overrides; other displays use the wallpaper's own properties.",
+	"清除覆盖":         "Clear overrides",
+	"已清除覆盖":        "Overrides cleared",
+	"这块屏的声音":       "Sound on this display",
+	"已单独设置，不再跟随壁纸": "Overridden on this display; no longer follows the wallpaper.",
+	"填充会裁切边缘，适应保留全图，拉伸铺满屏幕。当前：%s":                "Fill crops edges, Fit shows the whole image, Stretch fills the screen. Current: %s",
+	"跟随壁纸；修改即为这块屏单独设置。不支持即时调整的后端会重新加载，静态图片不支持速度": "Follows the wallpaper; changing it overrides this display. Backends without live updates reload; still images have no speed.",
+	"默认使用壁纸自己的声音设置。当前：%s":                        "Uses the wallpaper's own sound setting by default. Current: %s",
+	"默认设置：只作用于没有单独设置声音的壁纸；修改后重新加载动态壁纸":           "Default for wallpapers without their own sound setting. Changing it reloads dynamic wallpapers.",
+	"已停用":               "Disabled",
 	"无法探测媒体格式":          "Could not detect the media format",
 	"AVPlayer 不能播放 GIF": "AVPlayer cannot play GIF files",
 	"GIF 应转为视频；没有兼容编码器时只能由播放器直接解码":                             "Convert GIF to video; without a compatible encoder it must be decoded directly by the player",
@@ -607,7 +691,7 @@ func translate(lang, value string) string {
 	if strings.HasPrefix(value, "已导入「") && strings.HasSuffix(value, "」") {
 		return "Imported: " + strings.TrimSuffix(strings.TrimPrefix(value, "已导入「"), "」")
 	}
-	for _, p := range [][2]string{{"下载并安装 ", "Download and install "}, {"回滚到 ", "Roll back to "}, {"更新失败：", "Update failed: "}, {"回滚失败：", "Rollback failed: "}, {"导出失败：", "Export failed: "}, {"已应用到 ", "Applied to "}, {"使用中 · ", "In use · "}, {"正在用于：", "Used on: "}, {"暂停原因：", "Pause reason: "}, {"后端 ", "Backend "}, {"硬解 ", "Hardware decoding "}, {"规则动作 ", "Rule action "}, {"删除规则 ", "Remove rule "}, {"已导入「", "Imported: "}} {
+	for _, p := range [][2]string{{"文件选择失败：", "File selection failed: "}, {"导入失败: ", "Import failed: "}, {"下载并安装 ", "Download and install "}, {"回滚到 ", "Roll back to "}, {"更新失败：", "Update failed: "}, {"回滚失败：", "Rollback failed: "}, {"导出失败：", "Export failed: "}, {"已应用到 ", "Applied to "}, {"使用中 · ", "In use · "}, {"正在用于：", "Used on: "}, {"暂停原因：", "Pause reason: "}, {"后端 ", "Backend "}, {"硬解 ", "Hardware decoding "}, {"规则动作 ", "Rule action "}, {"删除规则 ", "Remove rule "}, {"已导入「", "Imported: "}} {
 		if strings.HasPrefix(value, p[0]) {
 			return p[1] + strings.TrimPrefix(value, p[0])
 		}
@@ -624,11 +708,18 @@ func textf(c *ui.Context, format string, args ...any) ui.Element {
 func button(c *ui.Context, label string) ui.Element        { return ui.Button(c, tr(c, label)) }
 func primaryButton(c *ui.Context, label string) ui.Element { return ui.PrimaryButton(c, tr(c, label)) }
 func segmented(c *ui.Context, selected *int, labels ...string) ui.Element {
-	translated := make([]string, len(labels))
-	for i, l := range labels {
-		translated[i] = tr(c, l)
+	changed := false
+	e := segmentGroup(c, func() {
+		for i, label := range labels {
+			if segment(c.Key(itoa(i)), label, *selected == i).Clicked() && *selected != i {
+				*selected, changed = i, true
+			}
+		}
+	})
+	if changed {
+		e.SetChanged()
 	}
-	return ui.Segmented(c, selected, translated...)
+	return e
 }
 func selectControl(c *ui.Context, selected *string, options []string) ui.Element {
 	current := tr(c, *selected)
@@ -656,12 +747,6 @@ func alertDialog(c *ui.Context, open *bool, title, message string, buttons ...st
 }
 func radio(c *ui.Context, selected *string, value, label string) ui.Element {
 	return ui.Radio(c, selected, value, tr(c, label))
-}
-func sidebarItem(c *ui.Context, id string, icon *ui.SVG, label string) ui.Element {
-	return ui.SidebarItem(c, id, icon, tr(c, label))
-}
-func sidebarSection(c *ui.Context, title string, open *bool, fn func()) ui.Element {
-	return ui.SidebarSection(c, tr(c, title), open, fn)
 }
 func collapsible(c *ui.Context, label string, open *bool, fn func()) ui.Element {
 	return ui.Collapsible(c, tr(c, label), open, fn)

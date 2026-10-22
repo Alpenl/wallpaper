@@ -125,7 +125,7 @@ func TestLivePlaybackIPCValidatesAndAcknowledgesAppliedState(t *testing.T) {
 	if err := client.Call("setPlayback", map[string]any{"options": render.PlaybackOptions{Scale: .5}}, time.Second, nil); err == nil {
 		t.Fatal("unsupported scale succeeded")
 	}
-	o := render.PlaybackOptions{Fit: "fit", Speed: 2, Muted: false, Scale: 1}
+	o := render.PlaybackOptions{Fit: "fit", Speed: 2, Muted: false, Volume: 100, Scale: 1}
 	var result struct {
 		Options render.PlaybackOptions
 		Paused  bool

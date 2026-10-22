@@ -15,6 +15,7 @@ import (
 func newUI(t *testing.T, goos string) (*uidemo.Ctl, *Settings, *ui.Tester) {
 	t.Helper()
 	ctl := uidemo.New(nil)
+	ctl.GOOS = goos
 	s := NewSettings(ctl, goos)
 	s.Info = Info{Version: "0.2.0-test", Platform: goos + "/amd64", EncoderName: "ffmpeg", UpdateKey: true}
 	s.PickFiles = func() []string { return []string{"/tmp/x.mp4"} }
@@ -45,9 +46,10 @@ func click(t *testing.T, tt *ui.Tester, label string) {
 
 // 每一页都能渲染（三个平台），导航可点击。
 func TestAllPagesRender(t *testing.T) {
+	// 设置子页在顶部“设置”标签下；第一次进入先点“设置”。
 	pages := []struct{ nav, want string }{
-		{"显示器", "布局"}, {"播放与性能", "性能档位"}, {"暂停与电源", "自动暂停"},
-		{"通用", "颜色模式"}, {"版本管理", "当前版本"}, {"关于与诊断", "诊断包"}, {"壁纸库", "共 6 张壁纸 · 拖入文件即可导入"},
+		{"显示器", "布局"}, {"设置", "性能档位"}, {"播放与性能", "性能档位"}, {"暂停与电源", "自动暂停"},
+		{"通用", "颜色模式"}, {"版本管理", "当前版本"}, {"关于与诊断", "诊断包"}, {"壁纸库", "全部 8"},
 	}
 	for _, goos := range []string{"windows", "darwin", "linux"} {
 		_, _, tt := newUI(t, goos)
@@ -55,6 +57,7 @@ func TestAllPagesRender(t *testing.T) {
 			click(t, tt, p.nav)
 			must(t, tt, p.want)
 		}
+		click(t, tt, "设置")
 		click(t, tt, "播放与性能")
 		if goos == "windows" {
 			must(t, tt, "渲染后端", "硬件解码")
@@ -67,28 +70,25 @@ func TestAllPagesRender(t *testing.T) {
 
 func TestLibraryDetailActions(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
-	tt.SetSize(1120, 1100)
+	tt.SetSize(1120, 1500)
 	s.SelectItem("ocean")
 	tt.Frame()
 	must(t, tt, "海浪 4K", "建议优化转码", "Wallpaper Engine 导入")
-	must(t, tt, "应用到", "1  DELL U2723QE（主屏）")
+	// 应用作用于标题里的目标显示器（默认主屏），在底部操作栏。
+	must(t, tt, "显示器 1", "DELL U2723QE")
 	click(t, tt, "应用")
 	if v := ctl.View(); v.Displays[0].ItemID != "ocean" || v.Displays[1].ItemID != "city" || v.Default != "aurora" {
 		t.Fatal("默认只应用到当前显示器（主屏），不动另一块和默认壁纸", v.Displays, v.Default)
 	}
-	s.applySel = "2  显示器 2"
+	s.SelectDisplay("d2")
 	tt.Frame()
 	click(t, tt, "应用")
 	if v := ctl.View(); v.Displays[1].ItemID != "ocean" || v.Default != "aurora" {
 		t.Fatal("应只应用到 2 号屏", v.Displays)
 	}
-	s.applySel = "所有显示器"
-	tt.Frame()
 	s.SelectItem("forest")
 	tt.Frame()
-	s.applySel = "所有显示器"
-	tt.Frame()
-	click(t, tt, "应用")
+	click(t, tt, "应用到所有显示器")
 	if v := ctl.View(); v.Default != "forest" || v.Displays[0].ItemID != "forest" || v.Displays[1].ItemID != "forest" || v.Displays[0].Custom {
 		t.Fatal("应用到所有显示器", v.Displays, v.Default)
 	}
@@ -111,6 +111,39 @@ func TestLibraryDetailActions(t *testing.T) {
 	}
 }
 
+// 声音和播放属性随壁纸组保存；目标显示器的覆盖项可在检查器里清除。
+func TestWallpaperGroupProps(t *testing.T) {
+	ctl, s, tt := newUI(t, "windows")
+	tt.SetSize(1120, 1500)
+	s.SelectItem("ocean")
+	tt.Frame()
+	must(t, tt, "这张壁纸自己的设置", "60%")
+	click(t, tt, "播放声音 开关")
+	if p := ctl.View().Library[1].Props; p.Audio != "mute" || p.Volume != 60 || p.Speed != 0.75 {
+		t.Fatal("sound toggle should only change the group's audio", p)
+	}
+	if !tt.HasText("60%") {
+		t.Fatal("muted group keeps its volume")
+	}
+	click(t, tt, "恢复默认")
+	if p := ctl.View().Library[1].Props; p != (config.ItemProps{}) {
+		t.Fatal("reset props", p)
+	}
+	must(t, tt, "未单独设置，跟随默认静音设置")
+	s.SelectDisplay("d2")
+	tt.Frame()
+	must(t, tt, "2  显示器 2 单独覆盖了：静音")
+	click(t, tt, "清除覆盖")
+	if o := ctl.View().Displays[1].Options; o.Overrides() {
+		t.Fatal("overrides not cleared", o)
+	}
+	must(t, tt, "已清除覆盖")
+	tt.Advance(5 * time.Second)
+	if tt.HasText("清除覆盖") {
+		t.Fatal("notice should disappear")
+	}
+}
+
 func TestLibrarySearchFilterImport(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
 	click(t, tt, "建议转码 2")
@@ -118,7 +151,7 @@ func TestLibrarySearchFilterImport(t *testing.T) {
 	if tt.HasText("HEVC · 本地文件") {
 		t.Fatal("筛选后不应显示极光之夜")
 	}
-	click(t, tt, "全部 6")
+	click(t, tt, "全部 8")
 	s.query = "城市"
 	tt.Frame()
 	must(t, tt, "城市霓虹")
@@ -169,6 +202,7 @@ func TestEmptyLibrary(t *testing.T) {
 func TestSettingsChangeConfig(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
 	tt.SetSize(1120, 2200)
+	click(t, tt, "设置")
 	click(t, tt, "播放与性能")
 	click(t, tt, "省电")
 	if ctl.View().Config.Perf.Profile != "saver" {
@@ -213,7 +247,7 @@ func TestSettingsChangeConfig(t *testing.T) {
 	}
 }
 
-func TestSidebarPauseAndNext(t *testing.T) {
+func TestStatusBarPauseAndNext(t *testing.T) {
 	ctl, _, tt := newUI(t, "windows")
 	must(t, tt, "正在播放", "1 块屏播放 · 1 块屏暂停")
 	click(t, tt, "暂停全部")
@@ -228,20 +262,30 @@ func TestSidebarPauseAndNext(t *testing.T) {
 }
 
 func TestDisplaysPage(t *testing.T) {
-	ctl, _, tt := newUI(t, "windows")
-	tt.SetSize(1120, 1500)
+	ctl, s, tt := newUI(t, "windows")
+	// Tall enough that the whole page fits above the bottom bar with any host font.
+	tt.SetSize(1120, 2400)
 	click(t, tt, "显示器")
 	must(t, tt, "DELL U2723QE（主屏）", "播放中", "硬解 d3d11va")
-	click(t, tt, "2  显示器 2")
+	click(t, tt, "选择显示器 2")
+	if s.dispSel != "d2" {
+		t.Fatalf("selected display = %q", s.dispSel)
+	}
 	must(t, tt, "2  显示器 2", "暂停原因：其他程序全屏", "系统没有提供名称，按排列顺序编号")
 	for _, x := range tt.Texts() {
 		if strings.Contains(x, `\\.\`) || strings.Contains(x, "DISPLAY") {
 			t.Fatal("不应显示系统内部名", x)
 		}
 	}
-	click(t, tt, "复制")
-	if v := ctl.View(); v.Default != "city" || v.Displays[0].ItemID != "city" || v.Displays[0].Custom {
-		t.Fatal("复制到所有显示器", v.Default, v.Displays)
+	click(t, tt, "将此屏壁纸复制到所有显示器")
+	v := ctl.View()
+	if v.Default != "city" || len(ctl.Assigns) != 1 || ctl.Assigns[0] != "*=city" {
+		t.Fatal("复制动作必须实际执行", v.Default, ctl.Assigns)
+	}
+	for _, d := range v.Displays {
+		if d.ItemID != "city" || d.Custom {
+			t.Fatal("复制到所有显示器", v.Default, v.Displays)
+		}
 	}
 }
 
@@ -267,7 +311,7 @@ func TestDisplayRename(t *testing.T) {
 	// 编辑一半切到另一块屏：放弃，不会把名字写到 1 号屏
 	click(t, tt, "重命名")
 	s.renameBuf = "不该保存"
-	click(t, tt, "1  DELL U2723QE")
+	click(t, tt, "1  DELL U2723QE · 主屏")
 	if s.renameID != "" {
 		t.Fatal("切屏应退出编辑")
 	}
@@ -308,6 +352,7 @@ func TestUpdateFlow(t *testing.T) {
 	s.CheckUpdate = func() (*UpdateInfo, error) { return &UpdateInfo{Version: "0.3.0", Size: 3 << 20}, nil }
 	s.ApplyUpdate = func(p func(int64, int64)) error { p(1, 2); applied <- struct{}{}; return nil }
 	s.CanRollback = func() (string, bool) { return "0.1.0", true }
+	click(t, tt, "设置")
 	click(t, tt, "版本管理")
 	click(t, tt, "检查更新")
 	wait(t, tt, "下载并安装 0.3.0")
@@ -369,11 +414,13 @@ func TestDisplayPropertiesApplyOnlyToSelectedDisplay(t *testing.T) {
 	if !ctl.View().Displays[1].Options.Paused || ctl.View().Displays[0].Options.Paused {
 		t.Fatal("pause changed the wrong display")
 	}
-	click(t, tt, "填充")
+	// 默认跟随壁纸；选具体值才写入这块屏的覆盖项。
+	click(t, tt, "跟随壁纸")
 	click(t, tt, "适应")
-	if ctl.View().Displays[1].Options.Fit != "fit" || ctl.View().Displays[0].Options.Fit != "fill" {
+	if ctl.View().Displays[1].Options.Fit != "fit" || ctl.View().Displays[0].Options.Fit != "" {
 		t.Fatal("fit did not persist to selected display")
 	}
+	must(t, tt, "填充会裁切边缘，适应保留全图，拉伸铺满屏幕。当前：适应")
 	click(t, tt, "跟随全局")
 	click(t, tt, "省电")
 	if ctl.View().Displays[1].Options.Profile != "saver" {
@@ -432,6 +479,7 @@ func TestEnglishLanguageSelection(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
 	language := ""
 	s.SetLanguage = func(lang string) { language = lang }
+	tt.SetSize(1120, 1400)
 	s.SetPage("general")
 	tt.Frame()
 	click(t, tt, "简体中文")
@@ -459,7 +507,7 @@ func TestDiagnosticsExportDoesNotBlockUI(t *testing.T) {
 	click(t, tt, "导出诊断包")
 	<-begin
 	click(t, tt, "壁纸库")
-	must(t, tt, "共 6 张壁纸 · 拖入文件即可导入")
+	must(t, tt, "全部 8")
 	close(finish)
 	s.SetPage("about")
 	wait(t, tt, "诊断包已导出。请检查内容后再分享。")
@@ -542,6 +590,7 @@ func TestQueuedRuleCommandsUseStableIdentity(t *testing.T) {
 func TestRuleCaseSensitivityMatchesPlatform(t *testing.T) {
 	for _, platform := range []string{"windows", "linux", "darwin"} {
 		ctl := uidemo.New(nil)
+		ctl.GOOS = platform
 		s := NewSettings(ctl, platform)
 		s.appExecutable, s.appAction = "Firefox", "暂停"
 		s.addAppRule()
@@ -695,7 +744,7 @@ func TestRejectedAsyncRemovalKeepsSelectionAndDoesNotClaimSuccess(t *testing.T) 
 	}
 	ctl.Ctl.Remove("ocean")
 	tt.Frame()
-	if s.selID != "" {
+	if s.selID == "ocean" {
 		t.Fatal("selection not cleared after snapshot confirms removal")
 	}
 }
@@ -727,7 +776,7 @@ func TestPageHeaderKeepsSpacingAtMinimumWindowSize(t *testing.T) {
 	}, 900, 600)
 	tt.Frame()
 	header, ok := tt.Find("Header layout check")
-	if !ok || header.Y < 30 {
+	if !ok || header.Y < 16 {
 		t.Fatalf("header collapsed into top padding: %+v", header)
 	}
 	tt.Scroll(500, 400, 0, -600)

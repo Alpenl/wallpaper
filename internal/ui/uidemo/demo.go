@@ -3,18 +3,24 @@
 package uidemo
 
 import (
+	"runtime"
 	"sync"
 	"time"
 
+	"encoding/json"
 	"wpapp/internal/app"
 	"wpapp/internal/config"
 	"wpapp/internal/desktop"
 	"wpapp/internal/render"
 	"wpapp/internal/transcode"
+	"wpapp/internal/wpk"
 )
 
 // Ctl 实现 ui.Controller。
 type Ctl struct {
+	GOOS               string // Target platform for headless previews and tests; empty uses the host.
+	SignalAnswers      []bool
+	NetworkAnswers     []bool
 	mu                 sync.Mutex
 	V                  app.View
 	Imported           []string
@@ -35,7 +41,28 @@ func (f *Ctl) View() app.View {
 	v.Config = f.V.Config.Clone()
 	v.Library = append([]config.Item(nil), f.V.Library...)
 	v.Displays = append([]app.DisplayView(nil), f.V.Displays...)
+	// 与 app 一致：显示器覆盖 > 壁纸组属性 > 默认值。
+	for i := range v.Displays {
+		var props config.ItemProps
+		for _, it := range v.Library {
+			if it.ID == v.Displays[i].ItemID {
+				props = it.Props
+			}
+		}
+		v.Displays[i].Effective = config.ResolvePlayback(props, v.Displays[i].Options, v.Config.Render.Muted)
+	}
 	return v
+}
+
+func (f *Ctl) SetItemProps(id string, props config.ItemProps) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	props.Normalize()
+	for i := range f.V.Library {
+		if f.V.Library[i].ID == id {
+			f.V.Library[i].Props = props
+		}
+	}
 }
 
 func (f *Ctl) SetPausedAll(b bool) {
@@ -130,7 +157,11 @@ func (f *Ctl) UpdateConfig(fn func(*config.Config)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	fn(&f.V.Config)
-	f.V.Config.Normalize()
+	goos := f.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	f.V.Config.NormalizeForOS(goos)
 }
 
 func (f *Ctl) ExitSafeMode() { f.mu.Lock(); f.ExitSafe = true; f.V.SafeMode = false; f.mu.Unlock() }
@@ -145,7 +176,7 @@ func (f *Ctl) Transcode(id string) {
 	f.V.Transcoding[id] = "正在转码…"
 }
 
-// New 返回一个有 6 张壁纸、2 块显示器的演示库。thumbs 是 id → 缩略图 PNG 路径（可为空）。
+// New 返回一个有 8 张壁纸、2 块显示器的演示库。thumbs 是 id → 缩略图 PNG 路径（可为空）。
 func New(thumbs map[string]string) *Ctl {
 	t0 := time.Date(2026, 10, 20, 21, 0, 0, 0, time.Local)
 	mk := func(i int, id, title, typ, origin, codec, tc, note string) config.Item {
@@ -160,6 +191,12 @@ func New(thumbs map[string]string) *Ctl {
 		mk(4, "pixel", "像素小镇", "video", "file", "gif", "none", "GIF 已按视频播放"),
 		mk(5, "mount", "雪山", "image", "file", "", "none", ""),
 	}
+	lib = append(lib, mk(6, "web-orbit", "轨道网页", "web", "native", "", "none", ""), mk(7, "shader-waves", "光波 Shader", "shader", "native", "", "none", ""))
+	lib[6].Entry = "content/index.html"
+	lib[6].Web = &wpk.Web{FPSCap: 30}
+	lib[7].Entry = "content/main.frag"
+	lib[7].PropertyDefs = []wpk.Prop{{Key: "tint", Type: "color", Default: json.RawMessage(`"#6699cc"`), Label: wpk.I18n{"en": "Tint", "zh": "颜色"}}, {Key: "enabled", Type: "bool", Default: json.RawMessage(`true`), Label: wpk.I18n{"en": "Enabled", "zh": "启用"}}}
+	lib[1].Props = config.ItemProps{Audio: "sound", Volume: 60, Speed: 0.75}
 	cfg := config.Defaults()
 	cfg.Startup.Asked = true
 	return &Ctl{V: app.View{
@@ -168,8 +205,8 @@ func New(thumbs map[string]string) *Ctl {
 		LastImport: "已导入「极光之夜」",
 		Power:      app.Power{OnBattery: false, Percent: 86},
 		Displays: []app.DisplayView{
-			{Options: config.DisplayOptions{Fit: "fill", Speed: 1}, Playback: render.Capabilities{Fit: true, Speed: true, Audio: true, Scale: true}, ID: "d1", Index: 1, Name: "DELL U2723QE", Friendly: "DELL U2723QE", Custom: true, W: 3840, H: 2160, X: 0, Y: 0, Primary: true, ItemID: "aurora", Level: "L0", State: "active", Backend: "mpv", HWDec: "d3d11va"},
-			{Options: config.DisplayOptions{Fit: "fill", Speed: 1}, Playback: render.Capabilities{Fit: true, Speed: true, Audio: true, Scale: true}, ID: "d2", Index: 2, Name: "显示器 2", Custom: true, W: 2560, H: 1600, X: 3840, Y: 560, ItemID: "city", Level: "L1", State: "active", Backend: "mpv", HWDec: "d3d11va", Reasons: "Fullscreen"},
+			{Playback: render.Capabilities{Fit: true, Speed: true, Audio: true, Scale: true}, ID: "d1", Index: 1, Name: "DELL U2723QE", Friendly: "DELL U2723QE", Custom: true, W: 3840, H: 2160, X: 0, Y: 0, Primary: true, ItemID: "aurora", Level: "L0", State: "active", Backend: "mpv", HWDec: "d3d11va"},
+			{Options: config.DisplayOptions{Audio: "mute"}, Playback: render.Capabilities{Fit: true, Speed: true, Audio: true, Scale: true}, ID: "d2", Index: 2, Name: "显示器 2", Custom: true, W: 2560, H: 1600, X: 3840, Y: 560, ItemID: "city", Level: "L1", State: "active", Backend: "mpv", HWDec: "d3d11va", Reasons: "Fullscreen"},
 		},
 		Transcoding: map[string]string{},
 	}}
@@ -223,5 +260,53 @@ func (f *Ctl) SetLayout(layout, itemID string) {
 			f.V.Default = f.independentDefault
 		}
 		f.V.Layout = "independent"
+	}
+}
+
+func (f *Ctl) CancelImports() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.V.Importing, f.V.ImportQueued = false, 0
+	f.V.LastImport = "导入已取消；已完成的项目保留在壁纸库"
+}
+
+func (f *Ctl) OptimizeDisplays(id string) {}
+func (f *Ctl) CancelRenditions(id string) {}
+
+func (f *Ctl) ResolveNetworkConsent(allow bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.NetworkAnswers = append(f.NetworkAnswers, allow)
+	f.V.NetworkConsent = nil
+}
+func (f *Ctl) RevokeNetwork(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.V.Library {
+		if f.V.Library[i].ID == id {
+			f.V.Library[i].NetworkGranted = false
+		}
+	}
+}
+
+func (f *Ctl) ResolveSignalConsent(allow bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.SignalAnswers = append(f.SignalAnswers, allow)
+	f.V.SignalConsent = nil
+}
+func (f *Ctl) RevokeSignal(id, permission string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.V.Library {
+		it := &f.V.Library[i]
+		if it.ID == id {
+			if permission == "audio" {
+				it.AudioGranted = false
+			}
+			if permission == "input" {
+				it.InputGranted = false
+			}
+		}
 	}
 }

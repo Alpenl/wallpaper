@@ -6,6 +6,7 @@ package render
 import (
 	"errors"
 	"fmt"
+	"image"
 	"math"
 
 	"wpapp/internal/desktop"
@@ -14,10 +15,17 @@ import (
 
 // Item 是要播放的壁纸。
 type Item struct {
-	ID    string
-	Path  string // 入口文件绝对路径（已校验在包目录内）
-	Kind  string // video | image
-	Start float64
+	AudioEnabled, InputEnabled bool
+	SignalsBlocked             bool
+	Viewport                   image.Rectangle
+	PackageDir                 string
+	FPSCap                     int
+	NetworkGranted             bool
+	Properties                 string
+	ID                         string
+	Path                       string // 入口文件绝对路径（已校验在包目录内）
+	Kind                       string // video | image | web | shader
+	Start                      float64
 }
 
 // Stats 是渲染统计。
@@ -51,11 +59,13 @@ type PlaybackOptions struct {
 	Fit   string  `json:"fit"` // fill | fit | stretch
 	Speed float64 `json:"speed"`
 	Muted bool    `json:"muted"`
-	Scale float64 `json:"scale"`
+	// Volume is 1–100 (percent); 0 means unspecified (100). Silence is Muted.
+	Volume int     `json:"volume,omitempty"`
+	Scale  float64 `json:"scale"`
 }
 
 func DefaultPlaybackOptions() PlaybackOptions {
-	return PlaybackOptions{Fit: "fill", Speed: 1, Muted: true, Scale: 1}
+	return PlaybackOptions{Fit: "fill", Speed: 1, Muted: true, Volume: 100, Scale: 1}
 }
 
 // NormalizePlaybackOptions fills unspecified numeric/string fields and rejects
@@ -69,6 +79,12 @@ func NormalizePlaybackOptions(o PlaybackOptions) (PlaybackOptions, error) {
 	}
 	if o.Scale == 0 {
 		o.Scale = 1
+	}
+	if o.Volume == 0 {
+		o.Volume = 100
+	}
+	if o.Volume < 1 || o.Volume > 100 {
+		return o, fmt.Errorf("render: volume must be between 1 and 100")
 	}
 	if o.Fit != "fill" && o.Fit != "fit" && o.Fit != "stretch" {
 		return o, fmt.Errorf("render: invalid fit %q", o.Fit)
@@ -122,3 +138,14 @@ func (c Capabilities) ValidateOptions(o PlaybackOptions) error {
 
 // ErrUnsupported 表示该渲染器不支持此操作。
 var ErrUnsupported = errors.New("render: unsupported")
+
+// SourceUpdater preserves the playback timeline and policy during a media swap.
+type SourceUpdater interface {
+	UpdateSource(Item, visibility.Level) error
+}
+
+// PropertyUpdater applies validated JSON values without reloading the renderer.
+type PropertyUpdater interface{ UpdateProperties(string) error }
+
+// SignalPolicyUpdater applies privacy blocking even when playback pause is disabled.
+type SignalPolicyUpdater interface{ BlockSignals(bool) error }

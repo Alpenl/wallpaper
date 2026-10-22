@@ -66,7 +66,7 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 			}
 			windowW, _ := c.Size()
 			const boxH = 200.0
-			boxW := min(float32(640), max(float32(280), windowW-316))
+			boxW := min(float32(640), max(float32(280), windowW-120))
 			sc := min(boxW/float32(max(1, maxX-minX)), boxH/float32(max(1, maxY-minY)))
 			offX := (boxW - float32(maxX-minX)*sc) / 2
 			ui.Box(c.Key("canvas")).Height(boxH+24).Width(boxW).AlignSelf(ui.Center).Padding(12, 0).Children(func() {
@@ -76,7 +76,7 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 					y := 12 + float32(d.Y-minY)*sc
 					w, h := float32(d.W)*sc-6, float32(d.H)*sc-6
 					sel := d.ID == s.dispSel
-					mon := ui.Box(c.Key("mon"+d.ID)).Absolute().Left(x).Top(y).Size(w, h).Radius(8).Clip().Border(2, t.Border).Cursor(ui.CursorPointer).Children(func() {
+					mon := ui.Box(c.Key("mon"+d.ID)).Label(fmt.Sprintf(tr(c, "选择显示器 %d"), d.Index)).Absolute().Left(x).Top(y).Size(w, h).Radius(12).Clip().Border(1, lineColor(t)).Cursor(ui.CursorPointer).Children(func() {
 						if it := s.itemByID(v, d.ItemID); it != nil {
 							s.preview(c, *it, h)
 						} else {
@@ -110,21 +110,6 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 			d = &v.Displays[0]
 			s.dispSel = d.ID
 		}
-		// 显示器选择条（与布局图同序同号）
-		if len(v.Displays) > 1 {
-			ui.Row(c.Key("dtabs")).Gap(8).Children(func() {
-				for _, o := range v.Displays {
-					o := o
-					mk := button
-					if o.ID == s.dispSel {
-						mk = primaryButton
-					}
-					if mk(c.Key("tab"+o.ID), dispLabel(c, o)).Clicked() && s.dispSel != o.ID {
-						s.dispSel, s.renameID = o.ID, ""
-					}
-				}
-			})
-		}
 		s.displayCard(c, v, *d)
 		if v.Layout == "span" {
 			card(c.Key("span-wallpaper"), "跨屏壁纸", "整个虚拟桌面共享同一张壁纸、填充方式和播放速度；暂停与性能档位仍按屏生效", func() {
@@ -139,18 +124,14 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 		}
 		card(c.Key("advanced"), "多显示器高级选项", "", func() {
 			settingRow(c, "布局方式", "跨屏模式按真实坐标裁切同一画布；保留独立模式设置，可随时切回", func() {
-				independent, span := button, button
-				if v.Layout == "span" {
-					span = primaryButton
-				} else {
-					independent = primaryButton
-				}
-				if independent(c.Key("independent"), "独立显示器").Clicked() {
-					s.ctl.SetLayout("independent", "")
-				}
-				if span(c.Key("span"), "跨屏拼接").Disabled(!v.Capabilities.Spanning).Clicked() {
-					s.ctl.SetLayout("span", d.ItemID)
-				}
+				segmentGroup(c.Key("layout-mode"), func() {
+					if segment(c.Key("independent"), "独立显示器", v.Layout != "span").Clicked() && v.Layout == "span" {
+						s.ctl.SetLayout("independent", "")
+					}
+					if segment(c.Key("span"), "跨屏拼接", v.Layout == "span").Disabled(!v.Capabilities.Spanning).Clicked() && v.Layout != "span" {
+						s.ctl.SetLayout("span", d.ItemID)
+					}
+				})
 			})
 			if !v.Capabilities.Spanning {
 				text(c, "当前桌面宿主不支持跨屏画布；复制壁纸仍可使用。").FontSize(12).TextColor(t.Warning).Wrap()
@@ -162,7 +143,7 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 				text(c, "各屏保留独立解码与暂停，不保证视频逐帧同步。混合缩放按系统桌面坐标拼接。").FontSize(12).TextColor(t.TextMuted).Wrap()
 			} else {
 				settingRow(c, "复制到所有显示器", fmt.Sprintf(tr(c, "把「%s」的壁纸设为默认，并清除所有屏的单独设置"), displayName(c, *d)), func() {
-					if button(c.Key("dup"), "复制").Disabled(d.ItemID == "").Clicked() {
+					if softButton(c.Key("dup"), "复制").Label(tr(c, "将此屏壁纸复制到所有显示器")).Disabled(d.ItemID == "").Clicked() {
 						s.ctl.AssignAll(d.ItemID)
 						c.Toast(tr(c, "已复制到所有显示器"))
 					}
@@ -258,30 +239,69 @@ func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 			hint = "修改后应用到整个跨屏画布"
 		}
 		settingRow(c, "壁纸", hint, func() {
-			s.itemSelect(c.Key("sel"+d.ID), v, d.ID, d.ItemID)
-		})
-		settingRow(c, "填充方式", "填充会裁切边缘，适应保留全图，拉伸铺满屏幕", func() {
-			fit := map[string]string{"fill": "填充", "fit": "适应", "stretch": "拉伸"}[d.Options.Fit]
-			if fit == "" {
-				fit = "填充"
+			assigned := d.ItemID
+			if !d.Custom && v.Layout != "span" {
+				assigned = ""
 			}
-			if selectControl(c.Key("fit"+d.ID), &fit, []string{"填充", "适应", "拉伸"}).Label(tr(c, "填充方式")).Disabled(!d.Playback.Fit).Width(180).Changed() {
-				opts := d.Options
-				opts.Fit = map[string]string{"填充": "fill", "适应": "fit", "拉伸": "stretch"}[fit]
-				s.ctl.SetDisplayOptions(d.ID, opts)
+			s.itemSelect(c.Key("sel"+d.ID), v, d.ID, assigned)
+		})
+		// 填充、速度、声音默认跟随壁纸组自带的属性；这里选具体值就是这块屏的覆盖项。
+		follow := tr(c, "跟随壁纸")
+		eff := d.Effective
+		settingRow(c, "填充方式", fmt.Sprintf(tr(c, "填充会裁切边缘，适应保留全图，拉伸铺满屏幕。当前：%s"), tr(c, fitNames[eff.Fit])), func() {
+			fit := follow
+			if d.Options.Fit != "" {
+				fit = tr(c, fitNames[d.Options.Fit])
+			}
+			opts := []string{follow}
+			for _, l := range fitLabels {
+				opts = append(opts, tr(c, l))
+			}
+			if ui.Select(c.Key("fit"+d.ID), &fit, opts).Label(tr(c, "填充方式")).Disabled(!d.Playback.Fit).Width(180).Changed() {
+				o := d.Options
+				o.Fit = ""
+				for _, l := range fitLabels {
+					if tr(c, l) == fit {
+						o.Fit = fitIDs[l]
+					}
+				}
+				s.ctl.SetDisplayOptions(d.ID, o)
 			}
 		})
-		settingRow(c, "播放速度", "支持的后端即时调整；不支持时重新加载，静态图片不支持速度", func() {
-			speed := d.Options.Speed
-			if speed == 0 {
-				speed = 1
+		speedHint := "跟随壁纸；修改即为这块屏单独设置。不支持即时调整的后端会重新加载，静态图片不支持速度"
+		if d.Options.Speed != 0 {
+			speedHint = "已单独设置，不再跟随壁纸"
+		}
+		settingRow(c, "播放速度", speedHint, func() {
+			speed := eff.Speed
+			if d.Options.Speed != 0 && softButton(c.Key("speedreset"+d.ID), "跟随壁纸").Clicked() {
+				o := d.Options
+				o.Speed = 0
+				s.ctl.SetDisplayOptions(d.ID, o)
 			}
 			if ui.NumberInput(c.Key("speed"+d.ID), &speed, 0.25, 4, 0.25).Label(tr(c, "播放速度")).Disabled(!d.Playback.Speed).Changed() {
-				opts := d.Options
-				opts.Speed = speed
-				s.ctl.SetDisplayOptions(d.ID, opts)
+				o := d.Options
+				o.Speed = speed
+				s.ctl.SetDisplayOptions(d.ID, o)
 			}
 			text(c, "倍速").FontSize(12).TextColor(t.TextMuted)
+		})
+		audioNow := "播放声音"
+		if eff.Muted {
+			audioNow = "静音"
+		}
+		settingRow(c, "声音", fmt.Sprintf(tr(c, "默认使用壁纸自己的声音设置。当前：%s"), tr(c, audioNow)), func() {
+			names := map[string]string{"": follow, "mute": tr(c, "静音"), "sound": tr(c, "播放声音")}
+			audio := names[d.Options.Audio]
+			if ui.Select(c.Key("audio"+d.ID), &audio, []string{follow, tr(c, "静音"), tr(c, "播放声音")}).Label(tr(c, "这块屏的声音")).Disabled(!d.Playback.Audio).Width(180).Changed() {
+				o := d.Options
+				for id, n := range names {
+					if n == audio {
+						o.Audio = id
+					}
+				}
+				s.ctl.SetDisplayOptions(d.ID, o)
+			}
 		})
 		settingRow(c, "性能档位", "只覆盖这块屏幕，电源与暂停策略仍优先", func() {
 			profile := map[string]string{"": "跟随全局", "smooth": "流畅", "balanced": "均衡", "saver": "省电"}[d.Options.Profile]
@@ -299,7 +319,7 @@ func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 				s.ctl.SetDisplayOptions(d.ID, opts)
 			}
 		})
-		if !d.Playback.Fit || !d.Playback.Speed {
+		if !d.Playback.Fit || !d.Playback.Speed || !d.Playback.Audio {
 			text(c, "当前后端或壁纸类型不支持部分播放属性，相关控件已禁用。").FontSize(12).TextColor(t.Warning).Wrap().Padding(6, 0)
 		}
 		if d.Backend != "" && d.Backend != "image" {
@@ -325,11 +345,11 @@ func (s *Settings) renameRow(c *ui.Context, d app.DisplayView) {
 	settingRow(c.Key("rn"+d.ID), "名称", desc, func() {
 		if !editing {
 			ui.Text(c, displayName(c, d)).Bold().FontSize(13).SingleLine().Ellipsis("…")
-			if button(c.Key("rename"+d.ID), "重命名").Clicked() {
+			if softButton(c.Key("rename"+d.ID), "重命名").Clicked() {
 				s.renameID, s.renameBuf = d.ID, displayName(c, d)
 			}
 			if d.Alias != "" {
-				if button(c.Key("rnreset"+d.ID), "恢复默认名称").Clicked() {
+				if softButton(c.Key("rnreset"+d.ID), "恢复默认名称").Clicked() {
 					s.ctl.SetAlias(d.ID, "")
 					c.Toast(tr(c, "已恢复默认名称"))
 				}
@@ -350,11 +370,11 @@ func (s *Settings) renameRow(c *ui.Context, d app.DisplayView) {
 			save()
 			return
 		}
-		if primaryButton(c.Key("rnsave"+d.ID), "保存").Clicked() {
+		if accentButton(c.Key("rnsave"+d.ID), "保存").Clicked() {
 			save()
 			return
 		}
-		if button(c.Key("rncancel"+d.ID), "取消").Clicked() {
+		if softButton(c.Key("rncancel"+d.ID), "取消").Clicked() {
 			s.renameID, s.renameBuf = "", ""
 		}
 	})

@@ -25,8 +25,11 @@ func (s *Settings) mpvControls(v app.View) bool {
 
 func (s *Settings) importFolder() {
 	if s.PickFolder != nil {
+		s.pickerStatus = ""
 		if path := s.PickFolder(); path != "" {
 			s.importPath(path)
+		} else if s.pickerStatus == "" {
+			s.pickerStatus = "已取消文件选择"
 		}
 	}
 }
@@ -45,7 +48,7 @@ func (s *Settings) appRules(c *ui.Context, v app.View) {
 					id := map[string]string{"暂停": "pause", "省电档": "saver", "忽略全屏": "ignore"}[action]
 					s.updateAppRule(rule.Executable, id)
 				}
-				if iconButton(c.Key("remove"), icTrash, "删除规则", false).Label(tr(c, "删除规则 "+rule.Executable)).Clicked() {
+				if softButton(c.Key("remove"), "删除规则").Label(tr(c, "删除规则 "+rule.Executable)).Clicked() {
 					s.removeAppRule(rule.Executable)
 				}
 			})
@@ -59,7 +62,7 @@ func (s *Settings) appRules(c *ui.Context, v app.View) {
 		ui.Row(c.Key("newrule")).Gap(8).Padding(10, 0).AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c.Key("executable"), &s.appExecutable).Placeholder(tr(c, "例如 game.exe / Safari / firefox")).Label(tr(c, "程序文件名")).Grow(1).MinWidth(120)
 			selectControl(c.Key("newaction"), &s.appAction, []string{"暂停", "省电档", "忽略全屏"}).Label(tr(c, "新规则动作")).Width(130)
-			if iconButton(c.Key("addapp"), icPlus, "添加规则", true).Disabled(strings.TrimSpace(s.appExecutable) == "").Clicked() {
+			if accentButton(c.Key("addapp"), "添加规则").Disabled(strings.TrimSpace(s.appExecutable) == "").Clicked() {
 				if s.addAppRule() {
 					c.Toast(tr(c, "规则已提交"))
 				}
@@ -113,7 +116,7 @@ func (s *Settings) capabilityCard(c *ui.Context, v app.View) {
 	card(c.Key("capabilities"), "能力与边界", "只展示当前构建的真实能力，不模拟下载、统计或未实现的渲染器。", func() {
 		for _, item := range []struct{ title, description string }{
 			{"本地壁纸", "视频、图片、GIF，以及受支持的 .wpk、Lively 视频包、Wallpaper Engine 视频目录。普通文件夹可批量导入。"},
-			{"网页与 Shader", "当前构建没有网页沙箱或 Shader 渲染管线，不能导入或播放这两类壁纸。"},
+			{"网页与 Shader", "网页使用独立 WebView 宿主，联网默认拒绝。Shader 在 Windows 使用 D3D11、macOS 使用 Metal；Linux 暂不支持。"},
 			{"在线创意工坊", "尚未接入内容服务或账号授权。请下载已有本地视频素材后导入。"},
 			{"跨屏拼接", "Windows 与 macOS 支持按真实布局裁切跨屏画布，保留按屏暂停；各屏视频不保证逐帧同步。Linux 当前不支持多输出跨屏。"},
 			{"版本历史与本机统计", "版本页显示真实的本地回滚版本；显示器和诊断页提供本周暂停时长，不估算节电量。"},
@@ -170,12 +173,12 @@ func (s *Settings) storageCard(c *ui.Context, v app.View) {
 	t := c.Theme()
 	card(c.Key("storage"), "存储", "清理只删除已不再被壁纸库引用的缓存，不删除原始壁纸或仍在使用的预览图。", func() {
 		settingRow(c, "壁纸库", humanBytes(v.Storage.LibraryBytes), func() {
-			if button(c.Key("refreshStorage"), "重新统计").Disabled(v.Storage.Scanning).Clicked() {
+			if softButton(c.Key("refreshStorage"), "重新统计").Disabled(v.Storage.Scanning).Clicked() {
 				s.ctl.RefreshStorage()
 			}
 		})
 		settingRow(c, "缓存", humanBytes(v.Storage.CacheBytes), func() {
-			if button(c.Key("clearCache"), "清理未使用缓存").Disabled(v.Storage.Scanning).Clicked() {
+			if softButton(c.Key("clearCache"), "清理未使用缓存").Disabled(v.Storage.Scanning).Clicked() {
 				s.confirmCache = true
 			}
 		})

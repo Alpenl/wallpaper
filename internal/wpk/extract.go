@@ -104,12 +104,17 @@ type Result struct {
 
 // Extract 安全解压 .wpk 到 libraryDir/<id>/：先解到临时目录，全部校验通过后再替换。
 func Extract(zipPath, libraryDir string) (*Result, error) {
+	return ExtractChecked(zipPath, libraryDir, nil)
+}
+
+// ExtractChecked calls beforePublish only after all files have passed validation.
+func ExtractChecked(zipPath, libraryDir string, beforePublish func(*Manifest) error) (*Result, error) {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return nil, fmt.Errorf("wpk: open: %w", err)
 	}
 	defer zr.Close()
-	return ExtractReader(&zr.Reader, libraryDir)
+	return extractReader(&zr.Reader, libraryDir, beforePublish)
 }
 
 // precheck 做与内容无关的检查：条目数、路径、重名、链接、可执行扩展名。返回 NFC 小写名集合。
@@ -197,6 +202,9 @@ func SafeUnzip(zipPath, dst string) error {
 
 // ExtractReader 同 Extract，输入为已打开的 zip.Reader。
 func ExtractReader(zr *zip.Reader, libraryDir string) (*Result, error) {
+	return extractReader(zr, libraryDir, nil)
+}
+func extractReader(zr *zip.Reader, libraryDir string, beforePublish func(*Manifest) error) (*Result, error) {
 	seen, err := precheck(zr)
 	if err != nil {
 		return nil, err
@@ -216,7 +224,7 @@ func ExtractReader(zr *zip.Reader, libraryDir string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if seen[strings.ToLower(norm.NFC.String(m.Entry))] == nil {
+	if entry := seen[strings.ToLower(norm.NFC.String(m.Entry))]; entry == nil || entry.FileInfo().IsDir() {
 		return nil, fmt.Errorf("wpk: entry %q not found in package", m.Entry)
 	}
 	if err := os.MkdirAll(libraryDir, 0o755); err != nil {
@@ -241,6 +249,11 @@ func ExtractReader(zr *zip.Reader, libraryDir string) (*Result, error) {
 	root.Close()
 	if err != nil {
 		return nil, err
+	}
+	if beforePublish != nil {
+		if err := beforePublish(m); err != nil {
+			return nil, err
+		}
 	}
 	dst := filepath.Join(libraryDir, m.ID)
 	if err := os.RemoveAll(dst); err != nil {
@@ -346,8 +359,12 @@ func LoadDir(dir string) (*Manifest, error) {
 		return nil, err
 	}
 	defer root.Close()
-	if _, err := root.Stat(m.Entry); err != nil {
+	st, err := root.Stat(m.Entry)
+	if err != nil {
 		return nil, fmt.Errorf("wpk: entry: %w", err)
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("wpk: entry is not a regular file")
 	}
 	return m, nil
 }

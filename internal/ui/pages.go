@@ -35,28 +35,19 @@ func (s *Settings) perf(c *ui.Context, v app.View) {
 	cfg := v.Config
 	page(c, "播放与性能", "性能优先：可见时硬解零拷贝，不可见时自动暂停", nil, func() {
 		card(c.Key("profile"), "性能档位", "省电档最高 15 fps；电源策略可进一步降低帧率或暂停", func() {
-			ui.Row(c.Key("profs")).Gap(10).Padding(8, 0).Children(func() {
+			segmentGroup(c.Key("profs"), func() {
 				for _, p := range profiles {
-					p := p
-					sel := cfg.Perf.Profile == p.id
-					b := ui.Column(c.Key("p"+p.id)).Grow(1).Basis(0).Padding(12).Gap(4).Radius(10).Border(1, t.Border).Cursor(ui.CursorPointer).Children(func() {
-						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-							text(c, p.name).Bold().FontSize(14).Grow(1)
-							if sel {
-								ui.Icon(c, icCheck).FontSize(14).TextColor(t.Accent)
-							}
-						})
-						text(c, p.desc).FontSize(12).TextColor(t.TextMuted).Wrap()
-					})
-					if sel {
-						b.Border(2, t.Accent).Background(t.Accent.Alpha(0.06))
-					}
-					if b.Clicked() && !sel {
+					if segment(c.Key(p.id), p.name, cfg.Perf.Profile == p.id).Clicked() {
 						id := p.id
 						s.set(func(x *config.Config) { x.Perf.Profile = id })
 					}
 				}
-			})
+			}).AlignSelf(ui.Start).Margin(10, 0)
+			for _, p := range profiles {
+				if cfg.Perf.Profile == p.id {
+					text(c, p.desc).FontSize(12).TextColor(t.TextMuted).Wrap()
+				}
+			}
 			settingRow(c, "帧率上限", "0 表示原始帧率；自动省电策略会采用更低的上限", func() {
 				f := float64(cfg.Perf.FPSCap)
 				if ui.NumberInput(c.Key("fps"), &f, 0, 240, 5).Label(tr(c, "帧率上限")).Changed() {
@@ -70,7 +61,7 @@ func (s *Settings) perf(c *ui.Context, v app.View) {
 				}
 				textf(c, "%.0f%%", f).Width(44)
 			})
-			s.switchRowDisabled(c, "mute", "静音播放", "保留源文件音轨；修改后重新加载动态壁纸", cfg.Render.Muted, false, func(x *config.Config, b bool) { x.Render.Muted = b })
+			s.switchRowDisabled(c, "mute", "静音播放", "默认设置：只作用于没有单独设置声音的壁纸；修改后重新加载动态壁纸", cfg.Render.Muted, false, func(x *config.Config, b bool) { x.Render.Muted = b })
 			s.switchRow(c, "resumePos", "从上次位置继续播放", "重新启动后恢复播放位置；mpv、Media Foundation 和 AVFoundation 支持续播", cfg.Render.ResumePosition, func(x *config.Config, b bool) { x.Render.ResumePosition = b })
 		})
 		card(c.Key("decode"), "解码与渲染", "", func() {
@@ -132,7 +123,7 @@ func (s *Settings) perf(c *ui.Context, v app.View) {
 				}
 				settingRow(c, "ffmpeg 路径", "留空使用默认编码器（macOS 优先系统 AVFoundation）；保存后重新检测", func() {
 					ui.TextInput(c.Key("ff"), &s.ffmpeg).Placeholder(tr(c, "编码器可执行文件路径")).Width(260)
-					if button(c.Key("ffsave"), "保存").Disabled(s.ffmpeg == cfg.Render.FFmpegPath).Clicked() {
+					if softButton(c.Key("ffsave"), "保存").Disabled(s.ffmpeg == cfg.Render.FFmpegPath).Clicked() {
 						p := strings.TrimSpace(s.ffmpeg)
 						s.set(func(x *config.Config) { x.Render.FFmpegPath = p })
 						c.Toast(tr(c, "编码器路径已提交，检测结果以状态为准"))
@@ -183,7 +174,7 @@ func (s *Settings) mpvPathEditor(c *ui.Context, cfg config.Config) {
 	}
 	settingRow(c, "mpv 路径", "留空自动查找；保存后按当前暂停与电源状态重新加载壁纸", func() {
 		ui.TextInput(c.Key("mpv-path"), &s.mpvPath).Placeholder(tr(c, "mpv 可执行文件路径")).Label(tr(c, "mpv 可执行文件路径")).Width(230)
-		if button(c.Key("mpv-save"), "保存 mpv 路径").Disabled(strings.TrimSpace(s.mpvPath) == cfg.Render.MpvPath).Clicked() {
+		if softButton(c.Key("mpv-save"), "保存 mpv 路径").Disabled(strings.TrimSpace(s.mpvPath) == cfg.Render.MpvPath).Clicked() {
 			if s.saveMpvPath() {
 				c.Toast(tr(c, "mpv 路径已提交，播放结果以显示器状态为准"))
 			}
@@ -235,6 +226,11 @@ func (s *Settings) pause(c *ui.Context, v app.View) {
 				})
 			}
 		})
+		card(c.Key("reasons"), "当前暂停原因", "继续后仍会遵循自动暂停规则", func() {
+			for _, d := range v.Displays {
+				settingRow(c.Key(d.ID), dispLabel(c, d), reasonsText(c, d.Reasons), func() { text(c, levelNames[d.Level]).FontSize(12).TextColor(t.TextMuted) })
+			}
+		})
 		card(c.Key("resume"), "恢复", "", func() {
 			settingRow(c, "恢复前等待", "条件解除后再等一会儿才恢复播放，避免切换窗口时反复启停（毫秒）", func() {
 				f := float64(cfg.Pause.ResumeDebounceMs)
@@ -254,7 +250,7 @@ func (s *Settings) pause(c *ui.Context, v app.View) {
 					"L4 截图：电量过低或长时间不可见时结束渲染进程，用首帧截图作为系统壁纸，零资源占用。",
 					"限帧（15 fps）：使用电池（“降到 15 fps”策略）、设备过热或省电档位时启用，不暂停。",
 				} {
-					text(c, "• "+tr(c, l)).FontSize(12).TextColor(t.TextMuted).Wrap().Padding(3, 0)
+					text(c, l).FontSize(12).TextColor(t.TextMuted).Wrap().Padding(3, 0)
 				}
 			})
 		})
@@ -268,7 +264,7 @@ func (s *Settings) powerSections(c *ui.Context, v app.View) {
 	cfg := v.Config
 	ui.Row(c.Key("now")).Gap(12).Children(func() {
 		stat := func(k, label, val string, col ui.Color) {
-			ui.Column(c.Key(k)).Grow(1).Basis(0).Padding(14, 16).Gap(4).Radius(12).Background(cardBg(t)).Border(1, t.Border).Children(func() {
+			ui.Column(c.Key(k)).Grow(1).Basis(0).Padding(14, 16).Gap(4).Radius(12).Background(raisedBg(t)).Border(1, t.Border).Children(func() {
 				text(c, label).FontSize(12).TextColor(t.TextMuted)
 				text(c, val).Bold().FontSize(16).TextColor(col)
 			})
@@ -298,23 +294,24 @@ func (s *Settings) powerSections(c *ui.Context, v app.View) {
 		stat("therm", "设备温度", th, thc)
 	})
 	card(c.Key("batt"), "使用电池时", "", func() {
-		pol := cfg.Pause.BatteryPolicy
-		ui.Column(c.Key("pol")).Gap(4).Padding(8, 0).Children(func() {
-			for _, o := range []struct{ id, title, desc string }{
-				{"pause", "暂停壁纸", "最省电（默认，D-07）"},
-				{"fps15", "降到 15 fps", "保留动态效果，降低帧率；实际功耗取决于素材和后端"},
-				{"ignore", "继续正常播放", "和插电时一样，耗电最多"},
-			} {
-				o := o
-				ui.Row(c.Key("r"+o.id)).Gap(10).Padding(6, 0).AlignItems(ui.Center).Children(func() {
-					if radio(c.Key("rb"), &pol, o.id, o.title).Changed() {
-						id := o.id
-						s.set(func(x *config.Config) { x.Pause.BatteryPolicy = id })
-					}
-					text(c, o.desc).FontSize(12).TextColor(t.TextMuted)
-				})
+		policies := []struct{ id, title, desc string }{
+			{"pause", "暂停壁纸", "最省电（默认，D-07）"},
+			{"fps15", "降到 15 fps", "保留动态效果，降低帧率；实际功耗取决于素材和后端"},
+			{"ignore", "继续正常播放", "和插电时一样，耗电最多"},
+		}
+		segmentGroup(c.Key("pol"), func() {
+			for _, o := range policies {
+				if segment(c.Key(o.id), o.title, cfg.Pause.BatteryPolicy == o.id).Clicked() {
+					id := o.id
+					s.set(func(x *config.Config) { x.Pause.BatteryPolicy = id })
+				}
 			}
-		})
+		}).AlignSelf(ui.Start).Margin(10, 0).Wrap()
+		for _, o := range policies {
+			if cfg.Pause.BatteryPolicy == o.id {
+				text(c, o.desc).FontSize(12).TextColor(t.TextMuted).Wrap()
+			}
+		}
 		settingRow(c, "低电量时停止渲染", fmt.Sprintf(tr(c, "电量低于 %d%% 时结束渲染进程、显示截图（L4）"), cfg.Pause.LowBatteryPct), func() {
 			f := float64(cfg.Pause.LowBatteryPct)
 			if ui.StepSlider(c.Key("low"), &f, 0, 50, 5).Width(180).Label(tr(c, "低电量阈值")).Changed() {
@@ -413,6 +410,10 @@ func (s *Settings) look(c *ui.Context, v app.View) {
 			settingRow(c, "关闭窗口后继续运行", "关闭设置窗口不会退出壁纸，退出请使用托盘菜单", func() { chip(c, "始终启用", t.TextMuted) })
 		})
 
+		card(c.Key("reactive"), "壁纸交互", "需在导入时单独授权；默认关闭", func() {
+			s.switchRow(c, "audio-reactive", "音频响应", "系统音频仅在隔离渲染进程中处理", cfg.Privacy.AudioReactive, func(c *config.Config, on bool) { c.Privacy.AudioReactive = on })
+			s.switchRow(c, "mouse-input", "鼠标交互", "仅传递桌面上的鼠标位置和按钮", cfg.Privacy.MouseInput, func(c *config.Config, on bool) { c.Privacy.MouseInput = on })
+		})
 		s.storageCard(c, v)
 
 	})
@@ -437,7 +438,7 @@ func (s *Settings) startup(c *ui.Context, v app.View) {
 			}
 			settingRow(c, "更新源", "HTTPS 目录地址，包含平台清单与签名；留空时不会联网", func() {
 				ui.TextInput(c.Key("feed"), &s.feed).Placeholder(tr(c, "https://example.com/wallpaper/updates")).Width(280)
-				if button(c.Key("feedsave"), "保存").Disabled(s.feed == cfg.Update.FeedURL || u.busy).Clicked() {
+				if softButton(c.Key("feedsave"), "保存").Disabled(s.feed == cfg.Update.FeedURL || u.busy).Clicked() {
 					f := strings.TrimSpace(s.feed)
 					if err := validateUpdateFeed(f); err != nil {
 						s.setUpd(func(u *updState) { u.msg = err.Error() })
@@ -449,15 +450,15 @@ func (s *Settings) startup(c *ui.Context, v app.View) {
 			})
 			ui.Row(c.Key("updacts")).Gap(8).Padding(10, 0, 4, 0).AlignItems(ui.Center).Children(func() {
 				if u.info == nil {
-					if iconButton(c.Key("check"), icRefresh, "检查更新", true).Disabled(u.busy || s.CheckUpdate == nil || !s.Info.UpdateKey || cfg.Update.FeedURL == "").Clicked() {
+					if accentButton(c.Key("check"), "检查更新").Disabled(u.busy || s.CheckUpdate == nil || !s.Info.UpdateKey || cfg.Update.FeedURL == "").Clicked() {
 						s.checkUpdate()
 					}
-				} else if iconButton(c.Key("install"), icDownload, "下载并安装 "+u.info.Version, true).Disabled(u.busy || s.ApplyUpdate == nil).Clicked() {
+				} else if accentButton(c.Key("install"), "下载并安装 "+u.info.Version).Disabled(u.busy || u.installed || s.ApplyUpdate == nil).Clicked() {
 					s.applyUpdate()
 				}
 				if s.CanRollback != nil {
 					if prev, ok := s.CanRollback(); ok {
-						if button(c.Key("rb"), "回滚到 "+prev).Disabled(u.busy || s.Rollback == nil).Clicked() {
+						if softButton(c.Key("rb"), "回滚到 "+prev).Disabled(u.busy || u.installed || s.Rollback == nil).Clicked() {
 							s.rollbackAsk, s.rollbackVersion = true, prev
 						}
 					}
@@ -529,11 +530,26 @@ func (s *Settings) checkUpdate() {
 	}()
 }
 
+// Reserve before starting work: enabled controls may belong to an older frame.
+func (s *Settings) beginUpdate(message string) bool {
+	s.mu.Lock()
+	if s.upd.busy || s.upd.installed {
+		s.mu.Unlock()
+		return false
+	}
+	s.upd.busy, s.upd.msg, s.upd.progress = true, message, 0
+	s.mu.Unlock()
+	s.invalidate()
+	return true
+}
+
 func (s *Settings) applyUpdate() {
 	if s.ApplyUpdate == nil {
 		return
 	}
-	s.setUpd(func(u *updState) { u.busy, u.msg, u.progress = true, "正在下载…", 0 })
+	if !s.beginUpdate("正在下载…") {
+		return
+	}
 	go func() {
 		err := s.ApplyUpdate(func(done, total int64) {
 			s.setUpd(func(u *updState) {
@@ -548,7 +564,7 @@ func (s *Settings) applyUpdate() {
 				u.msg = "更新失败：" + err.Error()
 				return
 			}
-			u.info = nil
+			u.info, u.installed = nil, true
 			u.msg = "更新已安装，重启应用后生效"
 		})
 		if err == nil && s.Restart != nil {
@@ -561,7 +577,9 @@ func (s *Settings) rollback() {
 	if s.Rollback == nil {
 		return
 	}
-	s.setUpd(func(u *updState) { u.busy, u.msg = true, "正在回滚…" })
+	if !s.beginUpdate("正在回滚…") {
+		return
+	}
 	go func() {
 		err := s.Rollback()
 		s.setUpd(func(u *updState) {
@@ -570,6 +588,7 @@ func (s *Settings) rollback() {
 				u.msg = "回滚失败：" + err.Error()
 				return
 			}
+			u.installed = true
 			u.msg = "已回滚，重启应用后生效"
 		})
 		if err == nil && s.Restart != nil {
@@ -597,18 +616,18 @@ func (s *Settings) diagSections(c *ui.Context, v app.View) {
 			s.mu.Lock()
 			busy, path := s.diagBusy, s.diagPath
 			s.mu.Unlock()
-			if iconButton(c.Key("diagbtn"), icDownload, "导出诊断包", true).Disabled(s.ExportDiag == nil || busy).Clicked() {
+			if accentButton(c.Key("diagbtn"), "导出诊断包").Disabled(s.ExportDiag == nil || busy).Clicked() {
 				s.exportDiagnostics()
 			}
 			if busy {
 				ui.Spinner(c).Size(14, 14)
 			}
 			if path != "" && s.ShowInFolder != nil {
-				if button(c.Key("revealDiag"), "显示诊断包").Clicked() {
+				if softButton(c.Key("revealDiag"), "显示诊断包").Clicked() {
 					s.ShowInFolder(path)
 				}
 			}
-			if iconButton(c.Key("logs"), icFolder, "打开日志目录", false).Disabled(s.OpenPath == nil || s.Info.LogsDir == "").Clicked() {
+			if softButton(c.Key("logs"), "打开日志目录").Disabled(s.OpenPath == nil || s.Info.LogsDir == "").Clicked() {
 				if err := s.OpenPath(s.Info.LogsDir); err != nil {
 					s.mu.Lock()
 					s.diagMsg = err.Error()
@@ -656,7 +675,7 @@ func (s *Settings) diagSections(c *ui.Context, v app.View) {
 	})
 	card(c.Key("reset"), "重置", "", func() {
 		settingRow(c, "恢复默认设置", "不影响壁纸库和显示器分配", func() {
-			if button(c.Key("resetbtn"), "恢复默认").Clicked() {
+			if softButton(c.Key("resetbtn"), "恢复默认").Clicked() {
 				s.resetAsk = true
 			}
 		})
@@ -679,10 +698,7 @@ func (s *Settings) diagSections(c *ui.Context, v app.View) {
 func (s *Settings) about(c *ui.Context, v app.View) {
 	t := c.Theme()
 	page(c, "关于与诊断", "版本信息、运行状态与本地诊断", nil, func() {
-		ui.Row(c.Key("hero")).Gap(16).Padding(20).Radius(14).Background(cardBg(t)).Border(1, t.Border).AlignItems(ui.Center).Children(func() {
-			ui.Box(c).Size(64, 64).Radius(16).Gradient(t.Accent, ui.Hex("#22d3ee"), 135).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-				ui.Icon(c, icImage).FontSize(30).TextColor(ui.Hex("#ffffff"))
-			})
+		ui.Row(c.Key("hero")).Gap(16).Padding(20).Radius(12).Background(panelBg(t)).Border(1, t.Border).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Gap(4).Grow(1).Children(func() {
 				text(c, "动态壁纸").Bold().FontSize(20)
 				textf(c, "版本 %s · %s", s.Info.Version, s.Info.Platform).FontSize(13).TextColor(t.TextMuted)
@@ -703,7 +719,7 @@ func (s *Settings) about(c *ui.Context, v app.View) {
 		})
 		card(c.Key("data"), "数据位置", "", func() {
 			settingRow(c, "配置与壁纸库", s.Info.DataDir, func() {
-				if button(c.Key("opendata"), "打开").Disabled(s.OpenPath == nil || s.Info.DataDir == "").Clicked() {
+				if softButton(c.Key("opendata"), "打开").Disabled(s.OpenPath == nil || s.Info.DataDir == "").Clicked() {
 					if err := s.OpenPath(s.Info.DataDir); err != nil {
 						c.Toast(err.Error())
 					}

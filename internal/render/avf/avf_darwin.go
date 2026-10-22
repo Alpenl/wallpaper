@@ -97,6 +97,9 @@ func (r *Renderer) UpdatePlayback(o render.PlaybackOptions) error {
 		if o.Muted != r.options.Muted {
 			r.player.Send(macos.Sel("setMuted:"), o.Muted)
 		}
+		if o.Volume != r.options.Volume {
+			r.player.Send(macos.Sel("setVolume:"), float32(o.Volume)/100)
+		}
 		if o.Speed != r.options.Speed && !r.paused && r.pendingStart == 0 {
 			r.player.Send(macos.Sel("setRate:"), float32(o.Speed))
 		}
@@ -176,6 +179,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		}
 		p := macos.Class("AVQueuePlayer").Send(macos.Sel("new"))
 		p.Send(macos.Sel("setMuted:"), o.Muted)
+		p.Send(macos.Sel("setVolume:"), float32(o.Volume)/100)
 		lp := macos.Class("AVPlayerLooper").Send(macos.Sel("playerLooperWithPlayer:templateItem:"), p, item)
 		lp.Send(macos.Sel("retain"))
 		ly := macos.Class("AVPlayerLayer").Send(macos.Sel("playerLayerWithPlayer:"), p)

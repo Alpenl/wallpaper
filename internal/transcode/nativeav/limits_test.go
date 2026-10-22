@@ -57,3 +57,19 @@ func TestUnavailableOrCancelled(t *testing.T) {
 		t.Fatalf("cancel = %v", e)
 	}
 }
+
+func TestCoverSizeIsExactAndBounded(t *testing.T) {
+	for _, src := range [][2]int{{64, 36}, {180, 640}, {8192, 2}} {
+		w, h, err := renditionSize(src[0], src[1], 320, 180, true)
+		if err != nil || w != 320 || h != 180 {
+			t.Fatal(src, w, h, err)
+		}
+	}
+	if _, _, err := renditionSize(1920, 1080, 8192, 8192, true); err == nil {
+		t.Fatal("cover ignored canvas budget")
+	}
+	w, h, err := renditionSize(64, 36, 320, 180, false)
+	if err != nil || w != 64 || h != 36 {
+		t.Fatal("shared sizing changed", w, h, err)
+	}
+}

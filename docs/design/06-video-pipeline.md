@@ -1,6 +1,6 @@
 # 06 视频管线与编码规范
 
-> **本轮实现接续**：当前 macOS 默认是系统 AVFoundation 隔离 helper，无需 ffmpeg；可选 ffmpeg 分别走 mac VideoToolbox、Win Media Foundation，严格验证 H.264/30fps/无音轨/目标边界。avconvert 只作有限回退。当前每素材一份保比例产物，不是本章 6.4 的每屏 cover rendition 全实现；原生运行和零拷贝/硬解/性能仍须真机验证。见 [转换契约](../../internal/transcode/README.md)、[研究补充](../research/NATIVE_MVP_ADDENDUM.md)。
+> **本轮实现接续**：当前 macOS 默认是系统 AVFoundation 隔离 helper，无需 ffmpeg；可选 ffmpeg 分别走 mac VideoToolbox、Win Media Foundation，严格验证 H.264/30fps/无音轨/目标边界。avconvert 只作有限回退。共享保比例产物之外，独立显示器有效 fill/静音时已接入按 backing 像素的惰性 center-cover rendition 缓存；跨屏/声音/非 fill 使用共享回退；原生运行和零拷贝/硬解/性能仍须真机验证。见 [转换契约](../../internal/transcode/README.md)、[研究补充](../research/NATIVE_MVP_ADDENDUM.md)。
 
 > **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
 
@@ -68,3 +68,7 @@
 | Apple | ✓ | ✓ | M1 起（需要 supplemental decoder） | M3 及以后 |
 
 - 依据：NVDEC 应用说明、Intel Arc 介绍文章、AMF wiki、Apple Newsroom、IINA #3241 的检索综合【文档/推断】。具体型号可能有例外（例如部分低端型号），**运行时以探测结果为准**：Windows 读 mpv 的 `hwdec-current`，macOS 用 `VTIsHardwareDecodeSupported`。转码时据此选择编码格式【推断】。
+
+### 音频响应与视频声音分离
+
+F-22 的系统回环属于原生 Shader/Web 隔离宿主，不是视频后端的音量或静音选项，不改动 mpv/MF/AVF 解码。WASAPI / ScreenCaptureKit PCM 在采集进程中经 Go FFT/RMS 转换后供渲染使用；上限 min(60, 壁纸 FPS) Hz。L1+、锁屏、睡眠、显示器关闭和不可见时关闭源，恢复重开；主进程不读取 PCM。见 [08 章](08-web-shader.md#85-f-22--f-26-原生输入新产品决策)。

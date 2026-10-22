@@ -46,7 +46,7 @@ func (a *App) SetDisplayOptions(display string, options config.DisplayOptions) {
 			return
 		}
 		_ = a.ctl.Set(a.now(), visibility.User, s.n, options.Paused)
-		if old.Fit != options.Fit || old.Speed != options.Speed {
+		if old.Fit != options.Fit || old.Speed != options.Speed || old.Audio != options.Audio {
 			if !a.updateScreenPlayback(s) {
 				a.restartPlayback(s)
 			}
@@ -63,6 +63,68 @@ func (a *App) SetDisplayOptions(display string, options config.DisplayOptions) {
 	})
 }
 
+// SetItemProps changes a wallpaper group's own playback properties (fit, speed,
+// volume, audio). Every screen showing it picks them up unless that display
+// overrides the same property.
+func (a *App) SetItemProps(itemID string, props config.ItemProps) {
+	a.Do(func() {
+		it := a.d.Store.Library.Find(itemID)
+		if it == nil {
+			a.lastErr = "找不到这张壁纸"
+			return
+		}
+		props.Normalize()
+		if it.Type == "web" || it.Type == "shader" {
+			var err error
+			props.WebValues, err = canonicalProperties(it.PropertyDefs, props.WebValues)
+			if err != nil {
+				a.lastErr = err.Error()
+				return
+			}
+		}
+		if it.Props == props {
+			return
+		}
+		oldProps := it.Props
+		it.Props = props
+		a.saveLibrary()
+		for _, s := range a.sortedScreens() {
+			if s.item == nil || s.item.ID != itemID {
+				continue
+			}
+			s.item.Props = props
+			if it.Type == "shader" {
+				if !s.started {
+					a.restartPlayback(s)
+					continue
+				}
+				a.applyCap(s)
+				if oldProps.ShaderScale != props.ShaderScale && !a.updateScreenPlayback(s) {
+					a.restartPlayback(s)
+					continue
+				}
+			}
+			if updater, ok := s.r.(render.PropertyUpdater); ok && s.started {
+				gen := s.gen
+				s.ops <- func() {
+					err := updater.UpdateProperties(props.WebValues)
+					if err != nil {
+						a.Do(func() {
+							if s.gen == gen {
+								a.lastErr = err.Error()
+							}
+						})
+					}
+				}
+				continue
+			}
+			if !a.updateScreenPlayback(s) {
+				a.restartPlayback(s)
+			}
+		}
+	})
+}
+
 func (a *App) restartPlayback(s *screen) {
 	a.closeScreen(s, false)
 	if a.ctl.Display(s.n).Level() < visibility.L4 {
@@ -73,6 +135,9 @@ func (a *App) restartPlayback(s *screen) {
 // Updates are serialized with renderer loads/pauses. Unsupported backends retain
 // the explicit restart fallback, while other errors are surfaced without a loop.
 func (a *App) updateScreenPlayback(s *screen) bool {
+	if s.item != nil && !a.updateRendition(s) {
+		return false
+	}
 	updater, ok := s.r.(interface {
 		UpdatePlayback(render.PlaybackOptions) error
 	})
@@ -102,9 +167,15 @@ func (a *App) updateScreenPlayback(s *screen) bool {
 }
 
 func (a *App) playbackOptions(s *screen, r render.Renderer) (render.PlaybackOptions, string) {
-	opts := a.displayOptions(s)
 	c := a.d.Store.Config
-	p := render.PlaybackOptions{Fit: opts.Fit, Speed: opts.Speed, Muted: c.Render.Muted, Scale: c.Perf.RenderScale}
+	pb := a.effectivePlayback(s)
+	p := render.PlaybackOptions{Fit: pb.Fit, Speed: pb.Speed, Muted: pb.Muted, Volume: pb.Volume, Scale: c.Perf.RenderScale}
+	if s.item != nil && s.item.Type == "shader" {
+		p.Scale = s.item.Props.ShaderScale
+		if p.Scale == 0 {
+			p.Scale = .75
+		}
+	}
 	if !s.canvas.Empty() && s != a.spanLeader() {
 		p.Muted = true
 	}
@@ -198,12 +269,17 @@ func (a *App) checkpointPositions() {
 }
 
 func cloneView(v View) View {
+	if v.NetworkConsent != nil {
+		copy := *v.NetworkConsent
+		copy.Hosts = append([]string(nil), copy.Hosts...)
+		v.NetworkConsent = &copy
+	}
 	v.Config = v.Config.Clone()
+	v.Renditions = append([]RenditionView(nil), v.Renditions...)
 	v.Displays = append([]DisplayView(nil), v.Displays...)
 	v.Library = append([]config.Item(nil), v.Library...)
 	for i := range v.Library {
-		v.Library[i].Tags = append([]string(nil), v.Library[i].Tags...)
-		v.Library[i].Colors = append([]string(nil), v.Library[i].Colors...)
+		v.Library[i] = v.Library[i].Clone()
 	}
 	v.ReadOnly = append([]string(nil), v.ReadOnly...)
 	m := make(map[string]string, len(v.Transcoding))

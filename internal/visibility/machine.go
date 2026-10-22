@@ -608,3 +608,6 @@ func (c *Controller) NextDeadline() (time.Duration, bool) {
 
 // IDs 返回已登记显示器的编号（升序）。
 func (c *Controller) IDs() []int { return c.ids() }
+
+// SetKind preserves policy signals/timers while changing the renderer type.
+func (m *Machine) SetKind(k Kind) { m.cfg.Kind = k; m.cfg.T12 = DefaultConfig(k).T12 }

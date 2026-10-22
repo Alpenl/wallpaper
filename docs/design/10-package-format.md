@@ -89,12 +89,12 @@ Go 的 `archive/zip` 默认**不会**拒绝不安全路径；只有设置 `GODEB
 | 设备权限 | `PermissionRequested` 一律 Deny（摄像头、麦克风、定位、通知、剪贴板） | `WKUIDelegate` 的媒体权限请求返回 deny | 【文档】 |
 | 下载 | `DownloadStarting`：Cancel | `WKDownload` 一律取消 | 【文档】 |
 | 宿主桥接 | `AreHostObjectsAllowed=false`；只用 `ExecuteScript` 单向注入属性；`AreDevToolsEnabled=false`（诊断模式除外）；`AreDefaultContextMenusEnabled=false` | 不注册 `WKScriptMessageHandler`（v0 页面不能调用宿主） | 【文档】 |
-| 输入 | 壁纸窗口本身不接收鼠标和键盘（WorkerW 子窗口 / `ignoresMouseEvents`）。v0 **不支持交互式壁纸**，这也顺带消除了钓鱼点击的风险 | 同左 | 【推断】 |
+| 输入 | 壁纸窗口本身不接收鼠标和键盘（WorkerW 子窗口 / `ignoresMouseEvents`）。F-26 经独立 input 授权和总开关后，只观察鼠标并单向供给原生 uniform 或 Web 回调；不拦截点击，不读取键盘 | 同左 | 【推断】 |
 | 音频 | `IsMuted=true` | `mediaTypesRequiringUserActionForPlayback` + 静音 | 【文档】 |
 | 资源 | 帧率封顶，由宿主节流 rAF：页面不可见时浏览器本身会节流，可见时我们按 `fpsCap` 注入 `requestAnimationFrame` 包装【推断】；CPU 看门狗：渲染进程持续 60 s 超过 0.5 核就提示 “该壁纸占用过高”，并允许一键降级 | 同左 | 【推断】 |
 | 存储 | 每个包独立的 user data folder / `WKWebsiteDataStore.nonPersistent()`（v0 不持久化 localStorage） | 同左 | 【文档】 |
 
-**权限清单**（v0）：`network`（访问外网，需要用户同意，同时显示包里声明的域名列表 `web.networkAllow: ["api.example.com"]`），`audio-reactive`（保留字段，v0 未实现，导入时提示不支持）。其他取值拒绝导入。
+**权限清单**（扩展后的 v0）：`network`（访问外网，需要用户同意，同时显示包里声明的域名列表 `web.networkAllow: ["api.example.com"]`），`audio-reactive`（保留字段，v0 未实现，导入时提示不支持）。新增顶层 `permissions: ["audio", "input"]`，仅 shader/web 可声明；web 也可在 `web.permissions` 声明这两项。每项导入同意默认拒绝，重新导入不继承授权；通用设置的两个总开关默认关闭，侧栏可独立撤销。未知值及同一数组中的重复值拒绝导入。
 
 **不支持 `app` 类型**：Lively 支持运行任意 exe（Unity/Godot 等）作为壁纸【源码】WallpaperType。这等于让任意代码以用户权限运行，v0 不做；导入 Lively 的 app 类型包时直接提示不支持【推断，产品决策】。
 

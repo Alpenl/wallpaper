@@ -1,6 +1,7 @@
 // Package ui 是 MyGo 原生 UI（不用 WebView）：托盘（F-09）+ 设置窗口。
 //
-// 设置窗口对标 Wallpaper Engine / Lively 的信息架构（01 章竞品分析）：左侧导航，右侧页面。
+// 设置窗口参照 Wallpaper Engine 以内容为中心（01 章竞品分析）：顶部细导航条（壁纸库 / 显示器 / 设置），
+// 中间是壁纸组网格 + 选中后出现的检查器，底部是每块屏的“正在播放”条（兼作目标显示器选择）。
 //   - 壁纸库：缩略图网格 / 列表、搜索、类型筛选、详情面板（预览、元数据、应用到显示器、一键转码 F-07、删除）、拖入导入（F-06/F-08/F-11）
 //   - 显示器：按真实坐标画的布局示意图、每屏分配（F-03）、运行状态徽章（级别 L0–L4、暂停原因、后端、硬解、限帧，F-17 雏形）
 //   - 播放与性能：性能档位（流畅/均衡/省电 15 fps）、Windows 渲染后端（D-04）、硬件解码、转码编码器（F-07）
@@ -28,18 +29,26 @@ import (
 // Controller 是视图对编排器的依赖（*app.App 满足）。
 type Controller interface {
 	View() app.View
+	ResolveSignalConsent(bool)
+	RevokeSignal(string, string)
+	ResolveNetworkConsent(bool)
+	RevokeNetwork(string)
 	SetPausedAll(bool)
 	Assign(display, itemID string) // 单块屏；display 为空 = 只改默认壁纸
 	AssignAll(itemID string)       // 所有显示器（清除单独设置）
 	SetAlias(display, alias string)
-	SetDisplayOptions(display string, options config.DisplayOptions)
+	SetDisplayOptions(display string, options config.DisplayOptions) // 空 Fit/Speed/Audio = 跟随壁纸
+	SetItemProps(itemID string, props config.ItemProps)              // 壁纸组自带的播放属性
 	SetLayout(layout, itemID string)
 	Import(path, applyTo string) // applyTo：空 = 只加入库；显示器 ID = 同时应用到这块屏
+	CancelImports()
 	Remove(itemID string)
 	UpdateConfig(func(*config.Config))
 	ExitSafeMode()
 	Next()
 	Transcode(itemID string)
+	OptimizeDisplays(itemID string)
+	CancelRenditions(itemID string)
 	RefreshStorage()
 	ClearCache()
 }
@@ -94,8 +103,10 @@ const (
 
 // Settings 是设置窗口的状态（只在 MyGo 主线程上读写；snap 和 upd 例外，加锁）。
 type Settings struct {
-	ctl  Controller
-	GOOS string
+	webDrafts    map[string]*string
+	webDraftBase map[string]string
+	ctl          Controller
+	GOOS         string
 	Hooks
 	Info Info
 	// Invalidate 由 Shell 设置：后台任务完成后请求重绘。
@@ -106,7 +117,7 @@ type Settings struct {
 	upd  updState
 
 	page            string
-	navOpen         [3]bool
+	lastSettings    string // 上次打开的设置子页，顶部“设置”标签回到这里
 	query           string
 	filter          int
 	gridSel         int
@@ -115,11 +126,12 @@ type Settings struct {
 	selID           string
 	confirmRm       bool
 	dispSel         string
-	applySel        string // 详情面板“应用到”下拉框的当前项
+	sortBy          string // 壁纸库排序：空 = 最近导入，name = 名称
 	renameID        string // 正在重命名的显示器 ID（空 = 不在编辑）
 	renameBuf       string
 	diagMsg         string
 	thumbs          map[string]thumb
+	ambients        map[string]ambientBitmap
 	themeKey        string
 	theme           *ui.Theme
 	resetAsk        bool
@@ -142,6 +154,7 @@ type Settings struct {
 	rollbackAsk     bool
 	rollbackVersion string
 	confirmCache    bool
+	pickerStatus    string
 }
 
 type thumb struct {
@@ -150,14 +163,15 @@ type thumb struct {
 }
 
 type updState struct {
-	busy     bool
-	msg      string
-	info     *UpdateInfo
-	progress float64
+	busy      bool
+	installed bool
+	msg       string
+	info      *UpdateInfo
+	progress  float64
 }
 
 func NewSettings(ctl Controller, goos string) *Settings {
-	s := &Settings{ctl: ctl, GOOS: goos, page: pgLibrary, navOpen: [3]bool{true, true, true}, gridSel: -1, thumbs: map[string]thumb{}}
+	s := &Settings{ctl: ctl, GOOS: goos, page: pgLibrary, lastSettings: pgPerf, gridSel: -1, thumbs: map[string]thumb{}}
 	s.grid.Selected = &s.gridSel
 	s.Refresh()
 	return s
@@ -244,29 +258,41 @@ func (s *Settings) View(c *ui.Context) {
 	}
 	s.applyTheme(c, v.Config.UI)
 	t := c.Theme()
-	ui.Row(c.Key("root")).Fill().Clip().AlignItems(ui.Stretch).Background(t.Background).Children(func() {
-		s.sidebar(c, v)
-		ui.Column(c.Key("main")).Grow(1).Shrink(1).MinWidth(0).MinHeight(0).Children(func() {
-			s.banners(c, v)
-			switch s.page {
-			case pgLibrary:
-				s.library(c, v)
-			case pgDisplays:
-				s.displays(c, v)
-			case pgPerf:
-				s.perf(c, v)
-			case pgPause:
-				s.pause(c, v)
-			case pgLook:
-				s.look(c, v)
-			case pgStartup:
-				s.startup(c, v)
-			default:
-				s.about(c, v)
-			}
-		})
+	// 布局参照 Wallpaper Engine：顶部是目标显示器标题与标签条，中间是内容，壁纸库右侧是属性栏，底部是操作栏。
+	ui.Column(c.Key("root")).Fill().Clip().Background(t.Background).Children(func() {
+		s.frame(c, v)
 	})
 	s.firstRun(c, v)
+	s.networkDialog(c, v)
+	s.signalDialog(c, v)
+}
+
+// frame 是窗口内容：标题与标签、页面、底部操作栏。
+func (s *Settings) frame(c *ui.Context, v app.View) {
+	s.topBar(c, v)
+	if isSettingsPage(s.page) {
+		s.settingsTabs(c)
+	}
+	s.banners(c, v)
+	ui.Column(c.Key("main")).Grow(1).Shrink(1).MinWidth(0).MinHeight(0).Children(func() {
+		switch s.page {
+		case pgLibrary:
+			s.library(c, v)
+		case pgDisplays:
+			s.displays(c, v)
+		case pgPerf:
+			s.perf(c, v)
+		case pgPause:
+			s.pause(c, v)
+		case pgLook:
+			s.look(c, v)
+		case pgStartup:
+			s.startup(c, v)
+		default:
+			s.about(c, v)
+		}
+	})
+	s.bottomBar(c, v)
 }
 
 // firstRun：F-10 默认不开机自启，首次运行时询问一次。
@@ -283,88 +309,12 @@ func (s *Settings) firstRun(c *ui.Context, v app.View) {
 	}
 }
 
-func (s *Settings) sidebar(c *ui.Context, v app.View) {
-	t := c.Theme()
-	ui.Column(c.Key("side")).Width(216).MinHeight(0).Background(sideBg(t)).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
-		ui.Row(c.Key("brand")).Gap(10).Padding(18, 16, 10, 16).AlignItems(ui.Center).Children(func() {
-			ui.Box(c).Size(30, 30).Radius(8).Gradient(accentColor(v.Config.UI.Accent), ui.Hex("#22d3ee"), 135).Children(func() {})
-			ui.Column(c).Children(func() {
-				text(c, "动态壁纸").Bold().FontSize(15)
-				text(c, "Wallpaper "+s.Info.Version).FontSize(11).TextColor(t.TextMuted)
-			})
-		})
-		ui.Sidebar(c.Key("nav"), &s.page, func() {
-			sidebarSection(c.Key("sec0"), "壁纸", &s.navOpen[0], func() {
-				sidebarItem(c.Key("n-lib"), pgLibrary, icLibrary, "壁纸库").Children(func() {
-					if n := len(v.Library); n > 0 {
-						ui.Badge(c, itoa(n))
-					}
-				})
-				sidebarItem(c.Key("n-disp"), pgDisplays, icMonitor, "显示器").Children(func() {
-					if n := len(v.Displays); n > 1 {
-						ui.Badge(c, itoa(n))
-					}
-				})
-			})
-			sidebarSection(c.Key("sec1"), "设置", &s.navOpen[1], func() {
-				sidebarItem(c.Key("n-perf"), pgPerf, icGauge, "播放与性能")
-				sidebarItem(c.Key("n-pause"), pgPause, icPause, "暂停与电源")
-				sidebarItem(c.Key("n-look"), pgLook, icPalette, "通用")
-			})
-			sidebarSection(c.Key("sec2"), "系统", &s.navOpen[2], func() {
-				sidebarItem(c.Key("n-start"), pgStartup, icRefresh, "版本管理")
-				sidebarItem(c.Key("n-about"), pgAbout, icInfo, "关于与诊断")
-			})
-		}).Grow(1).MinHeight(0)
-		// 底部状态卡：一眼看到在不在播放，一键暂停（Lively / WE 托盘都有的“暂停全部”）
-		ui.Column(c.Key("status")).Margin(12).Padding(12).Gap(8).Radius(10).Background(cardBg(t)).Border(1, t.Border).Children(func() {
-			playing, paused := 0, 0
-			for _, d := range v.Displays {
-				switch {
-				case d.ItemID == "":
-				case d.Level == "L0" && d.State == "active":
-					playing++
-				default:
-					paused++
-				}
-			}
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				col := t.Success
-				msg := "正在播放"
-				switch {
-				case v.PausedAll:
-					col, msg = t.Warning, "已全部暂停"
-				case playing == 0 && paused > 0:
-					col, msg = t.Warning, "自动暂停中"
-				case playing == 0:
-					col, msg = t.TextMuted, "未设置壁纸"
-				}
-				ui.Box(c).Size(8, 8).Radius(4).Background(col).Children(func() {})
-				text(c, msg).Bold().FontSize(13)
-			})
-			textf(c, "%d 块屏播放 · %d 块屏暂停", playing, paused).FontSize(12).TextColor(t.TextMuted)
-			ui.Row(c).Gap(6).Children(func() {
-				lbl, ic := "暂停全部", icPause
-				if v.PausedAll {
-					lbl, ic = "继续播放", icPlay
-				}
-				if iconButton(c.Key("pauseall"), ic, lbl, false).Grow(1).Clicked() {
-					s.ctl.SetPausedAll(!v.PausedAll)
-				}
-				if iconButton(c.Key("next"), icSkip, "", false).Label(tr(c, "切换到下一张壁纸")).Tooltip(tr(c, "切换到下一张壁纸")).Disabled(len(v.Library) < 2).Clicked() {
-					s.ctl.Next()
-				}
-			})
-		})
-	})
-}
-
 func (s *Settings) banners(c *ui.Context, v app.View) {
 	t := c.Theme()
 	if !v.SafeMode && v.LastError == "" && len(v.ReadOnly) == 0 {
 		return
 	}
-	ui.Column(c.Key("banners")).Padding(16, 24, 0, 24).Gap(8).Children(func() {
+	ui.Column(c.Key("banners")).Padding(12, 24, 0, 24).Gap(8).Children(func() {
 		if v.SafeMode {
 			banner(c.Key("safe"), t.Warning, "安全模式", "连续多次异常退出，壁纸没有自动启动。确认问题已解决后再恢复。", func() {
 				if primaryButton(c.Key("exitsafe"), "恢复正常").Clicked() {
@@ -383,7 +333,7 @@ func (s *Settings) banners(c *ui.Context, v app.View) {
 
 func banner(c *ui.Context, col ui.Color, title, msg string, action func()) {
 	t := c.Theme()
-	ui.Row(c).Gap(12).Padding(12, 14).Radius(10).AlignItems(ui.Center).Background(col.Alpha(0.12)).Border(1, col.Alpha(0.35)).Children(func() {
+	ui.Row(c).Gap(12).Padding(12, 16).Radius(12).AlignItems(ui.Center).Background(col.Alpha(0.10)).Border(1, col.Alpha(0.28)).Children(func() {
 		ui.Box(c).Size(4, 28).Radius(2).Background(col).Children(func() {})
 		ui.Column(c).Grow(1).Children(func() {
 			text(c, title).Bold().FontSize(13)
@@ -397,47 +347,54 @@ func banner(c *ui.Context, col ui.Color, title, msg string, action func()) {
 
 // ---- 共用小部件 ----
 
+// pageWidth 是设置类页面正文的最大宽度。
+const pageWidth = 760
+
 // page 画页面标题和可滚动的内容区。
 func page(c *ui.Context, title, sub string, actions func(), body func()) {
 	t := c.Theme()
-	ui.Row(c.Key("hdr")).Shrink(0).Padding(30, 32, 20, 32).Gap(12).AlignItems(ui.Center).Children(func() {
-		ui.Column(c).Grow(1).Children(func() {
-			text(c, title).Bold().FontSize(22)
-			if sub != "" {
-				text(c, sub).FontSize(13).TextColor(t.TextMuted).Wrap()
+	ui.Row(c.Key("hdr")).Shrink(0).Padding(20, 32, 12, 32).Justify(ui.Center).Children(func() {
+		ui.Row(c).Grow(1).MaxWidth(pageWidth).Gap(12).AlignItems(ui.End).Children(func() {
+			ui.Column(c).Grow(1).Shrink(1).Gap(4).Children(func() {
+				heading(c, tr(c, title), 24)
+				if sub != "" {
+					text(c, sub).FontSize(13).TextColor(t.TextMuted).Wrap()
+				}
+			})
+			if actions != nil {
+				actions()
 			}
 		})
-		if actions != nil {
-			actions()
-		}
 	})
 	ui.Scroll(c.Key("body")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, 32, 32, 32).Gap(20).MaxWidth(920).Children(body)
+		ui.Row(c).Padding(0, 32, 28, 32).Justify(ui.Center).Children(func() {
+			ui.Column(c).Grow(1).MaxWidth(pageWidth).Gap(12).Children(body)
+		})
 	})
 }
 
 // card 是设置分组卡片。
 func card(c *ui.Context, title, desc string, body func()) {
 	t := c.Theme()
-	ui.Column(c).Radius(12).Background(cardBg(t)).Border(1, t.Border).Shadow(0, 1, 2, 0, ui.RGBA(0, 0, 0, 0.04)).Children(func() {
+	ui.Column(c).Gap(8).Children(func() {
 		if title != "" {
-			ui.Column(c).Padding(14, 18, 4, 18).Children(func() {
-				text(c, title).Bold().FontSize(14)
-				if desc != "" {
-					text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap()
-				}
-			})
+			sectionHeader(c, "section", tr(c, title), nil)
 		}
-		ui.Column(c).Padding(4, 18, 10, 18).Children(body)
+		group(c.Key("fields"), func() {
+			if desc != "" {
+				text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap().Padding(12, 0, 4, 0)
+			}
+			body()
+		})
 	})
 }
 
 // settingRow 是“标题 + 说明 | 控件”一行。
 func settingRow(c *ui.Context, title, desc string, control func()) {
 	t := c.Theme()
-	ui.Row(c).Gap(16).Padding(10, 0).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border.Alpha(0.5)).Children(func() {
-		ui.Column(c).Grow(1).Shrink(1).Children(func() {
-			text(c, title).FontSize(13)
+	ui.Row(c).Gap(16).Padding(12, 0).MinHeight(52).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(lineColor(t)).Children(func() {
+		ui.Column(c).Grow(1).Shrink(1).MinWidth(160).Gap(2).Children(func() {
+			text(c, title).FontSize(13).FontWeight(500)
 			if desc != "" {
 				text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap()
 			}
@@ -448,20 +405,7 @@ func settingRow(c *ui.Context, title, desc string, control func()) {
 
 // chip 是小标签。
 func chip(c *ui.Context, label string, col ui.Color) ui.Element {
-	return text(c, label).FontSize(11).Padding(1, 7).Radius(999).Background(col.Alpha(0.14)).TextColor(col).SingleLine()
-}
-
-func iconButton(c *ui.Context, ic *ui.SVG, label string, primary bool) ui.Element {
-	mk := button
-	if primary {
-		mk = primaryButton
-	}
-	return mk(c, "").Children(func() {
-		ui.Icon(c, ic).FontSize(14)
-		if label != "" {
-			text(c, label).SingleLine()
-		}
-	}).Label(tr(c, label))
+	return text(c, label).FontSize(11).FontWeight(600).Padding(2, 8).Radius(6).Background(col.Alpha(0.14)).TextColor(col).SingleLine()
 }
 
 func itoa(n int) string {
@@ -498,6 +442,14 @@ func (s *Settings) filtered(v app.View) []config.Item {
 			}
 		case 2:
 			if it.Type != "image" {
+				continue
+			}
+		case 4:
+			if it.Type != "web" {
+				continue
+			}
+		case 5:
+			if it.Type != "shader" {
 				continue
 			}
 		case 3:
@@ -547,6 +499,7 @@ func (s *Settings) curDisplay(v app.View) *app.DisplayView {
 
 // importPath 导入一个文件：默认只加入库；设置为“应用到当前显示器”时只应用到当前那一块。
 func (s *Settings) importPath(p string) {
+	s.pickerStatus = ""
 	v := s.ctl.View()
 	to := ""
 	if v.Config.UI.ImportApply == "current" {

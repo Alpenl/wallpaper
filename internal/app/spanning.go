@@ -55,6 +55,15 @@ func (a *App) displayOptions(s *screen) config.DisplayOptions {
 	return o
 }
 
+// effectivePlayback resolves display overrides over the wallpaper group's own props.
+func (a *App) effectivePlayback(s *screen) config.Playback {
+	var props config.ItemProps
+	if s.item != nil {
+		props = s.item.Props
+	}
+	return config.ResolvePlayback(props, a.displayOptions(s), a.d.Store.Config.Render.Muted)
+}
+
 // SetLayout preserves the independent assignments/options for returning later.
 // A panorama uses one item and fit/speed, while pause/profile remain per output.
 func (a *App) SetLayout(layout, itemID string) {
