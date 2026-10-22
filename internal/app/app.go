@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"wpapp/internal/config"
@@ -200,6 +201,7 @@ type App struct {
 	cleaning         bool
 	lastImp          string
 	lastErr          string
+	persistenceErr   atomic.Pointer[string]
 	reattach         int
 	transc           map[string]string
 	power            map[visibility.Reason]bool
@@ -319,7 +321,7 @@ func (a *App) shutdown() {
 	st.CleanShutdown = true
 	st.Starts = nil
 	a.saveState()
-	a.d.Store.FlushAll()
+	a.reportShutdownPersistence(a.d.Store.FlushAll())
 	_ = a.d.Host.Close()
 	a.log.Info("exit")
 }
@@ -1129,6 +1131,7 @@ func levelName(m *visibility.Machine) (string, string) {
 }
 
 func (a *App) publish() {
+	a.consumePersistenceError()
 	a.sampleMetrics(time.Now())
 	v := View{SignalConsent: a.signalConsent, NetworkConsent: a.networkConsent, ImportQueued: len(a.importQueue), Config: a.d.Store.Config.Clone(), Capabilities: a.d.Host.Caps(), Paths: a.d.Store.Paths, Storage: a.storage, ForegroundAction: a.foregroundAction, PausedAll: a.pausedAll, SafeMode: a.d.SafeMode, Importing: a.importing,
 		LastImport: a.lastImp, LastError: a.lastErr, ReadOnly: a.d.Store.ReadOnlyWarn,
