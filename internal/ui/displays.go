@@ -76,7 +76,7 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 					y := 12 + float32(d.Y-minY)*sc
 					w, h := float32(d.W)*sc-6, float32(d.H)*sc-6
 					sel := d.ID == s.dispSel
-					mon := ui.Box(c.Key("mon"+d.ID)).Absolute().Left(x).Top(y).Size(w, h).Radius(8).Clip().Border(2, t.Border).Cursor(ui.CursorPointer).Children(func() {
+					mon := ui.Box(c.Key("mon"+d.ID)).Absolute().Left(x).Top(y).Size(w, h).Radius(2).Clip().Border(2, t.Border).Cursor(ui.CursorPointer).Children(func() {
 						if it := s.itemByID(v, d.ItemID); it != nil {
 							s.preview(c, *it, h)
 						} else {
@@ -313,7 +313,7 @@ func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 		})
 		settingRow(c, "暂停此屏幕", "其他屏幕不受影响；继续后仍会遵循自动暂停规则", func() {
 			b := d.Options.Paused
-			if ui.Switch(c.Key("pz"+d.ID), &b).Label(tr(c, "暂停此屏幕 开关")).Changed() {
+			if ui.Checkbox(c.Key("pz"+d.ID), &b, "").Label(tr(c, "暂停此屏幕 开关")).Changed() {
 				opts := d.Options
 				opts.Paused = b
 				s.ctl.SetDisplayOptions(d.ID, opts)

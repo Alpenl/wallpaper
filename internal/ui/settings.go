@@ -116,14 +116,12 @@ type Settings struct {
 	list            ui.ListState
 	selID           string
 	confirmRm       bool
-	detailsOpen     bool
 	dispSel         string
-	applySel        string // 详情面板“应用到”下拉框的当前项
+	sortBy          string // 壁纸库排序：空 = 最近导入，name = 名称
 	renameID        string // 正在重命名的显示器 ID（空 = 不在编辑）
 	renameBuf       string
 	diagMsg         string
 	thumbs          map[string]thumb
-	ambients        map[string]ambientBitmap
 	themeKey        string
 	theme           *ui.Theme
 	resetAsk        bool
@@ -248,18 +246,14 @@ func (s *Settings) View(c *ui.Context) {
 	}
 	s.applyTheme(c, v.Config.UI)
 	t := c.Theme()
-	// 以内容为中心（参照 Wallpaper Engine）：模糊壁纸做环境底色，上面是导航、舞台 + 收藏网格、底部浮动 Dock。
-	// 两层都用绝对定位：MyGo 把绝对定位元素画在普通流之后，所以底色层和内容层按顺序叠放。
-	ui.Box(c.Key("root")).Fill().Clip().Background(t.Background).Children(func() {
-		s.ambient(c, v)
-		ui.Column(c.Key("frame")).Absolute().Left(0).Top(0).Right(0).Bottom(0).Children(func() {
-			s.frame(c, v)
-		})
+	// 布局参照 Wallpaper Engine：顶部是目标显示器标题与标签条，中间是内容，壁纸库右侧是属性栏，底部是操作栏。
+	ui.Column(c.Key("root")).Fill().Clip().Background(t.Background).Children(func() {
+		s.frame(c, v)
 	})
 	s.firstRun(c, v)
 }
 
-// frame 是内容层：导航、页面、Dock。
+// frame 是窗口内容：标题与标签、页面、底部操作栏。
 func (s *Settings) frame(c *ui.Context, v app.View) {
 	s.topBar(c, v)
 	if isSettingsPage(s.page) {
@@ -284,9 +278,7 @@ func (s *Settings) frame(c *ui.Context, v app.View) {
 			s.about(c, v)
 		}
 	})
-	if !isSettingsPage(s.page) {
-		s.nowPlaying(c, v)
-	}
+	s.bottomBar(c, v)
 }
 
 // firstRun：F-10 默认不开机自启，首次运行时询问一次。
@@ -327,7 +319,7 @@ func (s *Settings) banners(c *ui.Context, v app.View) {
 
 func banner(c *ui.Context, col ui.Color, title, msg string, action func()) {
 	t := c.Theme()
-	ui.Row(c).Gap(12).Padding(12, 14).Radius(14).AlignItems(ui.Center).Background(col.Alpha(0.12)).Border(1, col.Alpha(0.30)).Children(func() {
+	ui.Row(c).Gap(12).Padding(10, 14).Radius(3).AlignItems(ui.Center).Background(col.Alpha(0.12)).Border(1, col.Alpha(0.30)).Children(func() {
 		ui.Box(c).Size(4, 28).Radius(2).Background(col).Children(func() {})
 		ui.Column(c).Grow(1).Children(func() {
 			text(c, title).Bold().FontSize(13)
@@ -347,11 +339,10 @@ const pageWidth = 860
 // page 画页面标题和可滚动的内容区。
 func page(c *ui.Context, title, sub string, actions func(), body func()) {
 	t := c.Theme()
-	// 标题和正文同宽居中，不再贴左（原来左侧导航栏占位）。
-	ui.Row(c.Key("hdr")).Shrink(0).Padding(30, 32, 18, 32).Justify(ui.Center).Children(func() {
+	ui.Row(c.Key("hdr")).Shrink(0).Padding(20, 32, 12, 32).Justify(ui.Center).Children(func() {
 		ui.Row(c).Grow(1).MaxWidth(pageWidth).Gap(12).AlignItems(ui.End).Children(func() {
 			ui.Column(c).Grow(1).Shrink(1).Gap(4).Children(func() {
-				display(c, tr(c, title), 28)
+				heading(c, tr(c, title), 22)
 				if sub != "" {
 					text(c, sub).FontSize(13).TextColor(t.TextMuted).Wrap()
 				}
@@ -362,8 +353,8 @@ func page(c *ui.Context, title, sub string, actions func(), body func()) {
 		})
 	})
 	ui.Scroll(c.Key("body")).Grow(1).MinHeight(0).Children(func() {
-		ui.Row(c).Padding(0, 32, 32, 32).Justify(ui.Center).Children(func() {
-			ui.Column(c).Grow(1).MaxWidth(pageWidth).Gap(16).Children(body)
+		ui.Row(c).Padding(0, 32, 28, 32).Justify(ui.Center).Children(func() {
+			ui.Column(c).Grow(1).MaxWidth(pageWidth).Gap(12).Children(body)
 		})
 	})
 }
@@ -371,23 +362,23 @@ func page(c *ui.Context, title, sub string, actions func(), body func()) {
 // card 是设置分组卡片。
 func card(c *ui.Context, title, desc string, body func()) {
 	t := c.Theme()
-	ui.Column(c).Radius(16).Background(glass(t)).Border(1, hairline(t)).Children(func() {
+	ui.Column(c).Radius(3).Background(panelBg(t)).Border(1, lineColor(t)).Children(func() {
 		if title != "" {
-			ui.Column(c).Padding(18, 20, 6, 20).Gap(3).Children(func() {
-				text(c, title).Bold().FontSize(15).LetterSpacing(-0.2)
+			ui.Column(c).Padding(14, 18, 4, 18).Gap(2).Children(func() {
+				text(c, title).FontSize(15).FontWeight(500)
 				if desc != "" {
 					text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap()
 				}
 			})
 		}
-		ui.Column(c).Padding(4, 20, 12, 20).Children(body)
+		ui.Column(c).Padding(2, 18, 10, 18).Children(body)
 	})
 }
 
 // settingRow 是“标题 + 说明 | 控件”一行。
 func settingRow(c *ui.Context, title, desc string, control func()) {
 	t := c.Theme()
-	ui.Row(c).Gap(16).Padding(12, 0).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(hairline(t)).Children(func() {
+	ui.Row(c).Gap(16).Padding(10, 0).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(lineColor(t)).Children(func() {
 		ui.Column(c).Grow(1).Shrink(1).Children(func() {
 			text(c, title).FontSize(13)
 			if desc != "" {
@@ -400,20 +391,7 @@ func settingRow(c *ui.Context, title, desc string, control func()) {
 
 // chip 是小标签。
 func chip(c *ui.Context, label string, col ui.Color) ui.Element {
-	return text(c, label).FontSize(11).Padding(2, 8).Radius(999).Background(col.Alpha(0.15)).TextColor(col).SingleLine()
-}
-
-func iconButton(c *ui.Context, ic *ui.SVG, label string, primary bool) ui.Element {
-	mk := button
-	if primary {
-		mk = primaryButton
-	}
-	return mk(c, "").Children(func() {
-		ui.Icon(c, ic).FontSize(14)
-		if label != "" {
-			text(c, label).SingleLine()
-		}
-	}).Label(tr(c, label))
+	return text(c, label).FontSize(11).Padding(2, 7).Radius(2).Background(col.Alpha(0.16)).TextColor(col).SingleLine()
 }
 
 func itoa(n int) string {

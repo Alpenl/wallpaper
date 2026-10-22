@@ -73,24 +73,21 @@ func TestLibraryDetailActions(t *testing.T) {
 	s.SelectItem("ocean")
 	tt.Frame()
 	must(t, tt, "海浪 4K", "建议优化转码", "Wallpaper Engine 导入")
-	must(t, tt, "应用到", "1  DELL U2723QE（主屏）")
+	// 应用作用于标题里的目标显示器（默认主屏），在底部操作栏。
+	must(t, tt, "显示器 1", "DELL U2723QE")
 	click(t, tt, "应用")
 	if v := ctl.View(); v.Displays[0].ItemID != "ocean" || v.Displays[1].ItemID != "city" || v.Default != "aurora" {
 		t.Fatal("默认只应用到当前显示器（主屏），不动另一块和默认壁纸", v.Displays, v.Default)
 	}
-	s.applySel = "2  显示器 2"
+	s.SelectDisplay("d2")
 	tt.Frame()
 	click(t, tt, "应用")
 	if v := ctl.View(); v.Displays[1].ItemID != "ocean" || v.Default != "aurora" {
 		t.Fatal("应只应用到 2 号屏", v.Displays)
 	}
-	s.applySel = "所有显示器"
-	tt.Frame()
 	s.SelectItem("forest")
 	tt.Frame()
-	s.applySel = "所有显示器"
-	tt.Frame()
-	click(t, tt, "应用")
+	click(t, tt, "应用到所有显示器")
 	if v := ctl.View(); v.Default != "forest" || v.Displays[0].ItemID != "forest" || v.Displays[1].ItemID != "forest" || v.Displays[0].Custom {
 		t.Fatal("应用到所有显示器", v.Displays, v.Default)
 	}
@@ -124,8 +121,8 @@ func TestWallpaperGroupProps(t *testing.T) {
 	if p := ctl.View().Library[1].Props; p.Audio != "mute" || p.Volume != 60 || p.Speed != 0.75 {
 		t.Fatal("sound toggle should only change the group's audio", p)
 	}
-	if tt.HasText("60%") {
-		t.Fatal("volume slider should hide while muted")
+	if !tt.HasText("60%") {
+		t.Fatal("muted group keeps its volume")
 	}
 	click(t, tt, "恢复默认")
 	if p := ctl.View().Library[1].Props; p != (config.ItemProps{}) {
@@ -766,7 +763,7 @@ func TestPageHeaderKeepsSpacingAtMinimumWindowSize(t *testing.T) {
 	}, 900, 600)
 	tt.Frame()
 	header, ok := tt.Find("Header layout check")
-	if !ok || header.Y < 30 {
+	if !ok || header.Y < 16 {
 		t.Fatalf("header collapsed into top padding: %+v", header)
 	}
 	tt.Scroll(500, 400, 0, -600)

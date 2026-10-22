@@ -13,7 +13,7 @@ import (
 func (s *Settings) switchRowDisabled(c *ui.Context, key, title, desc string, on, disabled bool, set func(*config.Config, bool)) {
 	settingRow(c, title, desc, func() {
 		b := on
-		if ui.Switch(c.Key(key), &b).Label(tr(c, title+" 开关")).Disabled(disabled).Changed() {
+		if ui.Checkbox(c.Key(key), &b, "").Label(tr(c, title+" 开关")).Disabled(disabled).Changed() {
 			s.set(func(x *config.Config) { set(x, b) })
 		}
 	})
@@ -45,7 +45,7 @@ func (s *Settings) appRules(c *ui.Context, v app.View) {
 					id := map[string]string{"暂停": "pause", "省电档": "saver", "忽略全屏": "ignore"}[action]
 					s.updateAppRule(rule.Executable, id)
 				}
-				if iconButton(c.Key("remove"), icTrash, "删除规则", false).Label(tr(c, "删除规则 "+rule.Executable)).Clicked() {
+				if button(c.Key("remove"), "删除规则").Label(tr(c, "删除规则 "+rule.Executable)).Clicked() {
 					s.removeAppRule(rule.Executable)
 				}
 			})
@@ -59,7 +59,7 @@ func (s *Settings) appRules(c *ui.Context, v app.View) {
 		ui.Row(c.Key("newrule")).Gap(8).Padding(10, 0).AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c.Key("executable"), &s.appExecutable).Placeholder(tr(c, "例如 game.exe / Safari / firefox")).Label(tr(c, "程序文件名")).Grow(1).MinWidth(120)
 			selectControl(c.Key("newaction"), &s.appAction, []string{"暂停", "省电档", "忽略全屏"}).Label(tr(c, "新规则动作")).Width(130)
-			if iconButton(c.Key("addapp"), icPlus, "添加规则", true).Disabled(strings.TrimSpace(s.appExecutable) == "").Clicked() {
+			if primaryButton(c.Key("addapp"), "添加规则").Disabled(strings.TrimSpace(s.appExecutable) == "").Clicked() {
 				if s.addAppRule() {
 					c.Toast(tr(c, "规则已提交"))
 				}
