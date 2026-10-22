@@ -34,7 +34,7 @@
 | Windows/macOS 真机验收 | W-T*、M* | 本轮未执行 | 明确保留发布门槛 |
 | 性能 AC / 能耗 | PB-idle/video/paused/battery | 本轮未测量 | 不引用旧 box 数据宣称达标 |
 | F-13 搜索正确性/微基准 | `TestLibrarySearchMetadataAndColors`、`BenchmarkLibrarySearch1000`（`internal/ui`） | 通过【主分支验证】 | AMD EPYC 9V74 云端，1000 个匹配项：1,183,088 ns/op（约 1.18 ms）、1,172,315 B/op、4015 allocs/op；不含真实 UI 绘制与 I/O |
-| 研究状态机模块 | `cd docs/design/visibility && go test ./...` | 通过【主分支验证】 | 独立研究模块，不是生产覆盖替代品 |
+| 历史研究状态机模块 | [历史索引](design/visibility/README.md)；旧命令 `cd docs/design/visibility && go test ./...` 已失效 | 历史检查点曾通过；当前 checkout 不可重跑 | Go 副本及模块文件已删除；旧结果须从 Git 历史恢复环境，不能转作生产覆盖 |
 | 研究 D-Bus 模块 | `cd docs/design/linux-dbus && go test ./...` | 编译通过，无测试文件 | 不代表实际 D-Bus/GNOME 会话联调 |
 | 后期研究原型模块 | `cd docs/design/prototype && go test ./...` | 通过【主分支验证】 | 只覆盖该模块当前环境的测试，非 Windows/macOS 真机运行 |
 | 早期 MyGo 原型模块 | `cd docs/research/wpproto_src && go test ./...` | setup 失败【主分支验证】 | 该历史模块 go.mod 未声明 main.go 导入的 `github.com/egoist/mygo`；保留历史骨架，不计为生产模块回归，也不宣称可直接复现 |
@@ -133,9 +133,10 @@ scripts/e2e-update.sh
 根目录测试不递归进入独立 `go.mod`。如改动实验模块，应分别在这些目录执行 `go test ./...` 并独立记结果：
 
 - [`design/prototype`](design/prototype/README.md)
-- [`design/visibility`](design/visibility/README.md)
 - [`design/linux-dbus`](design/linux-dbus/README.md)
 - [`research/wpproto_src`](research/wpproto_src/)
+
+历史状态机副本 [`design/visibility`](design/visibility/README.md) 已删除 Go 与模块文件，不再是可运行模块，旧结果不能在当前 checkout 重跑。生产状态机改用根目录 `go test ./internal/visibility`，其结果不继承历史测试数或覆盖率。
 
 本轮已分别执行的模块结果在台账中列明。早期 `wpproto_src` 依赖声明不完整，不能直接测试；若未来要恢复可运行性，应另行修复依赖并明确区别于原始历史骨架。研究模块即使本轮通过也不计为产品平台覆盖。
 

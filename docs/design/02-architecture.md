@@ -1,5 +1,16 @@
 # 02 总体架构
 
+## 当前架构（以生产源码为准）
+
+- **产品界面**：[`internal/ui`](../../internal/ui/) 使用原生 MyGo，包含设置窗口与托盘；产品 UI 不使用 React 或 WebView。WebView2 / WKWebView 仅用于隔离的网页壁纸宿主。
+- **进程入口**：[`cmd/wallpaperd`](../../cmd/wallpaperd/) 是组合根。MF、Web、Shader 分别以同一 executable 的 `-mfhost`、`-webhost`、`-shaderhost` 模式启动子进程，通过 [`internal/ipc`](../../internal/ipc/) 通信；媒体探测、原生转码和 Shader 预览使用 `-helper probe/transcode/shader-preview`。不是另发 `wp-webhost` 等二进制。mpv 是外部子进程；macOS AVFoundation 视频播放当前仍在主进程，不能概括为全部 renderer 都已隔离。不可信网页/Shader 的执行在 helper 内，不能移入主进程。
+- **编排与依赖**：UI 使用 app 的控制器/视图和 config 类型；[`internal/app`](../../internal/app/) 经 `desktop.Host`、`render.Renderer` 和注入工厂控制桌面与渲染，并直接使用 config、importer、media、transcode、panorama、supervisor、visibility、telemetry 等实现包，不能称为“只依赖接口”。[`internal/visibility`](../../internal/visibility/) 管理暂停/电源状态，supervisor 管理恢复。
+- **现存具体边界**：UI 的 mpv 路径校验仍直接依赖 `render/mpv`；Shader 的 macOS 宿主复用 `desktop/mac` 窗口 helper，importer 复用 Shader 校验，config 依赖 wpk 类型但不反向依赖 app/UI。FFI/`unsafe` 分布在 desktop、render、reactive、transcode/nativeav 与 platform 等包，并非只在 platform。上述事实不是新增反向依赖的许可；平台运行与支持限制见[实现矩阵](../IMPLEMENTATION_STATUS.md)。
+
+## 历史设计正文（冻结参考）
+
+以下保留原轮次方案与证据，包括旧 WebView UI、独立 helper 二进制及依赖约束；与上方当前实现不一致时，以生产源码和实现矩阵为准，不作为当前运行说明。
+
 > **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
 
 > 本章是实现的规格：进程模型、IPC 协议、崩溃恢复、Go 包结构、接口签名。暂停状态机见 [07](07-pause-power-state-machine.md)；配置、日志、遥测见 [16](16-config-logging-telemetry.md)。

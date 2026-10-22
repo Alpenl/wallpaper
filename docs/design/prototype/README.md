@@ -1,6 +1,6 @@
 # wpproto：真机测试原型
 
-> **独立研究实验**：本目录不是 `internal/` 下的生产实现。下文旧实验结果保留其原始范围，不自动计入本轮产品验收；当前状态与模块测试范围见 [验证记录](../../VALIDATION.md)。
+> **冻结的历史研究原型**：保留代码以查阅原始实验，不双维护或作为产品入口。生产实现位于 [`cmd/wallpaperd`](../../../cmd/wallpaperd/)、[`internal/desktop`](../../../internal/desktop/)、[`internal/render`](../../../internal/render/) 与 [`internal/ipc`](../../../internal/ipc/)。下文旧结果只属于历史实验，不自动计入产品验收；当前状态与模块测试范围见 [验证记录](../../VALIDATION.md)。
 
 这是一个用来验证设计假设的测试程序，**不是产品代码**。三个平台共用一份源码，全部用 `CGO_ENABLED=0` 交叉编译。
 
