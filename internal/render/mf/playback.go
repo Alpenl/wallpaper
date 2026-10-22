@@ -160,3 +160,12 @@ func (s *playbackState) update(api playbackAPI, o render.PlaybackOptions) error 
 	s.options = o
 	return nil
 }
+
+// seeked reconciles the desired state even when startup already completed.
+func (s *playbackState) seeked(api playbackAPI) error {
+	s.seeking = false
+	if s.ready {
+		return s.setPause(api, s.paused)
+	}
+	return nil
+}

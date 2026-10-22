@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"wpapp/internal/render"
 	"wpapp/internal/visibility"
@@ -110,6 +111,9 @@ func fakeIPC(t *testing.T, respond func([]json.RawMessage) (any, string)) *clien
 				e = "success"
 			}
 			_ = json.NewEncoder(b).Encode(map[string]any{"request_id": request.ID, "error": e, "data": data})
+			if string(request.Command[0]) == `"loadfile"` && e == "success" {
+				_ = json.NewEncoder(b).Encode(map[string]any{"event": "file-loaded"})
+			}
 		}
 	}()
 	return c
@@ -347,5 +351,142 @@ func TestSourceSwapPreservesPausePositionAndCap(t *testing.T) {
 	}
 	if len(commands) != 0 || r.item.Path != "later.mp4" {
 		t.Fatal("L3 should defer load")
+	}
+}
+
+func TestL3ResumeUsesUpdatedSource(t *testing.T) {
+	r := New(Options{})
+	r.item = render.Item{Path: "old.mp4"}
+	r.level.Store(int32(visibility.L3))
+	var path string
+	r.c = fakeIPC(t, func(c []json.RawMessage) (any, string) {
+		if string(c[0]) == `"loadfile"` {
+			_ = json.Unmarshal(c[1], &path)
+		}
+		return nil, ""
+	})
+	if err := r.UpdateSource(render.Item{Path: "new.mp4", Start: 7}, visibility.L3); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetLevel(visibility.L0); err != nil {
+		t.Fatal(err)
+	}
+	if path != "new.mp4" || r.level.Load() != 0 {
+		t.Fatal(path, r.level.Load())
+	}
+}
+
+func TestLoadWaitsForFileLoadedBeforePause(t *testing.T) {
+	a, b := net.Pipe()
+	c := newClient(a)
+	defer c.Close()
+	defer b.Close()
+	loaded := make(chan struct{})
+	commands := make(chan []json.RawMessage, 2)
+	go func() {
+		sc := bufio.NewScanner(b)
+		for sc.Scan() {
+			var req struct {
+				Command []json.RawMessage `json:"command"`
+				ID      int               `json:"request_id"`
+			}
+			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				return
+			}
+			commands <- req.Command
+			_ = json.NewEncoder(b).Encode(map[string]any{"request_id": req.ID, "error": "success"})
+			if string(req.Command[0]) == `"loadfile"` {
+				<-loaded
+				_ = json.NewEncoder(b).Encode(map[string]any{"event": "file-loaded"})
+			}
+		}
+	}()
+	done := make(chan error, 1)
+	go func() { done <- c.loadFile("new.mp4", map[string]string{"pause": "no"}, false) }()
+	<-commands
+	select {
+	case err := <-done:
+		t.Fatalf("returned before load: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(loaded)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	cmd := <-commands
+	if string(cmd[0]) != `"set_property"` || string(cmd[2]) != "false" {
+		t.Fatal(cmd)
+	}
+}
+
+func TestIPCWriteDeadlineUnblocksQueue(t *testing.T) {
+	a, b := net.Pipe() // Peer deliberately never reads the command.
+	c := newClient(a)
+	defer c.Close()
+	defer b.Close()
+	done := make(chan error, 1)
+	go func() { _, err := c.cmd("set_property", "pause", false); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("blocked write succeeded")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("write deadline did not unblock the renderer operation")
+	}
+}
+
+// Reject deadlines to exercise the guard used by non-pollable transports.
+type noDeadlineIPC struct{ net.Conn }
+
+func (p noDeadlineIPC) SetWriteDeadline(time.Time) error { return errors.New("unsupported") }
+
+func TestIPCWriteFallbackClosesBlockedTransport(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	c := newClient(noDeadlineIPC{a})
+	defer c.Close()
+	done := make(chan error, 1)
+	go func() { _, err := c.cmd("set_property", "pause", false); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("blocked write succeeded")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("close guard failed")
+	}
+	select {
+	case <-c.closed:
+	case <-time.After(time.Second):
+		t.Fatal("fallback did not close transport")
+	}
+}
+
+func TestIPCWriteDeadlineKeepsConnectionUsable(t *testing.T) {
+	a, b := net.Pipe()
+	c := newClient(a)
+	defer c.Close()
+	defer b.Close()
+	// No peer reader: only the write deadline should expire, not the connection.
+	if _, err := c.cmd("set_property", "pause", true); err == nil {
+		t.Fatal("blocked write succeeded")
+	}
+	go func() {
+		sc := bufio.NewScanner(b)
+		for sc.Scan() {
+			var req struct {
+				RequestID int `json:"request_id"`
+			}
+			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				return
+			}
+			if json.NewEncoder(b).Encode(map[string]any{"request_id": req.RequestID, "error": "success"}) != nil {
+				return
+			}
+		}
+	}()
+	if err := c.setPause(false); err != nil {
+		t.Fatalf("connection unusable after write timeout: %v", err)
 	}
 }

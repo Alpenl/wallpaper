@@ -17,8 +17,10 @@ import (
 type client struct {
 	rw      io.ReadWriteCloser
 	mu      sync.Mutex
+	writeMu sync.Mutex
 	next    int
 	pending map[int]chan resp
+	loaded  chan struct{}
 	loops   atomic.Int64 // playback-restart 事件计数（循环回到开头会触发）
 	first   chan struct{}
 	once    sync.Once
@@ -48,6 +50,14 @@ func (c *client) readLoop() {
 			continue
 		}
 		if r.Event != "" {
+			if r.Event == "file-loaded" {
+				c.mu.Lock()
+				if c.loaded != nil {
+					close(c.loaded)
+					c.loaded = nil
+				}
+				c.mu.Unlock()
+			}
 			if r.Event == "playback-restart" {
 				c.loops.Add(1)
 				c.once.Do(func() { close(c.first) })
@@ -79,8 +89,27 @@ func (c *client) cmd(args ...any) (json.RawMessage, error) {
 	ch := make(chan resp, 1)
 	c.pending[id] = ch
 	b, _ := json.Marshal(map[string]any{"command": args, "request_id": id})
-	_, err := c.rw.Write(append(b, '\n'))
 	c.mu.Unlock()
+	c.writeMu.Lock()
+	// Serialize deadline setup/reset with the write it protects.
+	var clearDeadline func()
+	if rw, ok := c.rw.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		if err := rw.SetWriteDeadline(time.Now().Add(2 * time.Second)); err == nil {
+			clearDeadline = func() { _ = rw.SetWriteDeadline(time.Time{}) }
+		}
+	}
+	if clearDeadline == nil {
+		done := make(chan struct{})
+		guard := time.AfterFunc(2*time.Second, func() { _ = c.rw.Close(); close(done) })
+		clearDeadline = func() {
+			if !guard.Stop() {
+				<-done
+			}
+		}
+	}
+	_, err := c.rw.Write(append(b, '\n'))
+	clearDeadline()
+	c.writeMu.Unlock()
 	if err != nil {
 		c.mu.Lock()
 		delete(c.pending, id)
@@ -151,4 +180,31 @@ func (d *stallDetector) observe(paused bool, loops int64, pos float64) bool {
 	}
 	d.last.loops, d.last.pos, d.last.ok = loops, pos, true
 	return d.same >= 2
+}
+
+// A command reply only acknowledges loadfile; per-file options are applied later.
+// Subscribe before sending so an early file-loaded event cannot be lost.
+func (c *client) loadFile(path string, options map[string]string, paused bool) error {
+	loaded := make(chan struct{})
+	c.mu.Lock()
+	c.loaded = loaded
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		if c.loaded == loaded {
+			c.loaded = nil
+		}
+		c.mu.Unlock()
+	}()
+	if _, err := c.cmd("loadfile", path, "replace", -1, options); err != nil {
+		return err
+	}
+	select {
+	case <-loaded:
+		return c.setPause(paused)
+	case <-c.closed:
+		return errClosed
+	case <-time.After(5 * time.Second):
+		return errors.New("mpv: file-loaded timeout")
+	}
 }

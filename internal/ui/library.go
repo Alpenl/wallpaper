@@ -37,8 +37,8 @@ func (s *Settings) importFiles() {
 	}
 }
 
-// library 是主页，布局参照 Wallpaper Engine：左边是工具条 + 封面网格，右边是选中壁纸的属性栏。
-// 选中项默认是目标显示器正在播放的那张，所以属性栏总有内容；应用按钮在底部操作栏。
+// library renders the left content area and handles file drops.
+// The window frame owns the full-height property panel.
 func (s *Settings) library(c *ui.Context, v app.View) {
 	t := c.Theme()
 	// Only clear selection after a refreshed snapshot confirms removal, never
@@ -68,18 +68,11 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 			inUse[d.ItemID] = append(inUse[d.ItemID], dispLabel(c, d))
 		}
 	}
-	drop := ui.Row(c.Key("libdrop")).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
+	drop := ui.Row(c.Key("libdrop")).Grow(1).Shrink(1).Basis(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 		ui.Column(c.Key("libmain")).Grow(1).Shrink(1).MinWidth(0).MinHeight(0).Children(func() {
 			if len(v.Library) == 0 {
-				if v.Importing || v.ImportQueued > 0 || v.LastImport != "" || s.pickerStatus != "" {
-					s.importStatus(c, v)
-				}
 				s.emptyLibrary(c, v)
 				return
-			}
-			s.toolbar(c, v)
-			if v.Importing || v.ImportQueued > 0 || v.LastImport != "" || s.pickerStatus != "" {
-				s.importStatus(c, v)
 			}
 			if len(items) == 0 {
 				ui.Column(c).Grow(1).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
@@ -93,9 +86,6 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 				s.libGrid(c, v, items)
 			}
 		})
-		if it := s.itemByID(v, s.selID); it != nil {
-			s.sidePanel(c, v, *it, inUse[it.ID])
-		}
 	})
 	if drop.FileDragOver() {
 		drop.Background(t.Accent.Alpha(0.08)).Border(2, t.Accent.Alpha(0.5))
@@ -107,7 +97,7 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 
 func (s *Settings) importStatus(c *ui.Context, v app.View) {
 	t := c.Theme()
-	ui.Row(c.Key("importStatus")).Padding(0, 26, 8, 26).Gap(6).AlignItems(ui.Center).Children(func() {
+	ui.Row(c.Key("importStatus")).Grow(1).Shrink(1).MinWidth(0).Gap(6).AlignItems(ui.Center).Children(func() {
 		if v.Importing {
 			ui.Spinner(c).Size(14, 14)
 		}
@@ -127,11 +117,11 @@ func (s *Settings) importStatus(c *ui.Context, v app.View) {
 	})
 }
 
-// toolbar：搜索 | 类型筛选（分段）| 数量 … 排序 | 网格/列表。
+// toolbar shares the navigation row: search, filter menu, sort and view.
 func (s *Settings) toolbar(c *ui.Context, v app.View) {
-	ui.Row(c.Key("filters")).Shrink(0).Wrap().Padding(16, 24, 12, 24).Gap(10).AlignItems(ui.Center).Children(func() {
-		ui.TextInput(c.Key("q"), &s.query).Placeholder(tr(c, "搜索名称、标签、作者")).Label(tr(c, "搜索壁纸")).Radius(9).Padding(7, 12).Width(220).Shrink(1).MinWidth(140)
-		segmentGroup(c.Key("ftabs"), func() {
+	ui.Row(c.Key("filters")).Grow(1).Shrink(1).MinWidth(0).Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.TextInput(c.Key("q"), &s.query).Placeholder(tr(c, "搜索名称、标签、作者")).Label(tr(c, "搜索壁纸")).Radius(9).Padding(4, 8).FontSize(13).Height(26).Grow(1).Shrink(1).MinWidth(80)
+		softButton(c.Key("ftabs"), "筛选结果").Menu(func(m *ui.Menu) {
 			for i, l := range filterLabels {
 				n := 0
 				for _, it := range v.Library {
@@ -143,14 +133,13 @@ func (s *Settings) toolbar(c *ui.Context, v app.View) {
 				if i >= 4 && n == 0 {
 					continue
 				}
-				if segment(c.Key("f"+itoa(i)), fmt.Sprintf("%s %d", tr(c, l), n), s.filter == i).FontSize(12).Clicked() {
+				if m.Item(fmt.Sprintf("%s %d", tr(c, l), n)).Checked(s.filter == i).Chosen() {
 					s.filter = i
 				}
 			}
 		})
-		ui.Box(c).Grow(1).Children(func() {})
 		sortLabel := map[string]string{"": "最近导入", "name": "名称"}[s.sortBy]
-		if selectControl(c.Key("sort"), &sortLabel, []string{"最近导入", "名称"}).Label(tr(c, "排序")).Radius(9).Width(124).Shrink(0).Changed() {
+		if selectControl(c.Key("sort"), &sortLabel, []string{"最近导入", "名称"}).Label(tr(c, "排序")).Radius(9).Width(118).Height(26).FontSize(12).Shrink(0).Changed() {
 			s.sortBy = map[string]string{"最近导入": "", "名称": "name"}[sortLabel]
 		}
 		view := v.Config.UI.LibraryView
@@ -184,7 +173,7 @@ func (s *Settings) emptyLibrary(c *ui.Context, v app.View) {
 	})
 }
 
-// libGrid 是封面网格：16:10 封面、12px 圆角，标题压在左下渐变上；选中是强调色描边加外发光。
+// libGrid uses responsive 16:9 covers and a 6px gutter.
 // 选择由格子自己处理（单击选中、双击应用到目标屏）。
 func (s *Settings) libGrid(c *ui.Context, v app.View, items []config.Item) {
 	t := c.Theme()
@@ -194,14 +183,18 @@ func (s *Settings) libGrid(c *ui.Context, v app.View, items []config.Item) {
 			screens[d.ItemID] = append(screens[d.ItemID], itoa(d.Index))
 		}
 	}
+	w, _ := c.Size()
+	available := w - 320 - 24
+	cols := max(1, int((available+6)/226))
+	tileHeight := (available - float32(cols-1)*6) / float32(cols) * 9 / 16
 	s.grid.Selected = nil
 	s.grid.Key = func(i int) any { return items[i].ID }
 	s.grid.Label = func(i int) string { return items[i].Title }
-	ui.GridView(c.Key("grid"), &s.grid, len(items), 200, 140, func(i int) {
+	ui.GridView(c.Key("grid"), &s.grid, len(items), 220, tileHeight, func(i int) {
 		it := items[i]
 		sel := i == s.gridSel
-		tile := ui.Box(c.Key("card"+it.ID)).Grow(1).Margin(6).Radius(12).Clip().Cursor(ui.CursorPointer).Background(t.Surface).Border(1, lineColor(t)).Children(func() {
-			s.preview(c, it, 128)
+		tile := ui.Box(c.Key("card"+it.ID)).Grow(1).Margin(-2).Radius(6).Clip().Cursor(ui.CursorPointer).Background(t.Surface).Border(1, lineColor(t)).Children(func() {
+			s.preview(c, it, tileHeight)
 			ui.Row(c).Absolute().Top(8).Left(8).Right(8).Gap(6).Children(func() {
 				if n := screens[it.ID]; len(n) > 0 {
 					ui.Row(c).Gap(5).Padding(2, 8).Radius(999).Background(ui.RGBA(10, 12, 16, 0.62)).AlignItems(ui.Center).Children(func() {
@@ -237,7 +230,7 @@ func (s *Settings) libGrid(c *ui.Context, v app.View, items []config.Item) {
 		if tile.DoubleClicked() {
 			s.applyCurrent(c, v, it.ID)
 		}
-	}).Grow(1).MinHeight(0).Padding(0, 18, 14, 18)
+	}).Grow(1).MinHeight(0).Padding(6, 12, 12, 12).Gap(0)
 }
 
 // placeholderColors 是没有首帧截图时按 id 取的稳定渐变色。
@@ -266,11 +259,11 @@ func (s *Settings) preview(c *ui.Context, it config.Item, h float32) {
 func (s *Settings) libList(c *ui.Context, v app.View, items []config.Item, inUse map[string][]string) {
 	t := c.Theme()
 	ui.Scroll(c.Key("listscroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Gap(6).Padding(0, 24, 14, 24).Children(func() {
+		ui.Column(c).Gap(6).Padding(6, 12, 12, 12).Children(func() {
 			for i, it := range items {
 				it, i := it, i
-				row := ui.Row(c.Key("row"+it.ID)).Gap(14).Padding(6, 14, 6, 6).Radius(12).AlignItems(ui.Center).Background(panelBg(t)).Border(1, lineColor(t)).Cursor(ui.CursorPointer).Children(func() {
-					ui.Box(c).Width(104).Radius(8).Clip().Children(func() { s.preview(c, it, 58) })
+				row := ui.Row(c.Key("row"+it.ID)).Height(44).Gap(8).Padding(2, 8, 2, 2).Radius(6).AlignItems(ui.Center).Background(panelBg(t)).Border(1, lineColor(t)).Cursor(ui.CursorPointer).Children(func() {
+					ui.Box(c).Width(68).Radius(8).Clip().Children(func() { s.preview(c, it, 38) })
 					ui.Column(c).Grow(1).Shrink(1).Gap(3).Children(func() {
 						ui.Text(c, it.Title).FontSize(14).FontWeight(600).SingleLine().Ellipsis("…")
 						meta := tr(c, typeNames[it.Type]) + " · " + tr(c, originNames[it.Origin])
@@ -302,76 +295,82 @@ func (s *Settings) libList(c *ui.Context, v app.View, items []config.Item, inUse
 	})
 }
 
-// sidePanel 是右侧属性栏。顶部铺一层选中壁纸的模糊色（预先算好的小图，见 ambient.go），
-// 预览卡浮在上面；往下是标题、标签、操作、属性组、转码建议、详细信息。
+// propertyPanel keeps the preview and footer pinned around independently scrolling properties.
+func (s *Settings) propertyPanel(c *ui.Context, v app.View) {
+	t := c.Theme()
+	ui.Column(c.Key("detail")).Label(tr(c, "壁纸属性面板")).Width(320).Shrink(0).MinHeight(0).Background(panelBg(t)).BorderWidth(0, 0, 0, 1).BorderColor(lineColor(t)).Clip().Children(func() {
+		bar := c.TitleBar()
+		if s.GOOS == "windows" && bar.Right > 0 && bar.Height > 0 {
+			ui.Box(c.Key("caption-strip")).Height(bar.Height).Shrink(0).DragWindow().Children(func() {})
+		}
+		if it := s.itemByID(v, s.selID); it != nil {
+			var using []string
+			for _, d := range v.Displays {
+				if d.ItemID == it.ID {
+					using = append(using, dispLabel(c, d))
+				}
+			}
+			s.sidePanel(c, v, *it, using)
+		} else {
+			ui.Column(c).Grow(1).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+				text(c, "选择壁纸以查看属性").FontSize(13).TextColor(t.TextMuted)
+			})
+		}
+		s.panelFooter(c, v)
+	})
+}
+
 func (s *Settings) sidePanel(c *ui.Context, v app.View, it config.Item, using []string) {
 	t := c.Theme()
-	w, _ := c.Size()
-	ui.Column(c.Key("detail")).Width(map[bool]float32{true: 300, false: 360}[w < 1100]).Shrink(0).MinHeight(0).Background(panelBg(t)).BorderWidth(0, 0, 0, 1).BorderColor(lineColor(t)).Clip().Children(func() {
-		// 色彩氛围
-		ui.Box(c.Key("wash")).Absolute().Left(0).Right(0).Top(0).Height(300).Clip().Children(func() {
-			if bm := s.ambientOf(it); bm != nil {
-				ui.Image(c, bm).Fit(ui.Cover).Fill().Opacity(0.55)
-			} else {
-				from, to := placeholderColors(it.ID)
-				ui.Box(c).Fill().Gradient(from, to, 150).Opacity(0.45).Children(func() {})
-			}
-			ui.Box(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).LinearGradient(ui.LinearGradient{From: panelBg(t).Alpha(0.15), To: panelBg(t), Angle: 180}).Children(func() {})
-		})
-		// 两层都绝对定位：MyGo 把绝对定位元素画在普通流之后，按顺序叠放才能让内容盖在色彩上。
-		ui.Scroll(c.Key("dscroll")).Absolute().Left(0).Top(0).Right(0).Bottom(0).Children(func() {
-			ui.Column(c).Padding(18, 18, 20, 18).Gap(12).Children(func() {
-				ui.Box(c.Key("stage")).Height(186).Radius(12).Clip().Border(1, ui.RGBA(255, 255, 255, 0.10)).Shadow(0, 16, 36, -10, ui.RGBA(0, 0, 0, 0.55)).Children(func() {
-					s.preview(c, it, 186)
-					if len(using) > 0 {
-						ui.Row(c).Absolute().Left(10).Bottom(10).Gap(6).Padding(3, 10).Radius(999).Background(ui.RGBA(10, 12, 16, 0.65)).AlignItems(ui.Center).Children(func() {
-							ui.Box(c).Size(6, 6).Radius(3).Background(ui.Hex("#34d399")).Children(func() {})
-							ui.Text(c, tr(c, "正在用于：")+strings.Join(using, "、")).FontSize(11).TextColor(ui.Hex("#ffffff")).SingleLine().Ellipsis("…")
-						})
-					}
-				})
-				ui.Column(c).Gap(4).Padding(4, 2, 0, 2).Children(func() {
-					heading(c, it.Title, 20).Wrap()
-					meta := tr(c, originNames[it.Origin])
-					if it.Author != "" {
-						meta += " · " + it.Author
-					}
-					ui.Text(c, meta).FontSize(13).TextColor(t.TextMuted).Wrap()
-				})
-				ui.Row(c.Key("tags")).Wrap().Gap(6).Padding(0, 2).Children(func() {
-					tag := func(label string) {
-						ui.Text(c, label).FontSize(11).FontWeight(600).Padding(3, 9).Radius(6).Background(t.Surface).Border(1, lineColor(t)).TextColor(t.TextMuted)
-					}
-					tag(tr(c, typeNames[it.Type]))
-					if it.Codec != "" {
-						tag(strings.ToUpper(it.Codec))
-					}
-					if it.Width > 0 && it.Height > 0 {
-						tag(fmt.Sprintf("%d × %d", it.Width, it.Height))
-					}
-					switch it.Transcode {
-					case "recommended":
-						chip(c, "建议转码", t.Warning).Padding(3, 9)
-					case "done":
-						chip(c, "已优化", t.Success).Padding(3, 9)
-					}
-				})
-				ui.Row(c.Key("acts")).Gap(8).Padding(4, 0, 0, 0).Children(func() {
-					if softButton(c.Key("props"), "屏幕属性").Grow(1).Basis(0).Clicked() {
-						s.page = pgDisplays
-					}
-					if softButton(c.Key("reveal"), "打开位置").Grow(1).Basis(0).Disabled(s.ShowInFolder == nil).Clicked() {
-						s.ShowInFolder(filepath.Join(it.Dir, it.Entry))
-					}
-				})
-				if button(c.Key("rm"), "从壁纸库删除").Radius(8).Padding(7, 12).FillWidth().Background(t.Danger.Alpha(0.10)).Border(1, t.Danger.Alpha(0.28)).TextColor(t.Danger).Disabled(v.Importing).Clicked() {
-					s.confirmRm = true
+	ui.Box(c.Key("stage")).Label(tr(c, "壁纸预览")).Height(180).Shrink(0).Clip().Children(func() {
+		s.preview(c, it, 180)
+		if len(using) > 0 {
+			ui.Text(c, tr(c, "正在用于：")+strings.Join(using, "、")).Absolute().Left(10).Bottom(10).FontSize(11).TextColor(ui.Hex("#ffffff")).Background(ui.RGBA(10, 12, 16, 0.65)).Padding(3, 8).SingleLine()
+		}
+	})
+	ui.Scroll(c.Key("dscroll")).Grow(1).Shrink(1).MinHeight(0).Children(func() {
+		ui.Column(c).Padding(8, 12, 12, 12).Gap(6).Children(func() {
+			ui.Column(c).Gap(4).Padding(4, 2, 0, 2).Children(func() {
+				heading(c, it.Title, 20).Wrap()
+				meta := tr(c, originNames[it.Origin])
+				if it.Author != "" {
+					meta += " · " + it.Author
 				}
-				s.groupProps(c, v, it)
-				s.overrideNotice(c, v)
-				s.transcodeCard(c, v, it)
-				s.details(c, it)
+				ui.Text(c, meta).FontSize(13).TextColor(t.TextMuted).Wrap()
 			})
+			ui.Row(c.Key("tags")).Wrap().Gap(6).Padding(0, 2).Children(func() {
+				tag := func(label string) {
+					ui.Text(c, label).FontSize(11).FontWeight(600).Padding(3, 9).Radius(6).Background(t.Surface).Border(1, lineColor(t)).TextColor(t.TextMuted)
+				}
+				tag(tr(c, typeNames[it.Type]))
+				if it.Codec != "" {
+					tag(strings.ToUpper(it.Codec))
+				}
+				if it.Width > 0 && it.Height > 0 {
+					tag(fmt.Sprintf("%d × %d", it.Width, it.Height))
+				}
+				switch it.Transcode {
+				case "recommended":
+					chip(c, "建议转码", t.Warning).Padding(3, 9)
+				case "done":
+					chip(c, "已优化", t.Success).Padding(3, 9)
+				}
+			})
+			ui.Row(c.Key("acts")).Gap(8).Padding(4, 0, 0, 0).Children(func() {
+				if softButton(c.Key("props"), "屏幕属性").Grow(1).Basis(0).Clicked() {
+					s.page = pgDisplays
+				}
+				if softButton(c.Key("reveal"), "打开位置").Grow(1).Basis(0).Disabled(s.ShowInFolder == nil).Clicked() {
+					s.ShowInFolder(filepath.Join(it.Dir, it.Entry))
+				}
+			})
+			if ghostButton(c.Key("rm"), "从壁纸库删除").AlignSelf(ui.Start).TextColor(t.Danger).Disabled(v.Importing).Clicked() {
+				s.confirmRm = true
+			}
+			s.groupProps(c, v, it)
+			s.overrideNotice(c, v)
+			s.transcodeCard(c, v, it)
+			s.details(c, it)
 		})
 	})
 	if alertDialog(c.Key("rmdlg"), &s.confirmRm, fmt.Sprintf(tr(c, "删除「%s」？"), it.Title), "会同时删除导入时复制的文件和缩略图，使用它的显示器会恢复系统壁纸。此操作不能撤销。", "取消", "删除") == 1 {
@@ -387,13 +386,13 @@ func (s *Settings) sidePanel(c *ui.Context, v app.View, it config.Item, using []
 // group 是属性栏里抬高一层的分组卡片，行与行之间用细线隔开。
 func group(c *ui.Context, fn func()) ui.Element {
 	t := c.Theme()
-	return ui.Column(c).Radius(12).Background(raisedBg(t)).Border(1, lineColor(t)).Padding(2, 14).Children(fn)
+	return ui.Column(c).Radius(12).Background(raisedBg(t)).Border(1, lineColor(t)).Padding(2, 12).Children(fn)
 }
 
 // propRow 是分组卡片的一行：左边名称（可带一行说明），右边控件；last 行不画分隔线。
 func propRow(c *ui.Context, key, label, sub string, last bool, control func()) {
 	t := c.Theme()
-	r := ui.Row(c.Key(key)).Gap(12).MinHeight(44).Padding(8, 0).AlignItems(ui.Center).Children(func() {
+	r := ui.Row(c.Key(key)).Gap(6).MinHeight(32).Padding(2, 0).AlignItems(ui.Center).Children(func() {
 		ui.Column(c).Width(92).Shrink(0).Gap(1).Children(func() {
 			text(c, label).FontSize(13).FontWeight(500).SingleLine()
 			if sub != "" {
@@ -472,7 +471,7 @@ func (s *Settings) groupProps(c *ui.Context, v app.View, it config.Item) {
 		})
 		propRow(c, "g-fit", "填充", "", true, func() {
 			fit := fitNames[eff.Fit]
-			if selectControl(c.Key("ifit"), &fit, fitLabels).Label(tr(c, "壁纸填充方式")).Radius(8).Width(150).Changed() {
+			if selectControl(c.Key("ifit"), &fit, fitLabels).Label(tr(c, "壁纸填充方式")).Radius(8).Width(136).Changed() {
 				id := fitIDs[fit]
 				setProps(func(p *config.ItemProps) { p.Fit = id })
 			}
@@ -488,7 +487,7 @@ func (s *Settings) transcodeCard(c *ui.Context, v app.View, it config.Item) {
 	if it.Type != "video" && it.Transcode != "recommended" && st == "" {
 		return
 	}
-	ui.Column(c.Key("tc")).Gap(6).Padding(14).Radius(12).Background(t.Warning.Alpha(0.08)).Border(1, t.Warning.Alpha(0.28)).Children(func() {
+	ui.Column(c.Key("tc")).Gap(6).Padding(12).Radius(12).Background(t.Warning.Alpha(0.08)).Border(1, t.Warning.Alpha(0.28)).Children(func() {
 		text(c, "为每块屏优化").FontSize(13).FontWeight(600).TextColor(t.Warning)
 		busy := false
 		for _, rv := range v.Renditions {
@@ -540,13 +539,13 @@ func (s *Settings) transcodeCard(c *ui.Context, v app.View, it config.Item) {
 				text(c, "正在转码，可以继续使用其他功能…").FontSize(12)
 			})
 		case !v.HasEncoder:
-			text(c, s.noEncoderHint()).FontSize(12).TextColor(t.Warning).Wrap()
+			text(c, "需要 ffmpeg 才能转码").FontSize(12).TextColor(t.TextMuted).Wrap()
 			if softButton(c.Key("tcset"), "设置编码器…").Clicked() {
 				s.page = pgPerf
 			}
 		default:
 			if st != "" {
-				text(c, st).FontSize(12).TextColor(t.Danger).Wrap()
+				text(c, localizedError(c, st)).FontSize(12).TextColor(t.Danger).Wrap()
 			}
 			if softButton(c.Key("tcgo"), "一键优化").Margin(4, 0, 0, 0).FillWidth().Clicked() {
 				s.ctl.Transcode(it.ID)
@@ -622,7 +621,7 @@ func (s *Settings) overrideNotice(c *ui.Context, v app.View) {
 	case "sound":
 		parts = append(parts, tr(c, "播放声音"))
 	}
-	ui.Column(c.Key("override")).Gap(6).Padding(14).Radius(12).Background(t.Accent.Alpha(0.08)).Border(1, t.Accent.Alpha(0.3)).Children(func() {
+	ui.Column(c.Key("override")).Gap(6).Padding(12).Radius(12).Background(t.Accent.Alpha(0.08)).Border(1, t.Accent.Alpha(0.3)).Children(func() {
 		ui.Text(c, fmt.Sprintf(tr(c, "%s 单独覆盖了：%s"), dispLabel(c, *d), strings.Join(parts, tr(c, "、")))).FontSize(12).Wrap()
 		text(c, "在这块屏上以覆盖为准，其他屏使用壁纸自带的属性。").FontSize(11).TextColor(t.TextMuted).Wrap()
 		if softButton(c.Key("clearov"), "清除覆盖").FontSize(12).Clicked() {

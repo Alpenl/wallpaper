@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"wpapp/internal/config"
 	"wpapp/internal/desktop"
 	"wpapp/internal/media"
 	"wpapp/internal/transcode"
@@ -218,4 +219,28 @@ func TestRemoveWaitsForRenditionHandles(t *testing.T) {
 	}
 	close(release)
 	eventually(t, "removed after handles released", func() bool { return len(e.a.View().Library) == 0 })
+}
+
+func TestMissingEncoderSkipsAutomaticRendition(t *testing.T) {
+	var calls atomic.Int32
+	e := setupWith(t, 1, true, func(d *Deps) {
+		it := d.Store.Library.Find("x")
+		if err := os.WriteFile(filepath.Join(it.Dir, it.Entry), []byte("source"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		d.EncoderInfo = func(config.Config) transcode.Capabilities { return transcode.Capabilities{} }
+		d.EncodeRendition = func(context.Context, string, string, transcode.Target) error {
+			calls.Add(1)
+			return transcode.ErrNoEncoder
+		}
+	})
+	e.sync()
+	if calls.Load() != 0 || e.a.View().LastError != "" {
+		t.Fatal("automatic job must silently skip unavailable encoder")
+	}
+	e.a.OptimizeDisplays("x")
+	e.sync()
+	if e.a.View().LastError != "需要 ffmpeg 才能转码" {
+		t.Fatalf("explicit request needs localized feedback: %q", e.a.View().LastError)
+	}
 }

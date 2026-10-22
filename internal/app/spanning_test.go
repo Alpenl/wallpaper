@@ -167,7 +167,7 @@ func TestSpanningOwnsResumeAndAudioWithoutChangingIndependentHistory(t *testing.
 	a := New(Deps{Store: &config.Store{Config: cfg, Assign: config.Assignments{}, State: config.State{Positions: map[string]float64{"A|x": 12, "B|x": 29}}}})
 	canvas := image.Rect(-100, 0, 100, 100)
 	for i, id := range []desktop.DisplayID{"A", "B"} {
-		a.screens[id] = &screen{d: desktop.Display{ID: id, Primary: i == 0}, canvas: canvas, item: &config.Item{ID: "x", Type: "video"}, started: true, r: &optionRenderer{fakeR: &fakeR{}, pos: float64(40 + i)}}
+		a.screens[id] = &screen{worker: &screenWorker{}, d: desktop.Display{ID: id, Primary: i == 0}, canvas: canvas, item: &config.Item{ID: "x", Type: "video"}, started: true, r: &optionRenderer{fakeR: &fakeR{}, pos: float64(40 + i)}}
 	}
 	primary, secondary := a.screens["A"], a.screens["B"]
 	p, _ := a.playbackOptions(primary, primary.r)
@@ -245,7 +245,7 @@ func TestCanceledCanvasWorkerDoesNotChangeSystemWallpaper(t *testing.T) {
 	host := newHost(1)
 	st := &config.Store{Config: config.Defaults(), Assign: config.Assignments{}}
 	a := New(Deps{Store: st, Host: host})
-	s := &screen{d: host.displays[0], canvas: image.Rect(0, 0, 100, 100), item: &config.Item{ID: "x", Type: "image", Dir: "missing", Entry: "a.png"}, ops: make(chan func(), 1), quit: make(chan struct{})}
+	s := &screen{worker: &screenWorker{}, d: host.displays[0], canvas: image.Rect(0, 0, 100, 100), item: &config.Item{ID: "x", Type: "image", Dir: "missing", Entry: "a.png"}, ops: make(chan func(), 1), quit: make(chan struct{})}
 	a.installSystemWallpaper(s)
 	close(s.quit)
 	(<-s.ops)()

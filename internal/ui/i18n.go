@@ -12,6 +12,14 @@ import (
 // English UI catalog. User-authored titles, paths, and backend error details
 // are deliberately not rewritten when they have no exact catalog entry.
 var english = map[string]string{
+	"正在恢复…":              "Resuming…",
+	"继续播放 · 屏 %d 因%s仍暂停": "Resume · Display %d remains paused: %s",
+	"播放状态切换失败，已尝试重启渲染器":  "Playback transition failed; renderer restart attempted",
+	"播放状态恢复失败，请重新应用壁纸":   "Playback recovery failed; please apply the wallpaper again",
+
+	"壁纸预览":   "Wallpaper preview",
+	"壁纸属性面板": "Wallpaper properties panel", "播放状态栏": "Playback status bar", "选择壁纸以查看属性": "Select a wallpaper to view properties",
+	"筛选结果": "Filter", "需要 ffmpeg 才能转码": "ffmpeg is required to transcode",
 	"允许": "Allow", "拒绝": "Deny",
 	"允许音频响应？": "Allow audio response?",
 	"允许鼠标交互？": "Allow mouse interaction?",
@@ -727,7 +735,7 @@ func selectControl(c *ui.Context, selected *string, options []string) ui.Element
 	for i, l := range options {
 		translated[i] = tr(c, l)
 	}
-	e := ui.Select(c, &current, translated)
+	e := ui.Select(c, &current, translated).Height(30).FontSize(13).Padding(4, 8)
 	if e.Changed() {
 		for i, l := range translated {
 			if l == current {
@@ -810,4 +818,11 @@ func mediaNote(lang, note string) string {
 		return note
 	}
 	return strings.Join(parts, "; ")
+}
+
+func localizedError(c *ui.Context, msg string) string {
+	if strings.Contains(msg, "transcode: no compatible encoder") {
+		return tr(c, "需要 ffmpeg 才能转码")
+	}
+	return msg
 }
