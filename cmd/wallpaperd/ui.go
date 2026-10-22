@@ -95,7 +95,9 @@ func runUI(f *flags) int {
 		go func() { // 稳定运行 60 s 后确认本次更新（F-15）
 			select {
 			case <-time.After(60 * time.Second):
-				_ = e.updater().MarkGood()
+				if err := e.updater().MarkGood(); err != nil {
+					e.log.Error("update confirmation", "err", err)
+				}
 			case <-ctx.Done():
 			}
 		}()
