@@ -6,6 +6,7 @@ package macos
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"unsafe"
 
@@ -89,6 +90,7 @@ func Load() error {
 		open("/System/Library/Frameworks/QuartzCore.framework/QuartzCore")
 		open("/System/Library/Frameworks/CoreMedia.framework/CoreMedia")
 		cg := open("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+		cs := open("/System/Library/Frameworks/ColorSync.framework/ColorSync")
 		cf := open("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
 		lo := open("/usr/lib/libobjc.A.dylib")
 		if loadErr != nil {
@@ -102,7 +104,16 @@ func Load() error {
 		purego.RegisterLibFunc(&CGDisplayModeGetPixelWidth, cg, "CGDisplayModeGetPixelWidth")
 		purego.RegisterLibFunc(&CGDisplayModeGetPixelHeight, cg, "CGDisplayModeGetPixelHeight")
 		purego.RegisterLibFunc(&CGDisplayModeRelease, cg, "CGDisplayModeRelease")
-		purego.RegisterLibFunc(&CGDisplayCreateUUID, cg, "CGDisplayCreateUUIDFromDisplayID")
+		// 新版 macOS 从 ColorSync 导出此符号，旧版仍可从 CoreGraphics 查找。
+		uuid, err := purego.Dlsym(cs, "CGDisplayCreateUUIDFromDisplayID")
+		if err != nil {
+			uuid, err = purego.Dlsym(cg, "CGDisplayCreateUUIDFromDisplayID")
+		}
+		if err != nil {
+			loadErr = fmt.Errorf("macos: CGDisplayCreateUUIDFromDisplayID not found in ColorSync or CoreGraphics: %w", err)
+			return
+		}
+		purego.RegisterFunc(&CGDisplayCreateUUID, uuid)
 		purego.RegisterLibFunc(&CFUUIDCreateString, cf, "CFUUIDCreateString")
 		purego.RegisterLibFunc(&CFArrayGetCount, cf, "CFArrayGetCount")
 		purego.RegisterLibFunc(&CFArrayGetValueAtIndex, cf, "CFArrayGetValueAtIndex")
