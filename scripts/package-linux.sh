@@ -23,7 +23,7 @@ with tarfile.open(output, 'w:gz') as archive:
         with open(path, 'rb') as source:
             archive.addfile(info, source)
     add(binary, 'wallpaperd', True)
-    for name in ['RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
+    for name in ['LICENSE', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
         add(Path('dist/package-metadata') / name, name)
 PY
   ls -la "$RELEASE_DIR/Wallpaper-$VERSION-linux-$arch.tar.gz"

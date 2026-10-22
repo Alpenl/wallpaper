@@ -39,6 +39,7 @@ class PackagingGuards(unittest.TestCase):
             (root / 'scripts').mkdir()
             for name in ['package-common.sh', 'package-metadata.sh']:
                 shutil.copy2(scripts / name, root / 'scripts' / name)
+            shutil.copy2(scripts.parent / 'LICENSE', root / 'LICENSE')
             goroot = root / 'goroot'; goroot.mkdir()
             (goroot / 'LICENSE').write_text('Go license fixture')
             runtime_modules = []
@@ -90,6 +91,7 @@ else:
             for name in ['WPAPP_SIGN_CMD', 'WPAPP_CODESIGN_ID', 'WPAPP_NOTARY_PROFILE', 'FIXTURE_MODULE_MODE', 'FIXTURE_DIRTY']: env.pop(name, None)
             result = subprocess.run(['bash', 'scripts/package-metadata.sh'], cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'dist/package-metadata/LICENSE').read_bytes(), (root / 'LICENSE').read_bytes())
             info = (root / 'dist/package-metadata/BUILD-INFO.txt').read_text().splitlines()
             self.assertIn('commit=' + 'a' * 40, info)
             self.assertIn('windows_signing=unsigned', info)

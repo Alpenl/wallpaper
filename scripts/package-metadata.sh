@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 source scripts/package-common.sh
 package_validate
 mkdir -p dist/package-metadata
+cp LICENSE dist/package-metadata/LICENSE
 python3 - "$VERSION" <<'PY'
 from pathlib import Path
 import json, os, re, subprocess, sys

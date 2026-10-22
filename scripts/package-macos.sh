@@ -15,7 +15,7 @@ for arch in ${ARCHES:-arm64 amd64}; do
   app=dist/macos-$arch/Wallpaper.app
   rm -rf "$app"; mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   cp "$bin" "$app/Contents/MacOS/wallpaperd"; chmod 755 "$app/Contents/MacOS/wallpaperd"
-  cp dist/package-metadata/{RELEASE-NOTES,BUILD-INFO,THIRD-PARTY-NOTICES}.txt "$app/Contents/Resources/"
+  cp dist/package-metadata/LICENSE dist/package-metadata/{RELEASE-NOTES,BUILD-INFO,THIRD-PARTY-NOTICES}.txt "$app/Contents/Resources/"
   sed "s/@VERSION@/${VERSION%%-*}/g" packaging/macos/Info.plist.tmpl > "$app/Contents/Info.plist"
   printf 'APPL????' > "$app/Contents/PkgInfo"
   scripts/sign-macos.sh "$app"

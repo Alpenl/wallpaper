@@ -16,7 +16,7 @@ for arch in ${ARCHES:-amd64 arm64}; do
   src="$stage/$arch"
   mkdir -p "$src"
   cp "$bin" "$src/wallpaperd.exe"
-  cp dist/package-metadata/{RELEASE-NOTES,BUILD-INFO,THIRD-PARTY-NOTICES}.txt "$src/"
+  cp dist/package-metadata/LICENSE dist/package-metadata/{RELEASE-NOTES,BUILD-INFO,THIRD-PARTY-NOTICES}.txt "$src/"
   # Fresh staging never inherits third_party/mpv or a previous dist/*/mpv.
   scripts/sign-windows.sh "$src/wallpaperd.exe"
   out="$RELEASE_DIR/Wallpaper-$VERSION-windows-$arch-setup.exe"

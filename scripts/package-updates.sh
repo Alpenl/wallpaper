@@ -14,6 +14,7 @@ for target in windows-amd64 windows-arm64 darwin-amd64 darwin-arm64 linux-amd64;
   case "$target" in
     windows-*) binary=wallpaperd.exe ;;
   esac
+  cp dist/package-metadata/LICENSE dist/package-metadata/THIRD-PARTY-NOTICES.txt "$scratch/payload/$target/"
   cp "dist/$target/$binary" "$scratch/payload/$target/$binary"
   "$scratch/wpupdate" manifest -dir "$scratch/payload/$target" -version "$VERSION" -platform "$target" -key "$scratch/update.key" -out "$scratch/feed"
   "$scratch/wpupdate" verify -feed "$scratch/feed" -platform "$target" -pub "$scratch/update.pub"

@@ -28,8 +28,8 @@ PY
 }
 
 package_require_metadata() {
-  for name in RELEASE-NOTES BUILD-INFO THIRD-PARTY-NOTICES; do
-    [ -s "dist/package-metadata/$name.txt" ] || {
+  for name in LICENSE RELEASE-NOTES.txt BUILD-INFO.txt THIRD-PARTY-NOTICES.txt; do
+    [ -s "dist/package-metadata/$name" ] || {
       echo 'missing package metadata; run scripts/package-metadata.sh first (or scripts/release.sh)' >&2
       return 1
     }
