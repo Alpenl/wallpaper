@@ -33,7 +33,7 @@ func inJob() bool {
 
 // RunHost 连接主进程的命名管道并服务，直到 shutdown 或管道断开。
 func RunHost(pipeName string, swap string, statsEvery time.Duration) error {
-	h, err := syscall.CreateFile(u16(pipeName), syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_EXISTING, 0, 0)
+	h, err := syscall.CreateFile(u16(pipeName), syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_EXISTING, syscall.FILE_FLAG_OVERLAPPED, 0)
 	if err != nil {
 		return fmt.Errorf("mfhost: connect pipe: %w", err)
 	}

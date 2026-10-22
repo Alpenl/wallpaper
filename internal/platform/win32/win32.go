@@ -25,6 +25,8 @@ var (
 	pIsProcessInJob           = kernel32.NewProc("IsProcessInJob")
 	pCreateNamedPipeW         = kernel32.NewProc("CreateNamedPipeW")
 	pConnectNamedPipe         = kernel32.NewProc("ConnectNamedPipe")
+	pCreateEventW             = kernel32.NewProc("CreateEventW")
+	pGetOverlappedResult      = kernel32.NewProc("GetOverlappedResult")
 	pWaitNamedPipeW           = kernel32.NewProc("WaitNamedPipeW")
 	pProcessIdToSessionId     = kernel32.NewProc("ProcessIdToSessionId")
 	pLocalFree                = kernel32.NewProc("LocalFree")
@@ -111,7 +113,7 @@ func NewPipeServer() (*PipeServer, error) {
 			sa = &syscall.SecurityAttributes{Length: uint32(unsafe.Sizeof(syscall.SecurityAttributes{})), SecurityDescriptor: sd}
 		}
 	}
-	h, _, err := pCreateNamedPipeW.Call(UP(U16(name)), 0x3|0x00080000 /*DUPLEX|FIRST_PIPE_INSTANCE*/, 0, 1, 64<<10, 64<<10, 0,
+	h, _, err := pCreateNamedPipeW.Call(UP(U16(name)), 0x3|0x00080000|syscall.FILE_FLAG_OVERLAPPED /*DUPLEX|FIRST_PIPE_INSTANCE|OVERLAPPED*/, 0, 1, 64<<10, 64<<10, 0,
 		uintptr(unsafe.Pointer(sa)))
 	if syscall.Handle(h) == syscall.InvalidHandle {
 		return nil, fmt.Errorf("CreateNamedPipe: %v", err)
@@ -119,39 +121,70 @@ func NewPipeServer() (*PipeServer, error) {
 	return &PipeServer{Name: name, h: syscall.Handle(h)}, nil
 }
 
-// Accept 等待客户端连接（timeout 内），返回双工文件。超时则自连一次解除阻塞并关闭。
+// Accept 等待客户端连接。连接完成前由本方法管理 OVERLAPPED；完成后交给 Go IOCP。
+// Accept and Close must not be called concurrently.
 func (p *PipeServer) Accept(timeout time.Duration) (*os.File, error) {
-	connected := make(chan bool, 1)
-	go func() {
-		r, _, e := pConnectNamedPipe.Call(uintptr(p.h), 0)
-		connected <- r != 0 || e == syscall.Errno(535) // ERROR_PIPE_CONNECTED
+	h := p.h
+	connected := false
+	defer func() {
+		if !connected {
+			p.Close()
+		}
 	}()
-	select {
-	case ok := <-connected:
-		if !ok {
-			syscall.CloseHandle(p.h)
-			return nil, fmt.Errorf("ConnectNamedPipe failed")
-		}
-		return os.NewFile(uintptr(p.h), p.Name), nil
-	case <-time.After(timeout):
-		if hh, err := syscall.CreateFile(U16(p.Name), syscall.GENERIC_READ, 0, nil, syscall.OPEN_EXISTING, 0, 0); err == nil {
-			syscall.CloseHandle(hh)
-		}
-		<-connected
-		syscall.CloseHandle(p.h)
-		return nil, fmt.Errorf("E_TIMEOUT: client did not connect within %v", timeout)
+	ev, _, err := pCreateEventW.Call(0, 1, 0, 0)
+	if ev == 0 {
+		return nil, fmt.Errorf("CreateEvent: %v", err)
 	}
+	defer syscall.CloseHandle(syscall.Handle(ev))
+	ov := syscall.Overlapped{HEvent: syscall.Handle(ev)}
+	r, _, err := pConnectNamedPipe.Call(uintptr(h), uintptr(unsafe.Pointer(&ov)))
+	if r == 0 && err != syscall.Errno(535) /* ERROR_PIPE_CONNECTED */ {
+		if err != syscall.ERROR_IO_PENDING {
+			return nil, fmt.Errorf("ConnectNamedPipe: %v", err)
+		}
+		// Round up and avoid INFINITE (0xffffffff) even for very large durations.
+		ms := int64(0)
+		if timeout > 0 {
+			ms = int64((timeout-1)/time.Millisecond) + 1
+		}
+		if ms > 0xfffffffe {
+			ms = 0xfffffffe
+		}
+		status, waitErr := syscall.WaitForSingleObject(syscall.Handle(ev), uint32(ms))
+		if waitErr != nil || status != syscall.WAIT_OBJECT_0 {
+			// The kernel must release ov before its memory or event can be freed.
+			_ = syscall.CancelIoEx(h, &ov)
+			var transferred uint32
+			pGetOverlappedResult.Call(uintptr(h), uintptr(unsafe.Pointer(&ov)), uintptr(unsafe.Pointer(&transferred)), 1)
+			if status == syscall.WAIT_TIMEOUT {
+				return nil, fmt.Errorf("E_TIMEOUT: client did not connect within %v", timeout)
+			}
+			return nil, fmt.Errorf("WaitForSingleObject: status=%d: %v", status, waitErr)
+		}
+		var transferred uint32
+		if r, _, err := pGetOverlappedResult.Call(uintptr(h), uintptr(unsafe.Pointer(&ov)), uintptr(unsafe.Pointer(&transferred)), 0); r == 0 {
+			return nil, fmt.Errorf("ConnectNamedPipe completion: %v", err)
+		}
+	}
+	connected = true
+	p.h = syscall.InvalidHandle // ownership transfers to the returned file
+	return os.NewFile(uintptr(h), p.Name), nil
 }
 
 // Close 关闭未被 Accept 的管道。
-func (p *PipeServer) Close() { syscall.CloseHandle(p.h) }
+func (p *PipeServer) Close() {
+	if p.h != syscall.InvalidHandle {
+		syscall.CloseHandle(p.h)
+		p.h = syscall.InvalidHandle
+	}
+}
 
 // DialPipe 以客户端身份连接命名管道（mpv 的 --input-ipc-server 由 mpv 创建），最多等 timeout。
 func DialPipe(name string, timeout time.Duration) (*os.File, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		pWaitNamedPipeW.Call(UP(U16(name)), 100)
-		h, err := syscall.CreateFile(U16(name), syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_EXISTING, 0, 0)
+		h, err := syscall.CreateFile(U16(name), syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_EXISTING, syscall.FILE_FLAG_OVERLAPPED, 0)
 		if err == nil {
 			return os.NewFile(uintptr(h), name), nil
 		}

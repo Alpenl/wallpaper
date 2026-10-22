@@ -77,15 +77,16 @@ func (h *fakeHost) SetSystemWallpaper(id desktop.DisplayID, p string) error {
 }
 
 type fakeR struct {
-	mu      sync.Mutex
-	display desktop.DisplayID
-	levels  []visibility.Level
-	loaded  bool
-	closed  bool
-	paused  bool
-	done    chan error
-	failLd  bool
-	caps    []int
+	mu         sync.Mutex
+	display    desktop.DisplayID
+	levels     []visibility.Level
+	loaded     bool
+	closed     bool
+	paused     bool
+	done       chan error
+	failLd     bool
+	failResume bool
+	caps       []int
 }
 
 func (r *fakeR) Load(it render.Item, s desktop.Surface, paused bool) error {
@@ -99,6 +100,11 @@ func (r *fakeR) Load(it render.Item, s desktop.Surface, paused bool) error {
 }
 func (r *fakeR) SetLevel(l visibility.Level) error {
 	r.mu.Lock()
+	if l == visibility.L0 && r.failResume {
+		r.failResume = false
+		r.mu.Unlock()
+		return errors.New("resume failed")
+	}
 	r.levels = append(r.levels, l)
 	r.mu.Unlock()
 	return nil
@@ -534,4 +540,57 @@ func (e *env) defaultID() string {
 	ch := make(chan string)
 	e.a.Do(func() { ch <- e.store.Assign.Default })
 	return <-ch
+}
+
+func TestResumeFailureRestartsAndReportsNote(t *testing.T) {
+	e := setup(t, 1, true)
+	eventually(t, "playing", func() bool { r := e.cur("A"); return r != nil && r.last() == visibility.L0 })
+	e.a.SetPausedAll(true)
+	eventually(t, "paused", func() bool { return e.cur("A").last() == visibility.L1 })
+	old := e.cur("A")
+	old.mu.Lock()
+	old.failResume = true
+	old.mu.Unlock()
+	e.a.SetPausedAll(false)
+	eventually(t, "restarted playing with note", func() bool {
+		v := e.a.View()
+		return e.cur("A") != old && len(v.Displays) > 0 && v.Displays[0].Level == "L0" && v.Displays[0].State == "active" && v.Displays[0].Note != ""
+	})
+}
+
+func TestPauseReleaseResumeConfirmedView(t *testing.T) {
+	e := setup(t, 1, true)
+	eventually(t, "playing", func() bool { return e.cur("A") != nil && e.cur("A").last() == visibility.L0 })
+	e.a.SetPausedAll(true)
+	eventually(t, "pause", func() bool { return e.cur("A").last() == visibility.L1 })
+	// Advance the application clock past the real 60 second release deadline.
+	e.a.Do(func() { e.a.t0 = e.a.t0.Add(-61 * time.Second); e.a.ctl.Advance(e.a.now()) })
+	eventually(t, "released", func() bool { return e.a.View().Displays[0].Level == "L3" })
+	e.a.SetPausedAll(false)
+	eventually(t, "resumed", func() bool { d := e.a.View().Displays[0]; return d.Level == "L0" && d.State == "active" })
+}
+
+func TestResumeDebounceAndQueuedOperationAreNotPlaying(t *testing.T) {
+	e := setup(t, 1, true)
+	eventually(t, "playing", func() bool { return e.cur("A") != nil && e.cur("A").last() == visibility.L0 })
+	e.a.SetPausedAll(true)
+	eventually(t, "paused", func() bool { return e.a.View().Displays[0].Level == "L1" })
+	gate := make(chan struct{})
+	defer close(gate)
+	e.a.Do(func() { e.a.screens["A"].ops <- func() { <-gate } })
+	e.a.SetPausedAll(false)
+	e.sync()
+	d := e.a.View().Displays[0]
+	if d.Level != "L1" || d.State != "recovering" {
+		t.Fatalf("debounce reported playing: %+v", d)
+	}
+	// A queued renderer operation must not turn the target level into confirmation.
+	time.Sleep(350 * time.Millisecond)
+	e.sync()
+	d = e.a.View().Displays[0]
+	if d.Level != "L1" || d.State != "recovering" {
+		t.Fatalf("queued resume reported playing: %+v", d)
+	}
+	gate <- struct{}{}
+	eventually(t, "confirmed", func() bool { d := e.a.View().Displays[0]; return d.Level == "L0" && d.State == "active" })
 }

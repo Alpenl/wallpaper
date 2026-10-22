@@ -99,6 +99,7 @@ const (
 	meEventLoadedMetadata  = 10
 	meEventPlaying         = 13
 	meEventCanPlay         = 14
+	meEventSeeking         = 16
 	meEventSeeked          = 17
 	meEventEnded           = 19
 	meEventFirstFrameReady = 1009
@@ -241,7 +242,7 @@ func (b *mfEngine) onEvent(ev uint32, p1 uintptr, p2 uint32) {
 		return
 	}
 	switch ev {
-	case meEventError, meEventLoadedMetadata, meEventCanPlay, meEventSeeked, meEventEnded, meEventFirstFrameReady:
+	case meEventError, meEventLoadedMetadata, meEventCanPlay, meEventSeeking, meEventSeeked, meEventEnded, meEventFirstFrameReady:
 		select {
 		case events <- engineEvent{ev, p1, p2}:
 		default:
@@ -656,8 +657,12 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32, options render.Playba
 			if state.seeking {
 				b.position.Store(math.Float64bits(state.start))
 			}
+		case meEventSeeking:
+			state.seeking = true
 		case meEventSeeked:
-			state.seeking = false
+			if err := state.seeked(api); err != nil {
+				return err
+			}
 		case meEventEnded:
 			b.endedFallback.Add(1)
 			if state.ready && !state.paused {

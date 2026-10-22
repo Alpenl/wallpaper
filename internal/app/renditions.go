@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ type renditionJob struct {
 	rendition  transcode.Rendition
 	generation uint64
 	state      string
+	explicit   bool
 }
 
 type RenditionView struct {
@@ -65,6 +67,12 @@ func (a *App) renditionPath(s *screen, queue bool) string {
 }
 
 func (a *App) queueRendition(it *config.Item, r transcode.Rendition, retry bool) {
+	if a.d.EncoderInfo != nil && !a.encoderInfo.Available {
+		if retry {
+			a.lastErr = "需要 ffmpeg 才能转码"
+		}
+		return
+	}
 	if a.d.EncodeRendition == nil || a.cleaning {
 		return
 	}
@@ -78,7 +86,7 @@ func (a *App) queueRendition(it *config.Item, r transcode.Rendition, retry bool)
 	if len(a.renditionQueue)+len(a.transcodeQueue) >= MaxQueuedJobs {
 		return
 	}
-	j := &renditionJob{it.ID, filepath.Join(it.Dir, filepath.FromSlash(it.Entry)), r, a.itemGeneration[it.ID], "等待转码…"}
+	j := &renditionJob{it.ID, filepath.Join(it.Dir, filepath.FromSlash(it.Entry)), r, a.itemGeneration[it.ID], "等待转码…", retry}
 	a.renditionJobs[key] = j
 	a.renditionQueue = append(a.renditionQueue, j)
 	a.startNextTranscode()
@@ -190,8 +198,15 @@ func (a *App) startNextRendition() {
 					err = j.rendition.Publish(cache, j.item, tmp)
 				}
 				if err != nil {
-					j.state = "优化失败"
-					a.lastErr = err.Error()
+					if errors.Is(err, transcode.ErrNoEncoder) {
+						j.state = "需要 ffmpeg 才能转码"
+						if j.explicit {
+							a.lastErr = j.state
+						}
+					} else {
+						j.state = "优化失败"
+						a.lastErr = err.Error()
+					}
 					return
 				}
 				j.state = "已优化"

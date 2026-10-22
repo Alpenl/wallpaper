@@ -147,7 +147,7 @@ func newMetricApp(t *testing.T) (*App, *screen) {
 	a := New(Deps{Store: store, Host: newHost(1)})
 	a.ctl = visibility.NewController(VisConfig(store.Config))
 	a.ctl.AddDisplay(0, 0)
-	s := &screen{n: 0, d: desktop.Display{ID: "test-display"}, item: &config.Item{ID: "private-wallpaper-title", Type: "video", Dir: "/private/media/path"}, r: &fakeR{}, started: true, metricsReady: true, metricsLevel: visibility.L1}
+	s := &screen{worker: &screenWorker{}, n: 0, d: desktop.Display{ID: "test-display"}, item: &config.Item{ID: "private-wallpaper-title", Type: "video", Dir: "/private/media/path"}, r: &fakeR{}, started: true, metricsReady: true, metricsLevel: visibility.L1}
 	a.screens[s.d.ID] = s
 	return a, s
 }
@@ -279,16 +279,16 @@ func TestMetricRejectedPauseIsNotSavedDuration(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no pause attempt")
 	}
-	done := make(chan bool, 1)
-	e.a.Do(func() { s := e.a.screens["A"]; done <- s.metricsReady && s.metricsLevel == visibility.L0 })
-	if !<-done {
-		t.Fatal("failed pause was treated as acknowledged")
-	}
+	eventually(t, "bounded recovery exhausted", func() bool { return e.a.View().Displays[0].State == "failed" })
 	e.a.Do(func() { e.a.metrics.last = time.Now().Add(-5 * time.Second) })
-	eventually(t, "runtime recorded", func() bool { return e.a.View().Displays[0].Metrics.Levels[0] >= 5*time.Second })
-	if got := e.a.View().Displays[0].Metrics.Paused; got != 0 {
-		t.Fatalf("failed pause counted %v", got)
+	e.sync()
+	before := e.a.View().Displays[0].Metrics.Paused
+	e.a.Do(func() { e.a.metrics.last = time.Now().Add(-5 * time.Second) })
+	e.sync()
+	if got := e.a.View().Displays[0].Metrics.Paused; got != before {
+		t.Fatalf("unconfirmed recovery counted pause: %v -> %v", before, got)
 	}
+
 }
 
 func TestMetricRejectedL4StopIsNotSavedDuration(t *testing.T) {
@@ -309,7 +309,7 @@ func TestMetricRejectedL4StopIsNotSavedDuration(t *testing.T) {
 		t.Fatal("rejected close counted as successful L4")
 	}
 	e.a.Do(func() { e.a.metrics.last = time.Now().Add(-5 * time.Second) })
-	eventually(t, "L4 view", func() bool { return e.a.View().Displays[0].Level == "L4" })
+	eventually(t, "unconfirmed L4 view", func() bool { return e.a.View().Displays[0].Level == "" })
 	if got := e.a.View().Displays[0].Metrics.Paused; got != 0 {
 		t.Fatalf("failed L4 counted %v", got)
 	}

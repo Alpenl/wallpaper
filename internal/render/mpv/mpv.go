@@ -349,10 +349,7 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 		r.mu.Unlock()
 		options := resumeOptions(o, pos, int(r.cap.Load()))
 		options["pause"] = yesno(l > visibility.L0)
-		_, err = c.cmd("loadfile", it.Path, "replace", -1, options)
-		if err == nil {
-			err = c.setPause(l > visibility.L0)
-		}
+		err = c.loadFile(it.Path, options, l > visibility.L0)
 	default:
 		err = c.setPause(l > visibility.L0)
 	}
@@ -540,10 +537,7 @@ func (r *Renderer) UpdateSource(it render.Item, level visibility.Level) error {
 	}
 	options := resumeOptions(r.o, it.Start, int(r.cap.Load()))
 	options["pause"] = yesno(level > visibility.L0)
-	if _, err := r.c.cmd("loadfile", it.Path, "replace", -1, options); err != nil {
-		return err
-	}
-	if err := r.c.setPause(level > visibility.L0); err != nil {
+	if err := r.c.loadFile(it.Path, options, level > visibility.L0); err != nil {
 		return err
 	}
 	r.item = it

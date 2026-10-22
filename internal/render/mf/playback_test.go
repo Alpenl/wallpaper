@@ -246,3 +246,27 @@ func TestResumePositionValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestResumeDuringSeekReappliesDesiredState(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		var calls []string
+		api := recordingAPI(&calls)
+		s := playbackState{ready: true, seeking: true, paused: true}
+		if err := s.setPause(api, paused); err != nil {
+			t.Fatal(err)
+		}
+		if calls[0] != "pause" {
+			t.Fatal(calls)
+		}
+		if err := s.seeked(api); err != nil {
+			t.Fatal(err)
+		}
+		want := "play"
+		if paused {
+			want = "pause"
+		}
+		if calls[1] != want || s.paused != paused {
+			t.Fatal(calls, s)
+		}
+	}
+}

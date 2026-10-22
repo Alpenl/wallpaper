@@ -122,27 +122,38 @@ type View struct {
 	Default          string // 默认壁纸 id（assignments.default）
 }
 
+// screenWorker is allocated with its screen; only the serial ops worker may
+// access its contents. Main-loop screen copies must never dereference it.
+type screenWorker struct {
+	level visibility.Level
+}
+
 type screen struct {
 	mediaPath string
 	canvas    image.Rectangle // empty = independent native surface
 
-	n            int // 状态机里的编号（单调递增，不复用）
-	d            desktop.Display
-	surf         desktop.Surface
-	r            render.Renderer
-	gen          int
-	item         *config.Item
-	started      bool
-	metricsReady bool // successfully acknowledged renderer state (including policy L4)
-	metricsLevel visibility.Level
-	crashes      int
-	okAt         time.Time
-	machCap      int // 状态机要求的限帧（电池 fps15 / 过热）
-	curCap       int // 已下发给渲染器的限帧
-	note         string
-	ops          chan func()
-	quit         chan struct{}
-	watchStop    chan struct{}
+	n              int // 状态机里的编号（单调递增，不复用）
+	d              desktop.Display
+	surf           desktop.Surface
+	r              render.Renderer
+	gen            int
+	item           *config.Item
+	started        bool
+	metricsReady   bool // successfully acknowledged renderer state (including policy L4)
+	metricsLevel   visibility.Level
+	levelPending   int
+	levelFailures  int
+	levelNote      string
+	levelExhausted bool
+	worker         *screenWorker // immutable pointer; contents owned by the ops worker
+	crashes        int
+	okAt           time.Time
+	machCap        int // 状态机要求的限帧（电池 fps15 / 过热）
+	curCap         int // 已下发给渲染器的限帧
+	note           string
+	ops            chan func()
+	quit           chan struct{}
+	watchStop      chan struct{}
 }
 
 // App 是编排器。
@@ -359,7 +370,7 @@ func (a *App) syncDisplays() {
 		if _, ok := a.screens[id]; ok {
 			continue
 		}
-		s := &screen{canvas: canvas, n: a.nextN, d: want[id], ops: make(chan func(), 64), quit: make(chan struct{})}
+		s := &screen{worker: &screenWorker{}, canvas: canvas, n: a.nextN, d: want[id], ops: make(chan func(), 64), quit: make(chan struct{})}
 		a.nextN++
 		go worker(s.ops, s.quit)
 		a.screens[id] = s
@@ -514,7 +525,7 @@ func (a *App) closeScreen(s *screen, destroySurface bool) {
 }
 
 func (a *App) closeScreenForPause(s *screen, destroySurface, policyPause bool) {
-	countStopped := policyPause && s.metricsReady
+	countStopped := policyPause
 	r, surf := s.r, s.surf
 	a.capturePosition(s)
 	if s.watchStop != nil {
@@ -522,16 +533,38 @@ func (a *App) closeScreenForPause(s *screen, destroySurface, policyPause bool) {
 		s.watchStop = nil
 	}
 	s.r, s.started, s.metricsReady = nil, false, false
+	s.levelPending = 0
 	s.gen++
 	gen := s.gen
 	if destroySurface {
 		s.surf = nil
 	}
+	id := s.d.ID
 	done := make(chan struct{})
 	s.ops <- func() {
 		var closeErr error
+		begin := time.Now()
+		from := s.worker.level
 		if r != nil {
 			closeErr = r.Close()
+		}
+		if policyPause {
+			if closeErr == nil {
+				s.worker.level = visibility.L4
+			}
+			backend := "none"
+			if r != nil {
+				backend = r.Stats().Backend
+			}
+			a.log.Info("renderer level transition", "display", id, "backend", backend, "from", from.String(), "to", "L4", "duration", time.Since(begin), "err", closeErr)
+			if closeErr != nil {
+				a.log.Error("renderer stop failed", "display", id, "err", closeErr)
+				a.Do(func() {
+					if s.gen == gen {
+						s.levelNote = "播放状态恢复失败，请重新应用壁纸"
+					}
+				})
+			}
 		}
 		if countStopped && closeErr == nil {
 			a.Do(func() {
@@ -550,13 +583,16 @@ func (a *App) closeScreenForPause(s *screen, destroySurface, policyPause bool) {
 		select { // 有界等待，避免卡住事件循环
 		case <-done:
 		case <-time.After(3 * time.Second):
-			a.log.Warn("close screen timed out", "display", s.d.ID)
+			a.log.Warn("close screen timed out", "display", id)
 		}
 	}
 }
 
 // startScreen 在 delay 后启动渲染器（结果回到事件循环）。
 func (a *App) startScreen(s *screen, delay time.Duration) {
+	if s.levelExhausted {
+		s.levelFailures, s.levelExhausted = 0, false
+	}
 	if s.surf == nil || a.d.SafeMode {
 		return
 	}
@@ -586,6 +622,7 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 	}
 	s.watchStop = make(chan struct{})
 	s.r, s.started, s.metricsReady = r, false, false
+	s.levelPending = 0
 	it := render.Item{PackageDir: s.item.Dir, ID: s.item.ID, Kind: s.item.Type, Path: a.renditionPath(s, true),
 		SignalsBlocked: a.signalsBlocked(s), AudioEnabled: signalGrant(s.item, a.d.Store.Config, "audio"), InputEnabled: signalGrant(s.item, a.d.Store.Config, "input"), Viewport: s.d.Bounds,
 		Start: a.d.Store.State.Positions[a.positionKey(s)], NetworkGranted: s.item.NetworkGranted, FPSCap: a.screenFPSCap(s), Properties: s.item.Props.WebValues}
@@ -610,6 +647,12 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 			}
 			if err == nil {
 				err = r.Load(it, surf, level > visibility.L0)
+				if err == nil {
+					s.worker.level = visibility.L0
+					if level > visibility.L0 {
+						s.worker.level = visibility.L1
+					}
+				}
 			}
 			a.Do(func() { a.onStarted(s, gen, r, level, err) })
 		}
@@ -760,17 +803,41 @@ func (a *App) applyLevel(s *screen, l visibility.Level) {
 		return
 	}
 	gen := s.gen
+	id := s.d.ID
+	queued := time.Now()
+	s.levelPending++
 	s.ops <- func() {
-		if err := r.SetLevel(l); err != nil {
-			a.log.Warn("setLevel", "display", s.d.ID, "level", l.String(), "err", err)
-			return
+		begin := time.Now()
+		from := s.worker.level
+		err := r.SetLevel(l)
+		if err == nil {
+			s.worker.level = l
 		}
+		a.log.Info("renderer level transition", "display", id, "backend", r.Stats().Backend, "from", from.String(), "to", l.String(), "duration", time.Since(begin), "queueDuration", begin.Sub(queued), "err", err)
 		a.Do(func() {
-			if s.gen == gen && s.started {
+			if s.gen != gen {
+				return
+			}
+			s.levelPending--
+			if err != nil {
+				a.log.Error("renderer level transition failed", "display", id, "level", l.String(), "err", err)
+				s.levelNote = "播放状态切换失败，已尝试重启渲染器"
+				if s.levelFailures < 2 {
+					s.levelFailures++
+					a.restartPlayback(s)
+				} else {
+					s.levelExhausted = true
+					s.levelNote = "播放状态恢复失败，请重新应用壁纸"
+					a.closeScreen(s, false)
+				}
+				return
+			}
+			if s.started {
 				s.metricsReady, s.metricsLevel = true, l
 			}
 		})
 	}
+
 }
 
 // ---- 状态机动作 ----
@@ -812,6 +879,7 @@ func (a *App) runActions() {
 				// process until the normal resume transition permits it.
 				if m.Level() >= visibility.L4 {
 					m.RestartOK(a.now())
+					a.closeScreenForPause(s, false, true)
 					continue
 				}
 				d := supervisor.Backoff(s.crashes)
@@ -1085,11 +1153,23 @@ func (a *App) publish() {
 	}
 	for i, s := range a.layoutScreens() {
 		lv, st := levelName(a.ctl.Display(s.n))
+		if s.item != nil {
+			lv = ""
+			if s.metricsReady {
+				lv = s.metricsLevel.String()
+			}
+			if s.levelExhausted {
+				st = "failed"
+			}
+			if st != "failed" && ((!s.started && !(s.metricsReady && s.metricsLevel == visibility.L4)) || s.levelPending > 0 || lv != a.ctl.Display(s.n).Level().String() || (s.metricsLevel > visibility.L0 && a.ctl.Display(s.n).Effective() == 0)) {
+				st = "recovering"
+			}
+		}
 		alias := a.d.Store.Assign.Aliases[string(s.d.ID)]
 		_, custom := a.d.Store.Assign.Displays[string(s.d.ID)]
 		dv := DisplayView{ID: string(s.d.ID), Index: i + 1, Name: DisplayName(alias, s.d.Name, i+1), Friendly: s.d.Name, Alias: alias,
 			Device: s.d.Device, Custom: custom, W: s.d.Bounds.Dx(), H: s.d.Bounds.Dy(), PixelW: s.d.PixelSize().X, PixelH: s.d.PixelSize().Y, Primary: s.d.Primary,
-			Metrics: a.displayMetrics(string(s.d.ID)), Level: lv, State: st, X: s.d.Bounds.Min.X, Y: s.d.Bounds.Min.Y, FPSCap: s.curCap, Note: s.note, Options: a.displayOptions(s), Effective: a.effectivePlayback(s)}
+			Metrics: a.displayMetrics(string(s.d.ID)), Level: lv, State: st, X: s.d.Bounds.Min.X, Y: s.d.Bounds.Min.Y, FPSCap: s.curCap, Note: joinNotes([]string{s.note, s.levelNote}), Options: a.displayOptions(s), Effective: a.effectivePlayback(s)}
 		if m := a.ctl.Display(s.n); m != nil {
 			dv.Reasons = reasonsString(m.Effective())
 		}
