@@ -340,10 +340,6 @@ func (s *Settings) look(c *ui.Context, v app.View) {
 	t := c.Theme()
 	cfg := v.Config
 	page(c, "通用", "外观、语言与启动行为", nil, func() {
-		card(c.Key("reactive"), "壁纸交互", "需在导入时单独授权；默认关闭", func() {
-			s.switchRow(c, "audio-reactive", "音频响应", "系统音频仅在隔离渲染进程中处理", cfg.Privacy.AudioReactive, func(c *config.Config, on bool) { c.Privacy.AudioReactive = on })
-			s.switchRow(c, "mouse-input", "鼠标交互", "仅传递桌面上的鼠标位置和按钮", cfg.Privacy.MouseInput, func(c *config.Config, on bool) { c.Privacy.MouseInput = on })
-		})
 		card(c.Key("theme"), "主题", "", func() {
 			settingRow(c, "颜色模式", "", func() {
 				i := map[string]int{"system": 0, "light": 1, "dark": 2}[cfg.UI.Theme]
@@ -414,6 +410,10 @@ func (s *Settings) look(c *ui.Context, v app.View) {
 			settingRow(c, "关闭窗口后继续运行", "关闭设置窗口不会退出壁纸，退出请使用托盘菜单", func() { chip(c, "始终启用", t.TextMuted) })
 		})
 
+		card(c.Key("reactive"), "壁纸交互", "需在导入时单独授权；默认关闭", func() {
+			s.switchRow(c, "audio-reactive", "音频响应", "系统音频仅在隔离渲染进程中处理", cfg.Privacy.AudioReactive, func(c *config.Config, on bool) { c.Privacy.AudioReactive = on })
+			s.switchRow(c, "mouse-input", "鼠标交互", "仅传递桌面上的鼠标位置和按钮", cfg.Privacy.MouseInput, func(c *config.Config, on bool) { c.Privacy.MouseInput = on })
+		})
 		s.storageCard(c, v)
 
 	})

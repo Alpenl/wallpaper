@@ -35,6 +35,7 @@ func TestSignalConsentUI(t *testing.T) {
 }
 func TestSignalSwitchesAndRevocation(t *testing.T) {
 	ctl, _, tt := newUI(t, "windows")
+	tt.SetSize(1120, 2400)
 	if ctl.View().Config.Privacy.AudioReactive || ctl.View().Config.Privacy.MouseInput {
 		t.Fatal("defaults")
 	}

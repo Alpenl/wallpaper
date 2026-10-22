@@ -263,7 +263,8 @@ func TestStatusBarPauseAndNext(t *testing.T) {
 
 func TestDisplaysPage(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
-	tt.SetSize(1120, 1500)
+	// Tall enough that the whole page fits above the bottom bar with any host font.
+	tt.SetSize(1120, 2400)
 	click(t, tt, "显示器")
 	must(t, tt, "DELL U2723QE（主屏）", "播放中", "硬解 d3d11va")
 	click(t, tt, "选择显示器 2")
@@ -478,6 +479,7 @@ func TestEnglishLanguageSelection(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
 	language := ""
 	s.SetLanguage = func(lang string) { language = lang }
+	tt.SetSize(1120, 1400)
 	s.SetPage("general")
 	tt.Frame()
 	click(t, tt, "简体中文")
