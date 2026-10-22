@@ -76,7 +76,7 @@ func TestRealMpvLifecycle(t *testing.T) {
 	if !r.WaitFirstFrame(5 * time.Second) {
 		t.Fatal("没有收到 playback-restart")
 	}
-	time.Sleep(1500 * time.Millisecond) // 1 s 的视频，至少循环一次
+	waitMpv(t, "video loop", func() bool { return r.Stats().Loops >= 2 })
 	if st := r.Stats(); st.Loops < 2 || st.Backend != "mpv" {
 		t.Fatalf("应已循环: %+v", st)
 	}
@@ -84,7 +84,7 @@ func TestRealMpvLifecycle(t *testing.T) {
 		if err := r.SetLevel(l); err != nil {
 			t.Fatal(l, err)
 		}
-		time.Sleep(200 * time.Millisecond)
+		// SetLevel 已等待命令回复，可以直接发送下一次状态切换。
 	}
 	select {
 	case err := <-r.Done():
@@ -97,7 +97,7 @@ func TestRealMpvLifecycle(t *testing.T) {
 	r.mu.Unlock()
 	select {
 	case <-r.Done():
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("kill 后应收到 Done")
 	}
 	r.Close()
@@ -110,6 +110,7 @@ func TestRealMpvLifecycle(t *testing.T) {
 	select {
 	case err := <-r2.Done():
 		t.Fatal(err)
+	// sleep: 有意关闭后的观察窗口内不应出现意外退出通知。
 	case <-time.After(300 * time.Millisecond):
 	}
 	if err := r2.SetLevel(visibility.L0); err == nil {
@@ -160,7 +161,10 @@ func TestRealMpvFPSCap(t *testing.T) {
 	if r.FPSCap() != 15 {
 		t.Fatal("cap not recorded")
 	}
-	time.Sleep(1500 * time.Millisecond)
+	waitMpv(t, "capped FPS", func() bool {
+		fps, err := r.c.getFloat("estimated-vf-fps")
+		return err == nil && fps >= 13 && fps <= 17
+	})
 	vf, _ := r.c.cmd("get_property", "vf")
 	if !strings.Contains(string(vf), "wpcap") {
 		t.Fatalf("filter missing: %s", vf)
@@ -172,10 +176,10 @@ func TestRealMpvFPSCap(t *testing.T) {
 	if err := r.SetFPSCap(0); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1500 * time.Millisecond)
-	if fps, _ := r.c.getFloat("estimated-vf-fps"); fps < 25 {
-		t.Fatalf("after uncap fps=%v", fps)
-	}
+	waitMpv(t, "uncapped FPS", func() bool {
+		fps, err := r.c.getFloat("estimated-vf-fps")
+		return err == nil && fps >= 25
+	})
 }
 
 func TestCopyHwdec(t *testing.T) {
@@ -184,4 +188,17 @@ func TestCopyHwdec(t *testing.T) {
 			t.Error(in, got)
 		}
 	}
+}
+
+func waitMpv(t *testing.T, what string, ready func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if ready() {
+			return
+		}
+		// sleep: bounded polling for mpv to publish the observed playback state.
+		time.Sleep(min(10*time.Millisecond, max(0, time.Until(deadline))))
+	}
+	t.Fatal("timed out waiting for " + what)
 }

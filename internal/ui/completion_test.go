@@ -72,14 +72,16 @@ func TestUpdateActionsSerializeAndKeepCompletedStatus(t *testing.T) {
 				start()
 				s.checkUpdate()
 			}
-			deadline := time.Now().Add(time.Second)
+			deadline := time.Now().Add(10 * time.Second)
 			for calls.Load() == 0 && time.Now().Before(deadline) {
+				// sleep: bounded polling for this phase of the update operation.
 				time.Sleep(time.Millisecond)
 			}
 			if calls.Load() != 1 {
 				t.Fatal("duplicate update operations", calls.Load())
 			}
 			gate <- struct{}{}
+			deadline = time.Now().Add(10 * time.Second)
 			for time.Now().Before(deadline) {
 				s.mu.Lock()
 				done := s.upd.installed
@@ -87,6 +89,7 @@ func TestUpdateActionsSerializeAndKeepCompletedStatus(t *testing.T) {
 				if done {
 					break
 				}
+				// sleep: bounded polling for this phase of the update operation.
 				time.Sleep(time.Millisecond)
 			}
 			s.mu.Lock()

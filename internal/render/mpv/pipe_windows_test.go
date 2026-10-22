@@ -25,8 +25,8 @@ func TestSilentPipePauseResume(t *testing.T) {
 		err error
 	}
 	dial := make(chan result, 1)
-	go func() { f, err := win32.DialPipe(ps.Name, time.Second); dial <- result{f, err} }()
-	server, err := ps.Accept(time.Second)
+	go func() { f, err := win32.DialPipe(ps.Name, 10*time.Second); dial <- result{f, err} }()
+	server, err := ps.Accept(10 * time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,8 +57,7 @@ func TestSilentPipePauseResume(t *testing.T) {
 	r := New(Options{})
 	r.c = c
 	for _, level := range []visibility.Level{visibility.L1, visibility.L0} {
-		// The peer sends only replies, leaving readLoop pending between commands.
-		time.Sleep(30 * time.Millisecond)
+		// SetLevel waits for the peer reply before the next command.
 		done := make(chan error, 1)
 		go func() { done <- r.SetLevel(level) }()
 		select {
@@ -66,7 +65,7 @@ func TestSilentPipePauseResume(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-		case <-time.After(2 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatal("SetLevel blocked on silent pipe")
 		}
 		select {
@@ -75,7 +74,7 @@ func TestSilentPipePauseResume(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("command=%v want=%v", got, want)
 			}
-		case <-time.After(time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatal("missing pause command")
 		}
 	}

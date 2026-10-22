@@ -16,6 +16,7 @@ func TestEncoderSlotSerializesDifferentCallersAndCancelsWait(t *testing.T) {
 		if n > max.Load() {
 			max.Store(n)
 		}
+		// sleep: hold simulated encoder work open to detect overlapping callers.
 		time.Sleep(5 * time.Millisecond)
 		return nil
 	}

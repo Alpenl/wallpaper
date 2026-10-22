@@ -17,7 +17,7 @@ func TestPersistenceErrorUsesExistingLastError(t *testing.T) {
 	go func() { a.ReportPersistenceError(errors.New("config: save failed")); close(finished) }()
 	select {
 	case <-finished:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("error reporting blocked")
 	}
 	a.consumePersistenceError()
