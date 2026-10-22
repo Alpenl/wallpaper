@@ -82,8 +82,11 @@ func (h *Host) Start() error {
 		h.refresh()
 		h.foregroundSupported = foregroundAvailable()
 	})
+	// Host 拥有采样循环；Close 关闭 stop 后退出。
 	go h.sampler()
+	// Host 拥有电池循环；Close 关闭 stop 后退出。
 	go h.battery()
+	// Host 拥有电源循环；Close 关闭 stop 后退出。
 	go h.powerLoop()
 	return nil
 }

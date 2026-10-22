@@ -374,6 +374,7 @@ func (a *App) syncDisplays() {
 		}
 		s := &screen{worker: &screenWorker{}, canvas: canvas, n: a.nextN, d: want[id], ops: make(chan func(), 64), quit: make(chan struct{})}
 		a.nextN++
+		// screen 拥有串行 worker；closeScreen 关闭 quit 后退出。
 		go worker(s.ops, s.quit)
 		a.screens[id] = s
 		a.ctl.AddDisplay(a.now(), s.n)
@@ -1252,6 +1253,7 @@ func (a *App) beginImport(path, applyTo string) {
 	a.lastImp = "正在导入 " + filepath.Base(path) + " …"
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.importCancel = cancel
+	// App 拥有导入任务；导入完成或 ctx 取消并收尾后退出。
 	go func() {
 		defer cancel()
 		paths := []string{path}
@@ -1406,6 +1408,7 @@ func (a *App) Remove(itemID string) {
 				s.ops <- func() { wait.Done() }
 			}
 		}
+		// App 拥有删除等待器；编码与屏幕操作释放后投递删除并退出。
 		go func() { wait.Wait(); a.Do(func() { a.removeItemNow(itemID, generation) }) }()
 	})
 }
@@ -1480,6 +1483,7 @@ func (a *App) removeItemNow(itemID string, generation uint64) {
 		}
 	}
 	a.saveState()
+	// App 拥有墓碑清理；有限路径删除及结果投递完成后退出。
 	go func() {
 		var err error
 		for _, path := range tombstones {
@@ -1775,6 +1779,7 @@ func (a *App) beginTranscode(itemID string) {
 	enc := a.d.Transcode
 	probe := a.d.ProbeMedia
 	strict := a.encoderInfo.Strict
+	// App 拥有转码任务；编码完成或 ctx 取消后清理临时文件并退出。
 	go func() {
 		f, err := os.CreateTemp(a.d.Store.Paths.Library, ".transcode-*"+ext)
 		tmp := ""

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -16,9 +17,12 @@ type StorageView struct {
 	Error        string
 }
 
-func diskUsage(root string) (int64, error) {
+func diskUsage(ctx context.Context, root string) (int64, error) {
 	var size int64
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if e := ctx.Err(); e != nil {
+			return e
+		}
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -45,15 +49,22 @@ func diskUsage(root string) (int64, error) {
 // RefreshStorage recalculates library/cache usage off the event loop.
 func (a *App) RefreshStorage() { a.Do(a.refreshStorage) }
 func (a *App) refreshStorage() {
+	if a.ctx.Err() != nil {
+		return
+	}
 	if a.storage.Scanning {
 		a.storageDirty = true
 		return
 	}
 	a.storage.Scanning = true
 	paths := a.d.Store.Paths
+	// App owns the scan; it exits on completion or app cancellation.
 	go func() {
-		lib, e1 := diskUsage(paths.Library)
-		cache, e2 := diskUsage(paths.Cache)
+		lib, e1 := diskUsage(a.ctx, paths.Library)
+		cache, e2 := diskUsage(a.ctx, paths.Cache)
+		if a.ctx.Err() != nil {
+			return
+		}
 		msg := ""
 		if e1 != nil {
 			msg = e1.Error()
@@ -65,6 +76,9 @@ func (a *App) refreshStorage() {
 			msg += e2.Error()
 		}
 		a.Do(func() {
+			if a.ctx.Err() != nil {
+				return
+			}
 			a.storage = StorageView{LibraryBytes: lib, CacheBytes: cache, Error: msg}
 			if a.storageDirty {
 				a.storageDirty = false
@@ -78,6 +92,9 @@ func (a *App) refreshStorage() {
 // available for paused wallpapers, safe mode and system-wallpaper fallback.
 func (a *App) ClearCache() {
 	a.Do(func() {
+		if a.ctx.Err() != nil {
+			return
+		}
 		if a.cleaning || a.importing {
 			a.lastErr = "请等待导入或清理完成后再清理缓存"
 			return
@@ -95,11 +112,15 @@ func (a *App) ClearCache() {
 			}
 		}
 		root := a.d.Store.Paths.Cache
+		// App owns cleanup; it exits after cleanup or cancellation between directories.
 		go func() {
 			entries, err := os.ReadDir(root)
 			removed := 0
 			if err == nil {
 				for _, e := range entries {
+					if a.ctx.Err() != nil {
+						return
+					}
 					if keep[e.Name()] {
 						continue
 					}
@@ -110,7 +131,13 @@ func (a *App) ClearCache() {
 					removed++
 				}
 			}
+			if a.ctx.Err() != nil {
+				return
+			}
 			a.Do(func() {
+				if a.ctx.Err() != nil {
+					return
+				}
 				a.cleaning = false
 				defer a.advanceJobs()
 				if err != nil {

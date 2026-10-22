@@ -67,6 +67,7 @@ type Conn struct {
 // New 建立连接并开始读。
 func New(rw io.ReadWriteCloser, onReq Handler, onEvt EventHandler) *Conn {
 	c := &Conn{rw: rw, pending: map[uint32]chan Msg{}, onReq: onReq, onEvt: onEvt, done: make(chan struct{})}
+	// Conn 拥有读取循环；连接关闭或协议/读取失败后退出。
 	go c.readLoop()
 	return c
 }
@@ -97,6 +98,11 @@ func (c *Conn) writeTimed(m Msg, timeout time.Duration) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	select {
+	case <-c.done:
+		return io.ErrClosedPipe
+	default:
+	}
 	var timedOut atomic.Bool
 	var clear func()
 	if timeout > 0 {
@@ -159,6 +165,7 @@ func (c *Conn) readLoop() {
 				ch <- m
 			}
 		case "req":
+			// Conn 拥有请求任务；handler 返回后，回复完成、断连或写入超时即退出。
 			go c.serve(m)
 		case "evt":
 			if c.onEvt != nil {
@@ -169,6 +176,11 @@ func (c *Conn) readLoop() {
 }
 
 func (c *Conn) serve(m Msg) {
+	select {
+	case <-c.done:
+		return
+	default:
+	}
 	res := Msg{T: "res", ID: m.ID}
 	var r any
 	e := &Error{Code: "E_STATE", Msg: "no handler"}
@@ -178,11 +190,22 @@ func (c *Conn) serve(m Msg) {
 	ok := e == nil
 	res.OK = &ok
 	if ok {
-		res.R, _ = json.Marshal(r)
+		var err error
+		res.R, err = json.Marshal(r)
+		if err != nil {
+			ok = false
+			res.Err = &Error{Code: "E_INTERNAL", Msg: "marshal response: " + err.Error()}
+			c.mu.Lock()
+			log := c.lifecycleLog
+			c.mu.Unlock()
+			if log != nil {
+				log("response_marshal_error", "request_id", m.ID, "op", m.M, "err", err)
+			}
+		}
 	} else {
 		res.Err = e
 	}
-	_ = c.write(res)
+	_ = c.writeTimed(res, 5*time.Second)
 }
 
 func (c *Conn) fail(err error) {
