@@ -104,6 +104,7 @@ type Origin struct {
 
 // Manifest 是 manifest.json v0（10.3）。Raw 保留原始字节，再次导出时不丢失未知字段。
 type Manifest struct {
+	Permissions []string `json:"permissions,omitempty"`
 	Format      string   `json:"format"`
 	Schema      *int     `json:"schema"`
 	MinApp      string   `json:"minApp,omitempty"`
@@ -163,6 +164,14 @@ func validI18n(t I18n, field string, required bool) error {
 
 // Validate 实现 schema 的全部约束（路径规则用 CheckPath）。
 func (m *Manifest) Validate() error {
+	seenPermissions := map[string]bool{}
+	for _, p := range m.Permissions {
+		if (m.Type != "shader" && m.Type != "web") || (p != "audio" && p != "input") || seenPermissions[p] {
+			return bad("bad permission %q", p)
+		}
+		seenPermissions[p] = true
+	}
+
 	if m.Format != "wpk" {
 		return bad("format must be \"wpk\"")
 	}
@@ -238,7 +247,7 @@ func (m *Manifest) Validate() error {
 		}
 		seen := map[string]bool{}
 		for _, p := range m.Web.Permissions {
-			if p != "network" && p != "audio-reactive" || seen[p] {
+			if p != "network" && p != "audio-reactive" && p != "audio" && p != "input" || seen[p] {
 				return bad("bad web permission %q", p)
 			}
 			seen[p] = true
@@ -385,3 +394,20 @@ func IsVideoExt(name string) bool {
 }
 
 func marshalManifest(m *Manifest) ([]byte, error) { return json.MarshalIndent(m, "", "  ") }
+
+// Declares checks native permissions and the legacy web permission location.
+func (m *Manifest) Declares(permission string) bool {
+	for _, p := range m.Permissions {
+		if p == permission {
+			return true
+		}
+	}
+	if m.Type == "web" && m.Web != nil {
+		for _, p := range m.Web.Permissions {
+			if p == permission {
+				return true
+			}
+		}
+	}
+	return false
+}

@@ -95,6 +95,7 @@ type Power struct {
 
 // View 是 UI 用的整体快照。
 type View struct {
+	SignalConsent  *SignalConsent
 	NetworkConsent *NetworkConsent
 	Renditions     []RenditionView
 	Layout         string // effective independent | span
@@ -146,6 +147,8 @@ type screen struct {
 
 // App 是编排器。
 type App struct {
+	signalConsent  *SignalConsent
+	signalAnswer   chan bool
 	networkConsent *NetworkConsent
 	networkAnswer  chan bool
 	itemGeneration map[string]uint64
@@ -584,6 +587,7 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 	s.watchStop = make(chan struct{})
 	s.r, s.started, s.metricsReady = r, false, false
 	it := render.Item{PackageDir: s.item.Dir, ID: s.item.ID, Kind: s.item.Type, Path: a.renditionPath(s, true),
+		SignalsBlocked: a.signalsBlocked(s), AudioEnabled: signalGrant(s.item, a.d.Store.Config, "audio"), InputEnabled: signalGrant(s.item, a.d.Store.Config, "input"), Viewport: s.d.Bounds,
 		Start: a.d.Store.State.Positions[a.positionKey(s)], NetworkGranted: s.item.NetworkGranted, FPSCap: a.screenFPSCap(s), Properties: s.item.Props.WebValues}
 	if !a.d.Store.Config.Render.ResumePosition {
 		it.Start = 0
@@ -908,6 +912,12 @@ func (a *App) signal(r visibility.Reason, disp desktop.DisplayID, on bool, src s
 	} else {
 		a.global[r] = on
 	}
+	for _, screen := range a.sortedScreens() {
+		if updater, ok := screen.r.(render.SignalPolicyUpdater); ok {
+			blocked := a.signalsBlocked(screen)
+			screen.ops <- func() { _ = updater.BlockSignals(blocked) }
+		}
+	}
 	effective := on
 	if idx >= 0 {
 		effective = on && a.reasonEnabled(r)
@@ -1052,7 +1062,7 @@ func levelName(m *visibility.Machine) (string, string) {
 
 func (a *App) publish() {
 	a.sampleMetrics(time.Now())
-	v := View{NetworkConsent: a.networkConsent, ImportQueued: len(a.importQueue), Config: a.d.Store.Config.Clone(), Capabilities: a.d.Host.Caps(), Paths: a.d.Store.Paths, Storage: a.storage, ForegroundAction: a.foregroundAction, PausedAll: a.pausedAll, SafeMode: a.d.SafeMode, Importing: a.importing,
+	v := View{SignalConsent: a.signalConsent, NetworkConsent: a.networkConsent, ImportQueued: len(a.importQueue), Config: a.d.Store.Config.Clone(), Capabilities: a.d.Host.Caps(), Paths: a.d.Store.Paths, Storage: a.storage, ForegroundAction: a.foregroundAction, PausedAll: a.pausedAll, SafeMode: a.d.SafeMode, Importing: a.importing,
 		LastImport: a.lastImp, LastError: a.lastErr, ReadOnly: a.d.Store.ReadOnlyWarn,
 		Library: append([]config.Item(nil), a.d.Store.Library.Items...), HasEncoder: a.d.Transcode != nil, Encoder: a.encoderInfo, Default: a.d.Store.Assign.Default,
 		Power:       Power{OnBattery: a.onBattery, Percent: a.battPct, Saver: a.power[visibility.BatterySaver]},
@@ -1091,6 +1101,9 @@ func (a *App) publish() {
 				dv.Playback = c.Capabilities()
 			}
 			stt := s.r.Stats()
+			if stt.LastErr != "" {
+				dv.Note = joinNotes([]string{dv.Note, stt.LastErr})
+			}
 			dv.Backend, dv.HWDec, dv.Dropped = stt.Backend, stt.HWDec, stt.Dropped
 		}
 		if !s.canvas.Empty() {
@@ -1603,8 +1616,12 @@ func (a *App) UpdateConfig(fn func(*config.Config)) {
 				a.applyCap(s)
 			}
 		}
-		if c.Render.WindowsBackend != old.Render.WindowsBackend || c.Render.MpvPath != old.Render.MpvPath || c.Render.Hwdec != old.Render.Hwdec || c.Render.Muted != old.Render.Muted || c.Render.ResumePosition != old.Render.ResumePosition || c.Perf.RenderScale != old.Perf.RenderScale {
+		playbackChanged := c.Render.WindowsBackend != old.Render.WindowsBackend || c.Render.MpvPath != old.Render.MpvPath || c.Render.Hwdec != old.Render.Hwdec || c.Render.Muted != old.Render.Muted || c.Render.ResumePosition != old.Render.ResumePosition || c.Perf.RenderScale != old.Perf.RenderScale
+		if c.Privacy.AudioReactive != old.Privacy.AudioReactive || c.Privacy.MouseInput != old.Privacy.MouseInput || playbackChanged {
 			for _, s := range a.sortedScreens() {
+				if !playbackChanged && (s.item == nil || (s.item.Type != "shader" && s.item.Type != "web")) {
+					continue
+				}
 				if c.Render.WindowsBackend != old.Render.WindowsBackend {
 					a.installSystemWallpaper(s)
 				}

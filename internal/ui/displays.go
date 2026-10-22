@@ -76,7 +76,7 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 					y := 12 + float32(d.Y-minY)*sc
 					w, h := float32(d.W)*sc-6, float32(d.H)*sc-6
 					sel := d.ID == s.dispSel
-					mon := ui.Box(c.Key("mon"+d.ID)).Absolute().Left(x).Top(y).Size(w, h).Radius(12).Clip().Border(1, lineColor(t)).Cursor(ui.CursorPointer).Children(func() {
+					mon := ui.Box(c.Key("mon"+d.ID)).Label(fmt.Sprintf(tr(c, "选择显示器 %d"), d.Index)).Absolute().Left(x).Top(y).Size(w, h).Radius(12).Clip().Border(1, lineColor(t)).Cursor(ui.CursorPointer).Children(func() {
 						if it := s.itemByID(v, d.ItemID); it != nil {
 							s.preview(c, *it, h)
 						} else {

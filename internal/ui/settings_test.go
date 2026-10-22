@@ -262,11 +262,14 @@ func TestStatusBarPauseAndNext(t *testing.T) {
 }
 
 func TestDisplaysPage(t *testing.T) {
-	ctl, _, tt := newUI(t, "windows")
+	ctl, s, tt := newUI(t, "windows")
 	tt.SetSize(1120, 1500)
 	click(t, tt, "显示器")
 	must(t, tt, "DELL U2723QE（主屏）", "播放中", "硬解 d3d11va")
-	click(t, tt, "2  显示器 2")
+	click(t, tt, "选择显示器 2")
+	if s.dispSel != "d2" {
+		t.Fatalf("selected display = %q", s.dispSel)
+	}
 	must(t, tt, "2  显示器 2", "暂停原因：其他程序全屏", "系统没有提供名称，按排列顺序编号")
 	for _, x := range tt.Texts() {
 		if strings.Contains(x, `\\.\`) || strings.Contains(x, "DISPLAY") {
@@ -274,8 +277,14 @@ func TestDisplaysPage(t *testing.T) {
 		}
 	}
 	click(t, tt, "将此屏壁纸复制到所有显示器")
-	if v := ctl.View(); v.Default != "city" || v.Displays[0].ItemID != "city" || v.Displays[0].Custom {
-		t.Fatal("复制到所有显示器", v.Default, v.Displays)
+	v := ctl.View()
+	if v.Default != "city" || len(ctl.Assigns) != 1 || ctl.Assigns[0] != "*=city" {
+		t.Fatal("复制动作必须实际执行", v.Default, ctl.Assigns)
+	}
+	for _, d := range v.Displays {
+		if d.ItemID != "city" || d.Custom {
+			t.Fatal("复制到所有显示器", v.Default, v.Displays)
+		}
 	}
 }
 

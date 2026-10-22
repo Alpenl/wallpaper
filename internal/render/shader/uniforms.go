@@ -8,12 +8,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"wpapp/internal/reactive"
 	"wpapp/internal/wpk"
 )
 
 // Each field occupies one 16-byte slot, shared by cbuffer and Metal float4.
-// Avoid Go struct ABI and bool size dependencies. Audio and mouse are reserved
-// and zero initialized; no input capture occurs in this task.
+// Avoid Go struct ABI and bool size dependencies. Audio and mouse are zero
+// unless the isolated host has both package consent and global authorization.
 const AudioBins = 128
 const BaseUniformBytes = 64 + AudioBins*16
 const MaxUniformBytes = BaseUniformBytes + 64*16
@@ -125,4 +126,14 @@ func propertyDecls(defs []wpk.Prop, target Target) (fields, slots, init string, 
 		}
 	}
 	return
+}
+
+func (u *Uniforms) Signals(audio reactive.Spectrum, mouse [4]float32) {
+	u.put(1, 2, audio.RMS)
+	for i, v := range mouse {
+		u.put(2, i, v)
+	}
+	for i, v := range audio.Bins {
+		u.put(4+i, 0, v)
+	}
 }

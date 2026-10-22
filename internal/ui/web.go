@@ -47,6 +47,7 @@ func (s *Settings) webProps(c *ui.Context, v app.View, it config.Item) {
 		s.ctl.SetItemProps(it.ID, p)
 	}
 	group(c.Key("web-properties"), func() {
+		s.signalProps(c, it)
 		if it.Type == "shader" {
 			scale := it.Props.ShaderScale
 			if scale == 0 {

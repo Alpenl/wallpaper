@@ -223,3 +223,5 @@ func (r *Renderer) Close() error {
 	}
 	return nil
 }
+
+func (r *Renderer) BlockSignals(blocked bool) error { return r.call("signals-blocked", blocked) }

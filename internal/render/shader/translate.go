@@ -208,7 +208,7 @@ func translate(src string, target Target, defs []wpk.Prop) (result string, err e
 	}
 	pre := helpers(target) + strings.Join(p.constructors, "\n")
 	if target == MSL {
-		return pre + "struct WPShader {\nfloat3 iResolution; float iTime; float iTimeDelta; int iFrame; float4 iMouse; float4 iDate; float iAudioLevel;\n" + fields + body.String() + "void wp_init() {" + strings.Join(p.initializers, ";") + ";}\n};\n" + strings.Replace(strings.Replace(metalEntry, "float4 wp_audio[128];", "float4 wp_audio[128];"+slots, 1), "WPShader s;", "WPShader s;"+initial, 1), nil
+		return pre + "struct WPShader {\nfloat3 iResolution; float iTime; float iTimeDelta; int iFrame; float4 iMouse; float4 iDate; float iAudioLevel; constant float4* wp_audio;\n" + fields + body.String() + "void wp_init() {" + strings.Join(p.initializers, ";") + ";}\n};\n" + strings.Replace(strings.Replace(metalEntry, "float4 wp_audio[128];", "float4 wp_audio[128];"+slots, 1), "WPShader s;", "WPShader s;"+initial, 1), nil
 	}
 	return pre + fields + "cbuffer WPUniforms : register(b0) { float4 wp_resolutionTime; float4 wp_deltaFrame; float4 iMouse; float4 iDate; float4 wp_audio[128]; " + slots + "};\n#define iResolution wp_resolutionTime.xyz\n#define iTime wp_resolutionTime.w\n#define iTimeDelta wp_deltaFrame.x\n#define iFrame asint(wp_deltaFrame.y)\n#define iAudioLevel wp_deltaFrame.z\n" + body.String() + "void wp_init() {" + strings.Join(p.initializers, ";") + ";}\n" + hlslEntry, nil
 }
@@ -562,7 +562,7 @@ func (p *translator) call(name string, a []expr) expr {
 	}
 	args := strings.Join(codes, ", ")
 	if name == "texture" && len(a) == 2 && a[0].code == "iAudio" {
-		return expr{"float4(0.0, 0.0, 0.0, 0.0)", "vec4"}
+		return expr{"float4(wp_audio[clamp(int((" + a[1].code + ").x * 128.0), 0, 127)].xxx, 1.0)", "vec4"}
 	}
 	if isType(name) {
 		if len(a) == 0 {
@@ -666,7 +666,7 @@ func helpers(t Target) string {
 const metalEntry = `struct WPUniforms { float4 resolutionTime; float4 deltaFrame; float4 mouse; float4 date; float4 wp_audio[128]; };
 vertex float4 wp_vertex(uint id [[vertex_id]]) { return float4(id == 1 ? 3.0 : -1.0, id == 2 ? 3.0 : -1.0, 0.0, 1.0); }
 fragment float4 wp_fragment(float4 pos [[position]], constant WPUniforms &u [[buffer(0)]]) {
- WPShader s; s.iResolution=u.resolutionTime.xyz; s.iTime=u.resolutionTime.w; s.iTimeDelta=u.deltaFrame.x; s.iFrame=as_type<int>(u.deltaFrame.y); s.iMouse=u.mouse; s.iDate=u.date; s.iAudioLevel=u.deltaFrame.z;
+ WPShader s; s.iResolution=u.resolutionTime.xyz; s.iTime=u.resolutionTime.w; s.iTimeDelta=u.deltaFrame.x; s.iFrame=as_type<int>(u.deltaFrame.y); s.iMouse=u.mouse; s.iDate=u.date; s.iAudioLevel=u.deltaFrame.z; s.wp_audio=u.wp_audio;
  s.wp_init(); float4 color=float4(0.0); s.mainImage(color,float2(pos.x,u.resolutionTime.y-pos.y)); return color;
 }
 `

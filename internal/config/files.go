@@ -65,8 +65,10 @@ type Startup struct {
 }
 
 type Privacy struct {
-	Telemetry    bool   `json:"telemetry"` // D-15：不做遥测，恒为 false
-	CrashReports string `json:"crashReports"`
+	AudioReactive bool   `json:"audioReactive"`
+	MouseInput    bool   `json:"mouseInput"`
+	Telemetry     bool   `json:"telemetry"` // D-15：不做遥测，恒为 false
+	CrashReports  string `json:"crashReports"`
 }
 
 // Render 选择渲染后端（D-04：Windows 默认 mpv，可选 mf）。
@@ -248,6 +250,9 @@ type Item struct {
 	AddedAt        time.Time  `json:"addedAt"`
 	Web            *wpk.Web   `json:"web,omitempty"`
 	PropertyDefs   []wpk.Prop `json:"propertyDefs,omitempty"`
+	Permissions    []string   `json:"permissions,omitempty"`
+	AudioGranted   bool       `json:"audioGranted"`
+	InputGranted   bool       `json:"inputGranted"`
 	NetworkGranted bool       `json:"networkGranted"`
 	Props          ItemProps  `json:"props,omitempty"`
 }

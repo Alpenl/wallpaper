@@ -342,6 +342,7 @@ func runHost(p pipeIO) error {
 	v := &macView{}
 	defer v.Close()
 	h := &hostSession{view: v}
+	defer h.closeSignals()
 	jobs := make(chan func())
 	c := ipc.New(p, func(m string, b json.RawMessage) (any, *ipc.Error) {
 		var result any
@@ -359,6 +360,8 @@ func runHost(p pipeIO) error {
 		case job := <-jobs:
 			job()
 		default:
+			h.signalFrame(time.Now())
+			h.reportSignalStatus(c)
 			macPump()
 		}
 	}

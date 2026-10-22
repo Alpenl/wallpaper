@@ -5,6 +5,7 @@
   "type": "object",
   "required": ["format", "schema", "id", "version", "type", "entry", "title"],
   "properties": {
+    "permissions": {"type":"array", "uniqueItems":true, "items":{"enum":["audio","input"]}},
     "format": {"const": "wpk"},
     "schema": {"const": 0},
     "minApp": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"},
@@ -23,7 +24,7 @@
       "fps": {"type": "number", "exclusiveMinimum": 0, "maximum": 240},
       "codec": {"enum": ["h264", "hevc", "av1", "vp9", "prores", "other"]}, "hasAudio": {"type": "boolean"}}},
     "web": {"type": "object", "properties": {
-      "permissions": {"type": "array", "uniqueItems": true, "items": {"enum": ["network", "audio-reactive"]}},
+      "permissions": {"type": "array", "uniqueItems": true, "items": {"enum": ["network", "audio", "input", "audio-reactive"]}},
       "networkAllow": {"type": "array", "maxItems": 32, "items": {"type": "string", "pattern": "^[a-z0-9.-]+$"}},
       "fpsCap": {"type": "integer", "enum": [15, 24, 30, 60]}, "transparent": {"type": "boolean", "default": false}}},
     "shader": {"type": "object", "required": ["dialect"], "properties": {
@@ -36,6 +37,7 @@
     "origin": {"type": "object", "properties": {"kind": {"enum": ["native", "lively", "we"]}, "ref": {"type": "string"}}}
   },
   "allOf": [
+    {"if":{"properties":{"type":{"enum":["video","image"]}}},"then":{"properties":{"permissions":{"maxItems":0}}}},
     {"if": {"properties": {"type": {"const": "video"}}}, "then": {"required": ["video"]}},
     {"if": {"properties": {"type": {"const": "web"}}}, "then": {"required": ["web"]}},
     {"if": {"properties": {"type": {"const": "shader"}}}, "then": {"required": ["shader"]}}

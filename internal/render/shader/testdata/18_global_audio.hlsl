@@ -9,7 +9,7 @@ cbuffer WPUniforms : register(b0) { float4 wp_resolutionTime; float4 wp_deltaFra
 #define iAudioLevel wp_deltaFrame.z
 static float phase;
 void mainImage(out float4 c, float2 p) {
-float4 audio = float4(0.0, 0.0, 0.0, 0.0);
+float4 audio = float4(wp_audio[clamp(int((float2(0.5, 0.0)).x * 128.0), 0, 127)].xxx, 1.0);
 (c = float4(((float(frac(phase))).xxx + audio.xyz), 1.0));
 }
 void wp_init() {phase = (iTime * 0.1);}

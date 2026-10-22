@@ -38,3 +38,32 @@ func TestWebManifestProperties(t *testing.T) {
 		}
 	}
 }
+
+func TestSignalPermissions(t *testing.T) {
+	b, e := os.ReadFile("../../examples/web-orbit/manifest.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, permissions := range [][]string{{"audio", "input"}, {"keyboard"}, {"audio", "audio"}} {
+		m, _ := Parse(b)
+		m.Permissions = permissions
+		err := m.Validate()
+		if permissions[0] == "audio" && len(permissions) == 2 && permissions[1] == "input" {
+			if err != nil || !m.Declares("audio") || !m.Declares("input") {
+				t.Fatal(m, err)
+			}
+		} else if err == nil {
+			t.Fatal("accepted invalid permissions", permissions)
+		}
+	}
+	m, _ := Parse(b)
+	m.Web.Permissions = []string{"input"}
+	if e := m.Validate(); e != nil || !m.Declares("input") {
+		t.Fatal(e)
+	}
+	m.Type = "image"
+	m.Permissions = []string{"audio"}
+	if m.Validate() == nil {
+		t.Fatal("image signal permission")
+	}
+}

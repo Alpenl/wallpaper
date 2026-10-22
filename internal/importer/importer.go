@@ -38,6 +38,7 @@ type Options struct {
 	TranscodeExt    string                                           // .mp4/.mov/.m4v; empty preserves the legacy .mov contract
 	CanTranscodeGIF bool                                             // only advertise when this encoder accepts GIF sources
 	BeforeReplace   func(id string) error
+	ConsentSignal   func(title, permission string) bool     // nil means deny
 	ConsentNetwork  func(title string, hosts []string) bool // nil means deny; called only for a declared permission
 	Lang            string
 }
@@ -148,6 +149,7 @@ func importWPK(src string, o Options) (*Result, error) {
 		return nil, err
 	}
 	granted := false
+	audioGranted, inputGranted := false, false
 	r, err := wpk.ExtractChecked(src, o.Library, func(m *wpk.Manifest) error {
 		if err := supportedManifest(m); err != nil {
 			return err
@@ -157,6 +159,14 @@ func importWPK(src string, o Options) (*Result, error) {
 				if p == "network" && o.ConsentNetwork != nil {
 					granted = o.ConsentNetwork(m.Title.Pick(o.Lang), append([]string(nil), m.Web.NetworkAllow...))
 				}
+			}
+		}
+		if o.ConsentSignal != nil {
+			if m.Declares("audio") {
+				audioGranted = o.ConsentSignal(m.Title.Pick(o.Lang), "audio")
+			}
+			if m.Declares("input") {
+				inputGranted = o.ConsentSignal(m.Title.Pick(o.Lang), "input")
 			}
 		}
 		if o.BeforeReplace != nil {
@@ -194,6 +204,12 @@ func importWPK(src string, o Options) (*Result, error) {
 		it.Web = m.Web
 		it.PropertyDefs = m.Properties
 		it.NetworkGranted = granted
+		it.AudioGranted, it.InputGranted = audioGranted, inputGranted
+		for _, p := range []string{"audio", "input"} {
+			if m.Declares(p) {
+				it.Permissions = append(it.Permissions, p)
+			}
+		}
 		for _, name := range []string{"preview.png", "preview.webp"} {
 			if exists(filepath.Join(it.Dir, name)) {
 				it.Snapshot = filepath.Join(it.Dir, name)

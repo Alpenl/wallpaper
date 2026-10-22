@@ -19,6 +19,7 @@ import (
 // Ctl 实现 ui.Controller。
 type Ctl struct {
 	GOOS               string // Target platform for headless previews and tests; empty uses the host.
+	SignalAnswers      []bool
 	NetworkAnswers     []bool
 	mu                 sync.Mutex
 	V                  app.View
@@ -284,6 +285,28 @@ func (f *Ctl) RevokeNetwork(id string) {
 	for i := range f.V.Library {
 		if f.V.Library[i].ID == id {
 			f.V.Library[i].NetworkGranted = false
+		}
+	}
+}
+
+func (f *Ctl) ResolveSignalConsent(allow bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.SignalAnswers = append(f.SignalAnswers, allow)
+	f.V.SignalConsent = nil
+}
+func (f *Ctl) RevokeSignal(id, permission string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.V.Library {
+		it := &f.V.Library[i]
+		if it.ID == id {
+			if permission == "audio" {
+				it.AudioGranted = false
+			}
+			if permission == "input" {
+				it.InputGranted = false
+			}
 		}
 	}
 }

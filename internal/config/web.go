@@ -15,6 +15,7 @@ var libraryMigrations = map[int]Migration{3: func(raw map[string]any) error {
 
 // Clone detaches the nested manifest metadata shared by library snapshots.
 func (it Item) Clone() Item {
+	it.Permissions = append([]string(nil), it.Permissions...)
 	it.Tags = append([]string(nil), it.Tags...)
 	it.Colors = append([]string(nil), it.Colors...)
 	if it.Web != nil {

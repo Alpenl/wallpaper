@@ -230,6 +230,7 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 			opts.Lang = cfg.UI.Lang
 			opts.BeforeReplace = func(id string) error { return e.app.PreparePackageReplacement(ctx, id) }
 			if !f.headless {
+				opts.ConsentSignal = func(title, permission string) bool { return e.app.RequestSignalConsent(ctx, title, permission) }
 				opts.ConsentNetwork = func(title string, hosts []string) bool { return e.app.RequestNetworkConsent(ctx, title, hosts) }
 			}
 			opts.Transcode, opts.TranscodeExt, _ = e.encoder(cfg)

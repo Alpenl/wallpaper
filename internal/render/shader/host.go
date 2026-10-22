@@ -3,6 +3,7 @@ package shader
 import (
 	"encoding/json"
 	"fmt"
+	"image"
 	"io"
 	"math"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"time"
 	"wpapp/internal/ipc"
+	"wpapp/internal/reactive"
 	"wpapp/internal/render"
 	"wpapp/internal/wpk"
 )
@@ -23,15 +25,17 @@ type gpu interface {
 	Close()
 }
 type hostSession struct {
-	gpu           gpu
-	loaded        bool
-	defs          []wpk.Prop
-	uniforms      Uniforms
-	timeline      Timeline
-	adaptive      Adaptive
-	fps           int
-	width, height int
-	paused        bool
+	signals        *reactive.Session
+	signalsBlocked bool
+	gpu            gpu
+	loaded         bool
+	defs           []wpk.Prop
+	uniforms       Uniforms
+	timeline       Timeline
+	adaptive       Adaptive
+	fps            int
+	width, height  int
+	paused         bool
 }
 
 func readSource(x loadRequest) (*wpk.Manifest, string, error) {
@@ -103,6 +107,13 @@ func (h *hostSession) control(method string, p json.RawMessage) error {
 		if e = h.gpu.Load(x, code); e != nil {
 			return e
 		}
+		h.signals = reactive.NewSession()
+		h.signals.Audio = !x.Preview && x.Item.AudioEnabled && m.Declares("audio")
+		h.signals.Input = !x.Preview && x.Item.InputEnabled && m.Declares("input")
+		h.signals.Canvas = x.Bounds
+		h.signals.Viewport = x.Item.Viewport
+		h.signalsBlocked = x.Item.SignalsBlocked
+		h.signals.SetPaused(x.Paused || h.signalsBlocked)
 		h.loaded = true
 		h.defs = m.Properties
 		h.adaptive = NewAdaptive(x.Scale)
@@ -121,6 +132,15 @@ func (h *hostSession) control(method string, p json.RawMessage) error {
 		return fmt.Errorf("shader: load required")
 	}
 	switch method {
+	case "signals-blocked":
+		var blocked bool
+		if e := json.Unmarshal(p, &blocked); e != nil {
+			return e
+		}
+		h.signalsBlocked = blocked
+		if h.signals != nil {
+			h.signals.SetPaused(h.paused || blocked)
+		}
 	case "pause":
 		var l int
 		if e := json.Unmarshal(p, &l); e != nil {
@@ -131,6 +151,9 @@ func (h *hostSession) control(method string, p json.RawMessage) error {
 		}
 		h.paused = l > 0
 		h.timeline.Pause(h.paused)
+		if h.signals != nil {
+			h.signals.SetPaused(h.paused || h.signalsBlocked)
+		}
 	case "fps":
 		var fps int
 		if e := json.Unmarshal(p, &fps); e != nil {
@@ -172,6 +195,10 @@ func (h *hostSession) frame(now time.Time) error {
 	}
 	seconds, delta := h.timeline.Tick(now)
 	h.uniforms.Frame(max(1, int(float64(h.width)*h.adaptive.Scale)), max(1, int(float64(h.height)*h.adaptive.Scale)), seconds, delta, h.timeline.Frame-1, now)
+	if h.signals != nil {
+		spectrum, mouse := h.signals.Frame(now, h.fps, image.Pt(max(1, int(float64(h.width)*h.adaptive.Scale)), max(1, int(float64(h.height)*h.adaptive.Scale))))
+		h.uniforms.Signals(spectrum, mouse)
+	}
 	ms, e := h.gpu.Frame(&h.uniforms, h.adaptive.Scale)
 	if e == nil {
 		h.adaptive.Sample(ms)
@@ -188,6 +215,11 @@ func HostMain() int {
 func serve(p pipeIO, g gpu) error {
 	defer g.Close()
 	h := hostSession{gpu: g, fps: 30}
+	defer func() {
+		if h.signals != nil {
+			h.signals.Close()
+		}
+	}()
 	jobs := make(chan func())
 	c := ipc.New(p, func(method string, b json.RawMessage) (any, *ipc.Error) {
 		done := make(chan struct{})
@@ -216,7 +248,11 @@ func serve(p pipeIO, g gpu) error {
 			job()
 		case <-statsTicker.C:
 			if h.loaded {
-				_ = c.Emit("stats", render.Stats{Backend: "shader", Pos: h.timeline.elapsed.Seconds()})
+				status := ""
+				if h.signals != nil {
+					status = h.signals.Status
+				}
+				_ = c.Emit("stats", render.Stats{Backend: "shader", Pos: h.timeline.elapsed.Seconds(), LastErr: status})
 			}
 		case <-timer.C:
 			now := time.Now()

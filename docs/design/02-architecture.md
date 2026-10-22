@@ -176,3 +176,7 @@ type Machine interface { // 07 章
 - macOS 的 AppKit、AVFoundation、WebKit 调用必须在主线程。MyGo 提供 `RunOnMain`【源码】`loop.go:86`。CGWindowList 轮询放在后台 goroutine 里做，结果再回到主线程【源码】Wallnetic 的做法。
 - purego 回调在启动时一次性注册（每个进程大约有 2000 个上限，而且不释放）【文档】MyGo 架构文档。
 - Windows：WinEventHook 需要所在线程有消息循环，所以在一条 `LockOSThread` 的专用 goroutine 里跑 GetMessage 循环【文档】SetWinEventHook。
+
+### F-22 / F-26 输入进程边界
+
+原生 shaderhost 和已授权的 webhost 在各自宿主内拥有 `internal/reactive.Session`。主进程只保存包授权、总开关及可见性策略，经现有 IPC 发出阻断命令；不接收 PCM。音频 FFT 与鼠标坐标转换都在宿主中执行。暂停、锁屏/睡眠和原始全屏信号可独立于播放偏好撤销输入；撤销授权会重建宿主。完整安全模型及其事件延迟/TCC 限制见 [8.5](08-web-shader.md#85-f-22--f-26-原生输入新产品决策)。

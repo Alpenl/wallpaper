@@ -101,6 +101,17 @@ var user32 = syscall.NewLazyDLL("user32.dll")
 func runHost(p pipeIO) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	// Match desktop.Bounds physical pixels before creating any native window.
+	dpi := user32.NewProc("SetThreadDpiAwarenessContext")
+	if e := dpi.Find(); e != nil {
+		return fmt.Errorf("per-monitor DPI awareness unavailable: %w", e)
+	}
+	previous, _, dpiErr := dpi.Call(^uintptr(3)) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+	if previous == 0 {
+		return fmt.Errorf("set renderer DPI awareness: %w", dpiErr)
+	}
+	defer dpi.Call(previous)
+
 	return serve(p, &d3dGPU{})
 }
 

@@ -51,11 +51,11 @@
 | F-19 | 本轮接入可执行文件 basename 规则 pause/saver/ignore，Windows/macOS/X11 前台进程探针；ignore 只豁免全屏/遮挡，不能覆盖安全或手动暂停 | [`foreground.go`](../internal/desktop/foreground.go)、[`options.go`](../internal/app/options.go)、[`options_test.go`](../internal/app/options_test.go) | 前台而非“任意后台运行”语义；实际桌面会话探针/权限/误判验证；不可用时能力提示 |
 | F-20 | 未启用远程遥测；`Normalize` 强制 false，与早期 opt-in 设想不同 | [`config/files.go`](../internal/config/files.go)、D-15 | 若将来启用需独立产品/隐私/服务决策；不在本轮暗中增加 |
 | F-21 | 未提供已认证 MSIX/Store/MAS 发布物 | [分发设计](design/11-distribution-licensing.md) | D-06/D-12、账号/审核/签名、W-T8；不是本地构建能认证 |
-| F-22 | 未提供系统音频回环与 audio-reactive Web 引擎；普通视频音量不等于音频可视化 | [功能规格](design/17-features-mvp.md) | 独立权限/采集/渲染/性能方案，依赖 F-12 |
+| F-22 | 隔离宿主 WASAPI / ScreenCaptureKit、Go FFT 128 log bins/RMS、平滑/限频、Shader uniform 与 Web 单向回调；导入同意/撤销/默认关闭总开关 | [`reactive`](../internal/reactive/)、[`shader`](../internal/render/shader/)、[`ui/reactive.go`](../internal/ui/reactive.go) | 纯 Go 与 UI 已测；WASAPI 原生设备、macOS TCC/采集、实际功耗及长期运行仍需真机；Linux unsupported |
 | F-23 | 未提供 macOS 锁屏 Aerial 替换；不调用非公开替换流程 | [macOS 设计](design/04-macos-desktop.md)、D-11 | 产品/安全/分发决定与真机实验；不能作为标准支持 |
 | F-24 | Linux X11 产品参考路径及 GNOME/D-Bus 实验代码保留；非全 Wayland/GNOME/KDE 发行支持 | [`desktop/linux`](../internal/desktop/linux/)、[Linux 设计](design/05-ubuntu-compat.md) | D-14、Q-L4/5/7、真实 Shell 会话联调；嵌套实验测试单列 |
 | F-25 | 原规划“以后”；未提供在线画廊、工坊、云同步、创作服务或包签名基础设施 | [包与分发设计](design/10-package-format.md) | 服务端、身份/内容授权、协议、签名/更新信任链及运维；本地示例不是服务 |
-| F-26 | 未提供壁纸鼠标交互；v0 安全范围明确不支持 | [包安全设计](design/10-package-format.md) | 独立输入/权限/安全设计，不暗中开放 |
+| F-26 | 原生 Win 每帧轮询 / mac NSEvent 鼠标监视；桌面命中门控、iMouse、负坐标/混合 DPI/跨屏映射、L1+/原始全屏信号阻断、Web 单向回调 | [`reactive`](../internal/reactive/)、[`app/reactive.go`](../internal/app/reactive.go) | 纯 Go/应用/UI 测试；原生桌面命中、多屏、锁屏和睡眠仍需真机；Linux unsupported |
 
 ## 本轮新增控制的实际支持范围
 
@@ -109,7 +109,7 @@
 | 原生 GPU | D3D11 SM 5.0；d3dcompiler_47.dll 运行时编译；flip-discard 双缓冲、waitable swapchain、全屏三角形 | Metal 运行时 newLibraryWithSource；全屏三角形；presentDrawable 与定时器限帧 | 未实现 GLX，不经 WebView 或视频后端回退 |
 | 分辨率/计时 | 0.5–1.0 离屏 render target + 线性采样放大；三组 timestamp/disjoint 查询 | 离屏 Metal texture + 线性采样放大；读取 command buffer GPUStartTime/GPUEndTime；按 backing 像素计算比例 | 可保存属性 |
 | 调度 | 默认 30 FPS、0.75 比例；每项 15/30/60 FPS 覆盖；电池/saver 仍取更严格上限；L1–L3 停呈现并冻结时间；L4 退出，支持位置检查点；宿主无心跳 5 秒由父进程终止并交给现有监管恢复 | 同左 | 不呈现 |
-| 属性/输入 | slider → float，color → RGB float3，bool → bool，select → 从 0 起的选项序号；显式 16 字节槽；iFrame 按 int32 位存储；iMouse、128 个音频 bin 与 level 预留为零 | 相同布局；MSL 显式解包 | 保存属性，不执行 |
+| 属性/输入 | slider → float，color → RGB float3，bool → bool，select → 从 0 起的选项序号；显式 16 字节槽；iFrame 按 int32 位存储；iMouse、128 个音频 bin 与 RMS level 在授权/总开关/可见性全部通过后由原生采集更新，否则为零 | 相同布局；MSL 显式解包 | 保存属性，不执行 |
 | 导入/预览 | `.wpk`/manifest 目录及自动包装的 `.glsl`/`.frag`；发布包前验证两种转译；独立 helper 尝试离屏 GPU 缩略图，失败使用基于内容哈希的确定性占位图 | 同左 | 转译/管理包与生成占位图 |
 | UI | 有对应条目时显示网页/Shader 筛选；propRow 比例/FPS/用户属性；demo 与 uishots 包含两种侧栏 | 同左 | 同左，播放仍 unsupported |
 
@@ -135,7 +135,7 @@
 
 - **已有源码但缺目标平台证据**：Win/mac 宿主、空间跨屏、原生编解码与播放控制、电源/睡眠、性能预算、签名/公证及安装。不能只以云端测试关闭，也不应重新描述为“完全没有实现”。
 - **仍缺架构或产品实现**：F-14 的 Linux GLX 后端及超出已声明子集的 Shader 功能，F-25 在线服务/内容授权/信任链，以及其他矩阵明列未提供项。真机测试本身不能补齐这些代码。
-- **后续范围仍需确认**：F-12、F-14 已按本次任务扩展；原规格把 F-12/F-14 定为 v1、F-25 定为以后、F-26 在 v0 明确不支持。本轮补全不能默默改变原分期，也不代表用户已同意从“全部功能”中排除它们；扩展到完整 v1/roadmap 的范围仍待确认。
+- **后续范围仍需确认**：F-12、F-14 已按本次任务扩展；原规格把 F-12/F-14 定为 v1、F-25 定为以后、F-22/F-26 已由本次任务明确授权扩展（见下表）。本轮补全不能默默改变原分期，也不代表用户已同意从“全部功能”中排除它们；扩展到完整 v1/roadmap 的范围仍待确认。
 
 ## 状态更新规则
 
@@ -143,3 +143,19 @@
 - 测试通过只能关闭对应覆盖范围，不能从 Linux 单元测试推出 Windows/macOS 合格。
 - 表中未提供项不是“静默完成”；保留缺口及最小闭环条件，交付时明确说明。
 - 不以新的 UI 工作自动批准 D-* 的发布主体、费用、签名证书、遥测、商店账号或线上服务。
+
+## F-22 / F-26 支持与验证边界
+
+| 能力 | Windows | macOS | Linux |
+|---|---|---|---|
+| 系统音频 | WASAPI 默认播放端点 loopback，purego COM，shader/web 子进程 | ScreenCaptureKit audio-only 输出，macOS 13+，purego objc；未授予 TCC 时明确报 unavailable，不自动请求 OS 授权 | unsupported |
+| 鼠标 | 每渲染帧轮询位置和鼠标按钮；桌面根窗口命中 | NSEvent mouse-only 全局 monitor；CGWindowList 点遮挡 | unsupported |
+| Shader | 128 log bins + RMS + iMouse，D3D11 cbuffer | 相同槽位、Metal constant buffer | 不渲染 |
+| Web 次级目标 | onAudio(Float32Array)、onInput 数值对象单向注入 | 同左 | 不渲染 |
+| 授权/停止 | 导入逐项默认拒绝、通用总开关默认关闭、侧栏撤销；L1+、原始全屏/遮挡、锁屏/睡眠/关屏关闭源 | 同左；TCC 是额外系统权限 | 可管理包与授权，不采集 |
+
+测试覆盖合成正弦频谱/RMS/平滑、限频、权限门控、fake source 生命周期、iMouse、负坐标/混合 DPI/跨屏映射、应用层总开关/撤销/全屏阻断和原生 UI 默认拒绝/撤销流程。平台原生接口仍需 Windows/macOS 真机采集、TCC、锁屏/睡眠、多显示器及功耗验收；交叉构建不能替代这些测试。安全限制见 [8.5](design/08-web-shader.md#85-f-22--f-26-原生输入新产品决策)。
+
+本次验证（2026-10-22）：使用 Go toolchain 自带 gofmt；`gofmt -l ./internal ./cmd` 无输出。`GOOS=windows/darwin/linux go vet -unsafeptr=false ./...` 分别通过；本机、Windows、Darwin 的 `CGO_ENABLED=0 go build ./cmd/...` 分别通过（`GOCACHE=/tmp/wallpaper-go-cache`）。`go test ./...` 已执行，只有 `internal/update.TestIncrementalUpdateBootRollback` 因沙箱拒绝 `[::1]:0` 本地监听而失败，其他包通过；没有为通过测试弱化或跳过这个用例。`go test -tags shadergpu ./internal/render/shader -run TestMetalGoldenCompilation -v` 因无 Metal device 跳过。
+
+Windows hosted UI 用例已改为点击布局框的稳定无障碍标签“选择显示器 2”，并额外断言选中 `d2`，保留复制后默认壁纸/两屏分配断言。本机 UI 测试通过；GitHub API 网络连接失败，不能读取 hosted 日志或确认 Windows runner 复跑结果。DPI 宿主线程在建窗前显式设为 Per-Monitor V2，防止指针坐标虚拟化。

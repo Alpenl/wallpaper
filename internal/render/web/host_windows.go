@@ -451,6 +451,17 @@ func (w *winView) Close() {
 func runHost(p pipeIO) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	// Match desktop.Bounds physical pixels before creating any native window.
+	dpi := user.NewProc("SetThreadDpiAwarenessContext")
+	if e := dpi.Find(); e != nil {
+		return fmt.Errorf("per-monitor DPI awareness unavailable: %w", e)
+	}
+	previous, _, dpiErr := dpi.Call(^uintptr(3)) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+	if previous == 0 {
+		return fmt.Errorf("set renderer DPI awareness: %w", dpiErr)
+	}
+	defer dpi.Call(previous)
+
 	v, _, _ := ole.NewProc("CoInitializeEx").Call(0, 2)
 	if e := hr(v); e != nil {
 		return e
@@ -459,6 +470,7 @@ func runHost(p pipeIO) error {
 	w := &winView{}
 	defer w.Close()
 	h := &hostSession{view: w}
+	defer h.closeSignals()
 	jobs := make(chan func())
 	c := ipc.New(p, func(m string, b json.RawMessage) (any, *ipc.Error) {
 		var result any
@@ -477,6 +489,8 @@ func runHost(p pipeIO) error {
 			job()
 			nativeRoots = nil
 		default:
+			h.signalFrame(time.Now())
+			h.reportSignalStatus(c)
 			pump()
 			nativeRoots = nil
 			time.Sleep(time.Millisecond)

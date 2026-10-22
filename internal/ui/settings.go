@@ -29,6 +29,8 @@ import (
 // Controller 是视图对编排器的依赖（*app.App 满足）。
 type Controller interface {
 	View() app.View
+	ResolveSignalConsent(bool)
+	RevokeSignal(string, string)
 	ResolveNetworkConsent(bool)
 	RevokeNetwork(string)
 	SetPausedAll(bool)
@@ -262,6 +264,7 @@ func (s *Settings) View(c *ui.Context) {
 	})
 	s.firstRun(c, v)
 	s.networkDialog(c, v)
+	s.signalDialog(c, v)
 }
 
 // frame 是窗口内容：标题与标签、页面、底部操作栏。

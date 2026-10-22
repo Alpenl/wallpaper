@@ -15,6 +15,7 @@ import (
 
 	"wpapp/internal/desktop"
 	"wpapp/internal/ipc"
+	"wpapp/internal/reactive"
 	"wpapp/internal/render"
 	"wpapp/internal/visibility"
 )
@@ -34,14 +35,16 @@ type loadRequest struct {
 	Paused bool
 }
 type Renderer struct {
-	mu      sync.Mutex
-	exe     string
-	command func() *exec.Cmd
-	cmd     *exec.Cmd
-	conn    *ipc.Conn
-	exited  chan struct{}
-	closing bool
-	done    chan error
+	statsMu      sync.Mutex
+	signalStatus string
+	mu           sync.Mutex
+	exe          string
+	command      func() *exec.Cmd
+	cmd          *exec.Cmd
+	conn         *ipc.Conn
+	exited       chan struct{}
+	closing      bool
+	done         chan error
 }
 
 func New(exe string) *Renderer { return &Renderer{exe: exe, done: make(chan error, 1)} }
@@ -83,7 +86,19 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		out.Close()
 		return e
 	}
-	conn := ipc.New(pipeIO{out, in}, nil, nil)
+	r.statsMu.Lock()
+	r.signalStatus = ""
+	r.statsMu.Unlock()
+	conn := ipc.New(pipeIO{out, in}, nil, func(method string, b json.RawMessage) {
+		if method == "signal-status" {
+			var status string
+			if json.Unmarshal(b, &status) == nil {
+				r.statsMu.Lock()
+				r.signalStatus = status
+				r.statsMu.Unlock()
+			}
+		}
+	})
 	r.mu.Lock()
 	r.cmd = cmd
 	r.conn = conn
@@ -137,8 +152,12 @@ func (r *Renderer) SetFPSCap(fps int) error {
 }
 func (r *Renderer) UpdateProperties(v string) error { return r.call("properties", v) }
 func (r *Renderer) Snapshot(string) error           { return render.ErrUnsupported }
-func (r *Renderer) Stats() render.Stats             { return render.Stats{Backend: "web", HWDec: "unknown"} }
-func (r *Renderer) Done() <-chan error              { return r.done }
+func (r *Renderer) Stats() render.Stats {
+	r.statsMu.Lock()
+	defer r.statsMu.Unlock()
+	return render.Stats{Backend: "web", HWDec: "unknown", LastErr: r.signalStatus}
+}
+func (r *Renderer) Done() <-chan error { return r.done }
 func (r *Renderer) Close() error {
 	r.mu.Lock()
 	cmd, c, exited := r.cmd, r.conn, r.exited
@@ -169,10 +188,16 @@ type nativeView interface {
 	Close()
 }
 type hostSession struct {
-	view        nativeView
-	manifestFPS int
-	defsScript  func(string) (string, error)
-	loaded      bool
+	reportedStatus  string
+	signals         *reactive.Session
+	paused, blocked bool
+	fps             int
+	limiter         reactive.Limiter
+	raster          image.Point
+	view            nativeView
+	manifestFPS     int
+	defsScript      func(string) (string, error)
+	loaded          bool
 }
 
 func (h *hostSession) handle(method string, p json.RawMessage) (any, *ipc.Error) {
@@ -205,6 +230,14 @@ func (h *hostSession) control(method string, p json.RawMessage) error {
 		if e = h.view.Load(x); e != nil {
 			return e
 		}
+		h.signals = reactive.NewSession()
+		h.signals.Audio = x.Item.AudioEnabled && m.Declares("audio")
+		h.signals.Input = x.Item.InputEnabled && m.Declares("input")
+		h.signals.Canvas, h.signals.Viewport = x.Bounds, x.Item.Viewport
+		h.raster = x.Bounds.Size()
+		h.fps = EffectiveFPS(m.Web.FPSCap, x.Item.FPSCap)
+		h.paused, h.blocked = x.Paused, x.Item.SignalsBlocked
+		h.signals.SetPaused(h.paused || h.blocked)
 		h.loaded = true
 		return nil
 	}
@@ -212,6 +245,14 @@ func (h *hostSession) control(method string, p json.RawMessage) error {
 		return fmt.Errorf("web: load required")
 	}
 	switch method {
+	case "signals-blocked":
+		if e := json.Unmarshal(p, &h.blocked); e != nil {
+			return e
+		}
+		if h.signals != nil {
+			h.signals.SetPaused(h.paused || h.blocked)
+		}
+		return nil
 	case "pause":
 		var l int
 		if e := json.Unmarshal(p, &l); e != nil {
@@ -219,6 +260,10 @@ func (h *hostSession) control(method string, p json.RawMessage) error {
 		}
 		if l < 0 || l > 3 {
 			return fmt.Errorf("invalid level")
+		}
+		h.paused = l > 0
+		if h.signals != nil {
+			h.signals.SetPaused(h.paused || h.blocked)
 		}
 		return h.view.Pause(l > 0)
 	case "fps":
@@ -229,7 +274,8 @@ func (h *hostSession) control(method string, p json.RawMessage) error {
 		if fps < 0 || fps > 240 {
 			return fmt.Errorf("invalid FPS")
 		}
-		return h.view.FPS(EffectiveFPS(h.manifestFPS, fps))
+		h.fps = EffectiveFPS(h.manifestFPS, fps)
+		return h.view.FPS(h.fps)
 	case "properties":
 		var raw string
 		if e := json.Unmarshal(p, &raw); e != nil {

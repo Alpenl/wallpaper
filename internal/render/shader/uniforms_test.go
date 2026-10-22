@@ -6,6 +6,7 @@ import (
 	"math"
 	"testing"
 	"time"
+	"wpapp/internal/reactive"
 	"wpapp/internal/wpk"
 )
 
@@ -30,5 +31,21 @@ func TestUniformPacking(t *testing.T) {
 		if e != nil || src == "" {
 			t.Fatal(e)
 		}
+	}
+}
+
+func TestSignalUniforms(t *testing.T) {
+	var u Uniforms
+	s := reactive.Spectrum{RMS: .25}
+	s.Bins[0] = .1
+	s.Bins[127] = .9
+	u.Signals(s, [4]float32{10, 20, -4, -5})
+	get := func(off int) float32 { return math.Float32frombits(binary.LittleEndian.Uint32(u.Bytes[off:])) }
+	if get(24) != .25 || get(32) != 10 || get(40) != -4 || get(64) != .1 || get(64+127*16) != .9 {
+		t.Fatal("signal layout")
+	}
+	u.Signals(reactive.Spectrum{}, [4]float32{})
+	if get(24) != 0 || get(32) != 0 || get(64+127*16) != 0 {
+		t.Fatal("clear")
 	}
 }
