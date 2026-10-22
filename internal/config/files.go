@@ -8,12 +8,13 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"wpapp/internal/wpk"
 )
 
 // 当前各文件的 schemaVersion。
 const (
 	ConfigVersion      = 2
-	LibraryVersion     = 3 // 3：壁纸组属性 Item.Props
+	LibraryVersion     = 4 // 4：Web 属性定义、值与独立的联网同意
 	AssignmentsVersion = 3 // 3：显示器选项可继承（空值 = 跟随壁纸）
 	StateVersion       = 2
 )
@@ -225,36 +226,40 @@ func (p Pause) AppAction(executable string) string {
 
 // Item 是 library.json 的一项。
 type Item struct {
-	ID          string    `json:"id"`
-	Author      string    `json:"author,omitempty"`
-	Description string    `json:"description,omitempty"`
-	Tags        []string  `json:"tags,omitempty"`
-	Colors      []string  `json:"colors,omitempty"`
-	Width       int       `json:"width,omitempty"`
-	Height      int       `json:"height,omitempty"`
-	DurationSec float64   `json:"durationSec,omitempty"`
-	SizeBytes   int64     `json:"sizeBytes,omitempty"`
-	Dir         string    `json:"dir"` // library/<id>
-	Schema      int       `json:"schema"`
-	Origin      string    `json:"origin"` // native | lively | we | file
-	Title       string    `json:"title"`
-	Type        string    `json:"type"` // video | image
-	Entry       string    `json:"entry"`
-	Codec       string    `json:"codec,omitempty"`
-	Transcode   string    `json:"transcode"` // none | recommended | done
-	Note        string    `json:"note,omitempty"`
-	Snapshot    string    `json:"snapshot,omitempty"` // cache/<id>/first.png
-	AddedAt     time.Time `json:"addedAt"`
-	Props       ItemProps `json:"props,omitempty"`
+	ID             string     `json:"id"`
+	Author         string     `json:"author,omitempty"`
+	Description    string     `json:"description,omitempty"`
+	Tags           []string   `json:"tags,omitempty"`
+	Colors         []string   `json:"colors,omitempty"`
+	Width          int        `json:"width,omitempty"`
+	Height         int        `json:"height,omitempty"`
+	DurationSec    float64    `json:"durationSec,omitempty"`
+	SizeBytes      int64      `json:"sizeBytes,omitempty"`
+	Dir            string     `json:"dir"` // library/<id>
+	Schema         int        `json:"schema"`
+	Origin         string     `json:"origin"` // native | lively | we | file
+	Title          string     `json:"title"`
+	Type           string     `json:"type"` // video | image
+	Entry          string     `json:"entry"`
+	Codec          string     `json:"codec,omitempty"`
+	Transcode      string     `json:"transcode"` // none | recommended | done
+	Note           string     `json:"note,omitempty"`
+	Snapshot       string     `json:"snapshot,omitempty"` // cache/<id>/first.png
+	AddedAt        time.Time  `json:"addedAt"`
+	Web            *wpk.Web   `json:"web,omitempty"`
+	PropertyDefs   []wpk.Prop `json:"propertyDefs,omitempty"`
+	NetworkGranted bool       `json:"networkGranted"`
+	Props          ItemProps  `json:"props,omitempty"`
 }
 
 // ItemProps 是壁纸组自带的播放属性：随壁纸走，换到哪块屏都一样；显示器选项可逐项覆盖。
 // 零值表示默认：Fit "" = 填充，Speed 0 = 1 倍，Volume 0 = 100，Audio "" = 跟随全局“默认静音”。
 type ItemProps struct {
-	Fit    string  `json:"fit,omitempty"`
-	Speed  float64 `json:"speed,omitempty"`
-	Volume int     `json:"volume,omitempty"`
-	Audio  string  `json:"audio,omitempty"` // "" | mute | sound
+	WebValues string  `json:"webValues,omitempty"` // canonical JSON; keeps snapshots immutable and ItemProps comparable
+	Fit       string  `json:"fit,omitempty"`
+	Speed     float64 `json:"speed,omitempty"`
+	Volume    int     `json:"volume,omitempty"`
+	Audio     string  `json:"audio,omitempty"` // "" | mute | sound
 }
 
 // Normalize 把非法值退回默认（零值）。
@@ -580,7 +585,7 @@ func Open(p Paths) (*Store, error) {
 		return nil, err
 	}
 	s.Config.Normalize()
-	if err := load(s.LibrarySaver, LibraryVersion, &s.Library, nil); err != nil {
+	if err := load(s.LibrarySaver, LibraryVersion, &s.Library, libraryMigrations); err != nil {
 		return nil, err
 	}
 	if err := load(s.AssignSaver, AssignmentsVersion, &s.Assign, assignMigrations); err != nil {

@@ -406,6 +406,10 @@ func propRow(c *ui.Context, key, label, sub string, last bool, control func()) {
 
 // groupProps 是“属性”：声音、音量、播放速度、填充都随壁纸保存，应用到任何显示器都生效。
 func (s *Settings) groupProps(c *ui.Context, v app.View, it config.Item) {
+	if it.Type == "web" {
+		s.webProps(c, v, it)
+		return
+	}
 	t := c.Theme()
 	props := it.Props
 	setProps := func(fn func(p *config.ItemProps)) {

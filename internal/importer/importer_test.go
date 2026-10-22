@@ -120,8 +120,11 @@ func TestImportLively(t *testing.T) {
 	// 名字形式 + zip
 	dir2 := t.TempDir()
 	writeLively(t, dir2, `"web"`, "index.html")
-	if _, err := Import(context.Background(), dir2, o); !errors.Is(err, ErrUnsupported) {
-		t.Fatal("web 不在 MVP", err)
+	if err := os.WriteFile(filepath.Join(dir2, "index.html"), []byte("<!doctype html><title>Local</title>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := Import(context.Background(), dir2, o); err != nil || r.Item.Type != "web" {
+		t.Fatalf("web import: %v %v", r, err)
 	}
 	dir3 := t.TempDir()
 	writeLively(t, dir3, "7", "../../etc/passwd")
@@ -141,7 +144,7 @@ func TestImportLively(t *testing.T) {
 	if err != nil || r.Item.Title != "Z" {
 		t.Fatal(err)
 	}
-	if ents, _ := os.ReadDir(o.Library); len(ents) != 2 {
+	if ents, _ := os.ReadDir(o.Library); len(ents) != 3 {
 		t.Fatal("临时解压目录应清理", ents)
 	}
 }

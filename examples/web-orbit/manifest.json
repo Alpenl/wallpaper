@@ -1,0 +1,12 @@
+{
+ "format":"wpk","schema":0,"id":"1e7541cf-d58d-4d24-9639-d2938017f120","version":1,
+ "type":"web","entry":"content/index.html","title":{"en":"Quiet orbit"},
+ "web":{"permissions":[],"fpsCap":30,"transparent":false},
+ "properties":[
+  {"key":"speed","type":"slider","label":{"en":"Speed"},"min":0.25,"max":2,"step":0.05,"default":1},
+  {"key":"tint","type":"color","label":{"en":"Tint"},"default":"#84c5e8"},
+  {"key":"mode","type":"select","label":{"en":"Motion"},"options":[{"value":"orbit","label":{"en":"Orbit"}},{"value":"drift","label":{"en":"Drift"}}],"default":"orbit"},
+  {"key":"showCaption","type":"bool","label":{"en":"Show caption"},"default":true},
+  {"key":"caption","type":"text","label":{"en":"Caption"},"maxLength":200,"default":"Quiet orbit"}
+ ]
+}

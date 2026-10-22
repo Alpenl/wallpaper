@@ -14,10 +14,14 @@ import (
 
 // Item 是要播放的壁纸。
 type Item struct {
-	ID    string
-	Path  string // 入口文件绝对路径（已校验在包目录内）
-	Kind  string // video | image
-	Start float64
+	PackageDir     string
+	FPSCap         int
+	NetworkGranted bool
+	Properties     string
+	ID             string
+	Path           string // 入口文件绝对路径（已校验在包目录内）
+	Kind           string // video | image
+	Start          float64
 }
 
 // Stats 是渲染统计。
@@ -135,3 +139,6 @@ var ErrUnsupported = errors.New("render: unsupported")
 type SourceUpdater interface {
 	UpdateSource(Item, visibility.Level) error
 }
+
+// PropertyUpdater delivers validated JSON through one-way script execution.
+type PropertyUpdater interface{ UpdateProperties(string) error }

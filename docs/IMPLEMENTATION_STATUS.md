@@ -40,14 +40,14 @@
 | F-08 | 静态系统壁纸/跨屏静态裁切已有；mac 原生 GIF 预检、透明/子矩形/帧延迟/disposal 合成后编码视频，Win/Linux 可用外部转码；mac GIF 导入接入原生路线 | [`nativeav/gif.go`](../internal/transcode/nativeav/gif.go)、[`importer`](../internal/importer/)、[`panorama`](../internal/render/panorama/) | GIF 合成纯 Go 测试与 Linux 真 ffmpeg 不能替代 mac 原生编码/播放；透明复杂 GIF、末帧、资源限额及静态 CPU 需真机；有限 avconvert 不支持 GIF |
 | F-09 | 原生托盘、菜单、窗口按需打开/关闭已有；设置不使用 WebView | [`shell.go`](../internal/ui/shell.go) | 各系统托盘/退出/窗口重建；后台内存与菜单时延 |
 | F-10 | MyGo 自启桥接、默认关闭、首次询问已有 | [`cmd/wallpaperd`](../cmd/wallpaperd/)、[`config`](../internal/config/) | 真机登录后启动、禁用后撤销、失败回滚；不是网页开关 |
-| F-11 | Lively/WE video 导入已有，不支持 web 类型必须明确拒绝 | [`importer`](../internal/importer/)、[`wpk`](../internal/wpk/) | 样例包、非法路径/不支持类型、安全解压；不扩展到 WE scene/app |
-| F-12 | 原规划 v1；未提供产品级网页壁纸宿主/沙箱；React 设置设计稿不是本功能 | [Web 设计](design/08-web-shader.md)、[安全设计](design/10-package-format.md) | WebView2/WKWebView 宿主、隔离、禁网/权限、限帧、B-T2/Q-B2；不能标完成 |
+| F-11 | Lively/WE video 与纯本地 web 导入；Web 属性转换；exe/scene/audio-reactive/远程入口拒绝 | [`importer`](../internal/importer/)、[`wpk`](../internal/wpk/) | 样例包、非法路径/不支持类型、安全解压；不扩展到 WE scene/app |
+| F-12 | 独立 WebView2/WKWebView 子进程、来源隔离与请求/导航/权限策略、默认拒绝的导入同意对话框与撤销、五类属性持久化/实时注入、rAF 限帧及暂停/电池策略已接线；Linux 明确不支持播放 | [`render/web`](../internal/render/web/)、[`ui/web.go`](../internal/ui/web.go)、[`web-orbit`](../examples/web-orbit/) | 原生沙箱行为、Windows 截图覆盖/恢复、macOS 桌面层级/多屏与隐藏节流、B-T2/Q-B2 仍须真机验证；不能据单元测试标记安全/性能验收完成 |
 | F-13 | 本轮补作者/说明/标签/尺寸/时长/大小与预览主色索引；搜索覆盖名称/来源/作者/说明/标签/中英文颜色；网格/列表/缩略图已有 | [`library.go`](../internal/ui/library.go)、[`palette.go`](../internal/importer/palette.go)、[`search_test.go`](../internal/ui/search_test.go) | 16:09 以前的布局检查点，1000 条查询云端微基准约 1.18 ms，通过该检查点基准目标；不是端到端 UI/旧库完整索引或真机时延认证；UI-01 |
 | F-14 | 原规划 v1；未提供产品级 Shader 渲染器 | [Shader 设计](design/08-web-shader.md) | 实际渲染、GPU 帧时间、自适应分辨率与 L1 停止；不能用占位卡验收 |
 | F-15 | 更新清单校验、增量下载/暂存/回滚与打包脚本存在；[标签 CI/CD](releases/README.md) 已接入三系统验证、五目标打包、可选签名与幂等发布；真实签名/更新服务仍待验证 | [`update`](../internal/update/)、[`packaging`](../packaging/)、[`scripts`](../scripts/) | D-02、更新源/公钥、实际签名及公证、安装卸载、mac 更新后签名完整性 |
 | F-16 | 本地日志、诊断包脱敏实现和测试已有；不上传遥测 | [`telemetry`](../internal/telemetry/) | 本轮脱敏测试、失败提示、各平台导出路径；日志性能 AC |
 | F-17 | 每屏 L0–L4、暂停原因、当前 UTC 周已确认动态运行时长/暂停时长已持久化；显示器指标键为 SHA-256 截断摘要；不估算能源 | [`app/metrics.go`](../internal/app/metrics.go)、[`config/metrics.go`](../internal/config/metrics.go)、[`ui/metrics_test.go`](../internal/ui/metrics_test.go) | mpv 展示报告的硬解状态；MF/AVF 仍标 unknown/未验证，不能从框架名推断硬解。真实睡眠/时钟/重启与 UI 一致性需平台验收，完整 F-17 未关闭 |
-| F-18 | 每屏 fit/speed、静音/降采样按能力接线；mpv/MF/AVF 支持 fit/speed 原位修改并保持暂停；MF 增加原生播放速率、位置采样/异步 seek 及 L3 恢复 | [`render.go`](../internal/render/render.go)、[`options.go`](../internal/app/options.go)、[`mf/playback.go`](../internal/render/mf/playback.go)、[`mf/engine_windows.go`](../internal/render/mf/engine_windows.go) | MF/AVF 原生运行与 ≤200 ms 时延仍未验；MF 不支持帧降采样，全局/不支持属性仍可重建；Web 属性依赖 F-12，完整 AC 未关闭 |
+| F-18 | 每屏 fit/speed、静音/降采样按能力接线；mpv/MF/AVF 支持 fit/speed 原位修改并保持暂停；MF 增加原生播放速率、位置采样/异步 seek 及 L3 恢复 | [`render.go`](../internal/render/render.go)、[`options.go`](../internal/app/options.go)、[`mf/playback.go`](../internal/render/mf/playback.go)、[`mf/engine_windows.go`](../internal/render/mf/engine_windows.go) | MF/AVF 原生运行与 ≤200 ms 时延仍未验；MF 不支持帧降采样，全局/不支持属性仍可重建；Web 属性已接入独立宿主，完整 AC 的原生时延仍未关闭 |
 | F-19 | 本轮接入可执行文件 basename 规则 pause/saver/ignore，Windows/macOS/X11 前台进程探针；ignore 只豁免全屏/遮挡，不能覆盖安全或手动暂停 | [`foreground.go`](../internal/desktop/foreground.go)、[`options.go`](../internal/app/options.go)、[`options_test.go`](../internal/app/options_test.go) | 前台而非“任意后台运行”语义；实际桌面会话探针/权限/误判验证；不可用时能力提示 |
 | F-20 | 未启用远程遥测；`Normalize` 强制 false，与早期 opt-in 设想不同 | [`config/files.go`](../internal/config/files.go)、D-15 | 若将来启用需独立产品/隐私/服务决策；不在本轮暗中增加 |
 | F-21 | 未提供已认证 MSIX/Store/MAS 发布物 | [分发设计](design/11-distribution-licensing.md) | D-06/D-12、账号/审核/签名、W-T8；不是本地构建能认证 |
@@ -86,6 +86,21 @@
 - 主色索引只读取本地静态预览：最多 16 MiB、16×1024² 像素，最多三组中英文色名；无效/超限/缺少预览时保留导入但不生成颜色索引，不能保证旧条目均有颜色。
 - 存储统计扫描实际库/缓存路径；清理只移除无引用缓存，不清空仍用于首帧/降级的有效预览。见 [`storage.go`](../internal/app/storage.go)。
 
+## Web 壁纸支持（F-12）
+
+| 能力 | Windows | macOS | Linux |
+|---|---|---|---|
+| 包导入/属性/同意 | `.wpk` 与 manifest 目录；Lively/WE 纯本地 HTML；共享 wpk 安全校验 | 同左 | 可管理/导入包，播放能力为 false |
+| 页面隔离 | `-webhost` + IPC v1；每包临时 user data folder；virtual host `<id>.wpk.invalid` | `-webhost` + IPC v1；独立桌面 NSWindow；`wpk://<id>/` + os.Root；nonPersistent data store | 不启动网页引擎 |
+| 网络与宿主权限 | 默认非来源请求 403；使用 `_22` filter 覆盖 document/worker；取消外部导航、新窗口和下载；设备权限拒绝；禁宿主对象/消息桥/devtools/菜单 | 未授权时编译 WKContentRuleList 阻断 http(s)/ws(s)；取消外部导航/新窗口/不可显示响应；拒绝媒体权限/文件选择；不注册消息桥 | 不适用 |
+| 暂停/限帧 | L1–L3 截取最后帧到 STATIC 子窗口，再隐藏 controller、TrySuspend；恢复移除截图；L4 退出进程 | L1–L3 隐藏 WKWebView；L4 退出进程；隐藏后的 CPU/rAF 节流强度待实测 | 不适用 |
+| 自定义属性 | slider/color/select/bool/text；JSON 编码单向 ExecuteScript；兼容 wpk/Lively/WE 回调；暂停期间保存更新，恢复重推 | 同左，evaluateJavaScript | 保存属性但不执行 |
+| 运行时边界 | 需要支持 `ICoreWebView2_22` 的 WebView2 Runtime；官方 loader 或 Evergreen client；缺少/过旧明确报能力错误 | 需要正常图形登录会话与 WebKit；透明背景要求 macOS 12+ | 明确 unsupported |
+
+联网仅在包声明 network 且本次导入用户明确同意后启用；声明域名用于同意对话框展示，不是授予权限本身，也不是允许后的域名白名单。拒绝仍导入离线包；撤销会关闭旧进程并以拒绝状态重建。替换包的所有文件先通过安全校验，再请求同意并排空旧渲染器，防止新内容沿用旧进程的授权。`audio-reactive`、WE 音频处理、可执行文件仍拒绝。
+
+验证：新增策略/导航/转义、host fake、导入示例/恶意目录、同意持久化/撤销、schema 迁移、UI Tester 和电池/实时属性测试。三平台 vet 与 CGO_ENABLED=0 构建通过。完整 `go test ./...` 在既有 `internal/update.TestIncrementalUpdateBootRollback` 的 httptest 本地监听处被当前沙箱拒绝（`listen tcp6 [::1]:0: bind: operation not permitted`）；其余包通过。macOS 子进程 smoke 已实际调用规则编译；图形会话不可访问（NSScreen 列表为空，系统 XPC connection invalid），因此页面显示、网络阻断、暂停效果未获真机证据。Windows 原生调用尚无本机执行证据。未实现 CPU/GPU 使用量看门狗；rAF cap 不等于限制任意 JavaScript、CSS 动画或视频帧率。
+
 ## 发布支持
 
 | 范围 | 已实现 | 仍需验证 |
@@ -94,15 +109,15 @@
 
 ## 配置与数据迁移
 
-本轮 `config.json`、`library.json`、`assignments.json`、`state.json` 均为 schema 2。新增开关默认静音、启用位置记录、自动转码关闭、普通启动打开设置；转码分辨率默认 `display`。独立/跨屏布局、跨屏素材与选项保存在 assignments；本周指标保存在 state，而不是历史设计中的独立 metrics.json。旧配置迁移保留已有值并生成版本备份；高版本文件保持只读。每屏选项跟随稳定显示器 ID 迁移，指标使用独立的 SHA-256 前 16 字节十六进制键，不把硬件原始标识写入指标集合。
+当前 `config.json` / `state.json` 为 schema 2，`assignments.json` 为 schema 3，`library.json` 为 schema 4。库新增 Web 定义、每项 networkGranted 与 ItemProps.webValues；3→4 迁移保留原播放属性并强制网络默认拒绝。新增开关默认静音、启用位置记录、自动转码关闭、普通启动打开设置；转码分辨率默认 `display`。独立/跨屏布局、跨屏素材与选项保存在 assignments；本周指标保存在 state，而不是历史设计中的独立 metrics.json。旧配置迁移保留已有值并生成版本备份；高版本文件保持只读。每屏选项跟随稳定显示器 ID 迁移，指标使用独立的 SHA-256 前 16 字节十六进制键，不把硬件原始标识写入指标集合。
 
 来源：[`config/files.go`](../internal/config/files.go)、[`config/options_test.go`](../internal/config/options_test.go)、[`config/metrics_test.go`](../internal/config/metrics_test.go)。这不是回滚兼容性认证：旧程序读取更高 schema 的行为、迁移备份恢复和真实用户库升级需按 [验证记录](VALIDATION.md) 复核。
 
 ## 尚需区分的完成条件
 
 - **已有源码但缺目标平台证据**：Win/mac 宿主、空间跨屏、原生编解码与播放控制、电源/睡眠、性能预算、签名/公证及安装。不能只以云端测试关闭，也不应重新描述为“完全没有实现”。
-- **仍缺架构或产品实现**：F-12 网页壁纸隔离与沙箱，F-14 Shader 引擎，F-25 在线服务/内容授权/信任链，以及其他矩阵明列未提供项。真机测试本身不能补齐这些代码。
-- **后续范围仍需确认**：原规格把 F-12/F-14 定为 v1、F-25 定为以后、F-26 在 v0 明确不支持。本轮补全不能默默改变原分期，也不代表用户已同意从“全部功能”中排除它们；扩展到完整 v1/roadmap 的范围仍待确认。
+- **仍缺架构或产品实现**：F-14 Shader 引擎，F-25 在线服务/内容授权/信任链，以及其他矩阵明列未提供项。真机测试本身不能补齐这些代码。
+- **后续范围仍需确认**：F-12 已按本次任务扩展；原规格把 F-12/F-14 定为 v1、F-25 定为以后、F-26 在 v0 明确不支持。本轮补全不能默默改变原分期，也不代表用户已同意从“全部功能”中排除它们；扩展到完整 v1/roadmap 的范围仍待确认。
 
 ## 状态更新规则
 

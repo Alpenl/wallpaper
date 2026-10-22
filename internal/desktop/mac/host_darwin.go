@@ -324,7 +324,7 @@ func (h *Host) Health() error { return nil }
 
 func (h *Host) Events() <-chan desktop.Event { return h.events }
 func (h *Host) Caps() desktop.Caps {
-	return desktop.Caps{Video: true, PerDisplay: true, ForegroundApp: h.foregroundSupported, Spanning: true}
+	return desktop.Caps{Video: true, Web: true, PerDisplay: true, ForegroundApp: h.foregroundSupported, Spanning: true}
 }
 
 // SetSystemWallpaper：NSWorkspace setDesktopImageURL:forScreen:options:error:

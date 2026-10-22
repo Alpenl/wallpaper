@@ -74,6 +74,14 @@ func (a *App) SetItemProps(itemID string, props config.ItemProps) {
 			return
 		}
 		props.Normalize()
+		if it.Type == "web" {
+			var err error
+			props.WebValues, err = canonicalProperties(it.PropertyDefs, props.WebValues)
+			if err != nil {
+				a.lastErr = err.Error()
+				return
+			}
+		}
 		if it.Props == props {
 			return
 		}
@@ -84,6 +92,20 @@ func (a *App) SetItemProps(itemID string, props config.ItemProps) {
 				continue
 			}
 			s.item.Props = props
+			if updater, ok := s.r.(render.PropertyUpdater); ok && s.started {
+				gen := s.gen
+				s.ops <- func() {
+					err := updater.UpdateProperties(props.WebValues)
+					if err != nil {
+						a.Do(func() {
+							if s.gen == gen {
+								a.lastErr = err.Error()
+							}
+						})
+					}
+				}
+				continue
+			}
 			if !a.updateScreenPlayback(s) {
 				a.restartPlayback(s)
 			}
@@ -229,13 +251,17 @@ func (a *App) checkpointPositions() {
 }
 
 func cloneView(v View) View {
+	if v.NetworkConsent != nil {
+		copy := *v.NetworkConsent
+		copy.Hosts = append([]string(nil), copy.Hosts...)
+		v.NetworkConsent = &copy
+	}
 	v.Config = v.Config.Clone()
 	v.Renditions = append([]RenditionView(nil), v.Renditions...)
 	v.Displays = append([]DisplayView(nil), v.Displays...)
 	v.Library = append([]config.Item(nil), v.Library...)
 	for i := range v.Library {
-		v.Library[i].Tags = append([]string(nil), v.Library[i].Tags...)
-		v.Library[i].Colors = append([]string(nil), v.Library[i].Colors...)
+		v.Library[i] = v.Library[i].Clone()
 	}
 	v.ReadOnly = append([]string(nil), v.ReadOnly...)
 	m := make(map[string]string, len(v.Transcoding))

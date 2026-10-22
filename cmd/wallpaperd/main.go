@@ -31,6 +31,7 @@ import (
 	imgr "wpapp/internal/render/image"
 	"wpapp/internal/render/mf"
 	"wpapp/internal/render/mpv"
+	webwall "wpapp/internal/render/web"
 	"wpapp/internal/telemetry"
 	"wpapp/internal/transcode"
 )
@@ -48,6 +49,7 @@ type flags struct {
 	importPath    string
 	duration      time.Duration
 	debug         bool
+	webhost       bool
 	mfhost        bool
 	pipe, swap    string
 	logPath       string
@@ -74,6 +76,7 @@ func parseFlags(args []string) *flags {
 	fs.DurationVar(&f.duration, "duration", 0, "headless：运行时长（0=直到 Ctrl+C）")
 	fs.StringVar(&f.statusOut, "status", "", "headless：退出前把状态 JSON 写到此文件（- 为 stdout）")
 	fs.BoolVar(&f.debug, "debug", false, "调试日志")
+	fs.BoolVar(&f.webhost, "webhost", false, "internal: isolated web renderer")
 	fs.BoolVar(&f.mfhost, "mfhost", false, "内部：MF 渲染子进程")
 	fs.StringVar(&f.pipe, "pipe", "", "内部：管道名")
 	fs.StringVar(&f.swap, "swap", "flip", "内部：MF 交换链模式")
@@ -99,6 +102,8 @@ func main() {
 	case f.version:
 		fmt.Println("wallpaperd", version, runtime.GOOS+"/"+runtime.GOARCH)
 		return
+	case f.webhost:
+		os.Exit(webwall.HostMain())
 	case f.mfhost:
 		os.Exit(mf.HostMain(f.pipe, f.swap, f.logPath))
 	case f.helper == "probe":
@@ -212,6 +217,10 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 			opts := imp
 			cfg := e.configSnapshot()
 			opts.Lang = cfg.UI.Lang
+			opts.BeforeReplace = func(id string) error { return e.app.PreparePackageReplacement(ctx, id) }
+			if !f.headless {
+				opts.ConsentNetwork = func(title string, hosts []string) bool { return e.app.RequestNetworkConsent(ctx, title, hosts) }
+			}
 			opts.Transcode, opts.TranscodeExt, _ = e.encoder(cfg)
 			opts.CanTranscodeGIF = e.encoderCapabilities(cfg).GIF
 			return importer.Import(ctx, src, opts)
@@ -281,6 +290,9 @@ func (e *env) snapshot(src, dst string) error {
 }
 
 func (e *env) newRenderer(kind string, cfg config.Config, d desktop.DisplayID) render.Renderer {
+	if kind == "web" {
+		return webwall.New(e.exe)
+	}
 	if kind == "image" {
 		return imgr.New()
 	}

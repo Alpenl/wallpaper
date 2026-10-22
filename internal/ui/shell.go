@@ -123,6 +123,9 @@ func (sh *Shell) Start(openWindow bool) error {
 // Changed 在编排器快照变化时调用（任意 goroutine）。
 func (sh *Shell) Changed() {
 	sh.S.Refresh()
+	if sh.S.view0().NetworkConsent != nil {
+		sh.Open()
+	}
 	v := sh.S.view0()
 	p := v.PausedAll
 	key := fmt.Sprint(p, v.Config.Perf.Profile, len(v.Library) < 2, v.Config.UI.Lang)

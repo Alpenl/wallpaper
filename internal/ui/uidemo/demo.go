@@ -17,6 +17,7 @@ import (
 // Ctl 实现 ui.Controller。
 type Ctl struct {
 	GOOS               string // Target platform for headless previews and tests; empty uses the host.
+	NetworkAnswers     []bool
 	mu                 sync.Mutex
 	V                  app.View
 	Imported           []string
@@ -263,3 +264,19 @@ func (f *Ctl) CancelImports() {
 
 func (f *Ctl) OptimizeDisplays(id string) {}
 func (f *Ctl) CancelRenditions(id string) {}
+
+func (f *Ctl) ResolveNetworkConsent(allow bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.NetworkAnswers = append(f.NetworkAnswers, allow)
+	f.V.NetworkConsent = nil
+}
+func (f *Ctl) RevokeNetwork(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.V.Library {
+		if f.V.Library[i].ID == id {
+			f.V.Library[i].NetworkGranted = false
+		}
+	}
+}

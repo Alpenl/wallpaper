@@ -13,6 +13,16 @@ import (
 // are deliberately not rewritten when they have no exact catalog entry.
 var english = map[string]string{
 	"将此屏壁纸复制到所有显示器": "Copy this display’s wallpaper to all displays",
+	"属性值": "Value",
+	"本地网页壁纸在 Windows 和 macOS 的独立沙箱宿主中播放，联网默认拒绝。Linux 不支持网页播放；Shader 尚未实现。": "Local web wallpapers run in isolated hosts on Windows and macOS, with network access denied by default. Linux web playback and Shader rendering are unsupported.",
+	"开关":      "Switch",
+	"网络访问":    "Network access",
+	"已拒绝联网":   "Network access denied",
+	"撤销联网权限":  "Revoke network access",
+	"允许壁纸联网？": "Allow this wallpaper to access the network?",
+	"拒绝联网":    "Deny network access",
+	"允许联网":    "Allow network access",
+	"该壁纸请求联网。默认拒绝；允许后可在属性中撤销。": "This wallpaper requests network access. Denied by default; you can revoke access in Properties.",
 	"已取消":       "Cancelled",
 	"为每块屏优化":    "Optimize for each display",
 	"正在优化屏幕版本…": "Optimizing display renditions…",

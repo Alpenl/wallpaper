@@ -29,6 +29,8 @@ import (
 // Controller 是视图对编排器的依赖（*app.App 满足）。
 type Controller interface {
 	View() app.View
+	ResolveNetworkConsent(bool)
+	RevokeNetwork(string)
 	SetPausedAll(bool)
 	Assign(display, itemID string) // 单块屏；display 为空 = 只改默认壁纸
 	AssignAll(itemID string)       // 所有显示器（清除单独设置）
@@ -99,8 +101,10 @@ const (
 
 // Settings 是设置窗口的状态（只在 MyGo 主线程上读写；snap 和 upd 例外，加锁）。
 type Settings struct {
-	ctl  Controller
-	GOOS string
+	webDrafts    map[string]*string
+	webDraftBase map[string]string
+	ctl          Controller
+	GOOS         string
 	Hooks
 	Info Info
 	// Invalidate 由 Shell 设置：后台任务完成后请求重绘。
@@ -257,6 +261,7 @@ func (s *Settings) View(c *ui.Context) {
 		s.frame(c, v)
 	})
 	s.firstRun(c, v)
+	s.networkDialog(c, v)
 }
 
 // frame 是窗口内容：标题与标签、页面、底部操作栏。
