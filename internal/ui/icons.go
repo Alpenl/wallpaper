@@ -35,5 +35,6 @@ var (
 	icImage    = icon(`<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9.5" r="1.5"/><path d="M21 16l-5-5-9 9"/>`)
 	icSearch   = icon(`<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>`)
 	icList     = icon(`<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>`)
+	icSound    = icon(`<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9a4 4 0 0 1 0 6M19.5 6.5a8 8 0 0 1 0 11"/>`)
 	icDownload = icon(`<path d="M12 4v11M7 10l5 5 5-5"/><path d="M4 20h16"/>`)
 )

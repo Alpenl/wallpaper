@@ -46,7 +46,7 @@ func (a *App) SetDisplayOptions(display string, options config.DisplayOptions) {
 			return
 		}
 		_ = a.ctl.Set(a.now(), visibility.User, s.n, options.Paused)
-		if old.Fit != options.Fit || old.Speed != options.Speed {
+		if old.Fit != options.Fit || old.Speed != options.Speed || old.Audio != options.Audio {
 			if !a.updateScreenPlayback(s) {
 				a.restartPlayback(s)
 			}
@@ -58,6 +58,34 @@ func (a *App) SetDisplayOptions(display string, options config.DisplayOptions) {
 				if !a.updateScreenPlayback(output) {
 					a.restartPlayback(output)
 				}
+			}
+		}
+	})
+}
+
+// SetItemProps changes a wallpaper group's own playback properties (fit, speed,
+// volume, audio). Every screen showing it picks them up unless that display
+// overrides the same property.
+func (a *App) SetItemProps(itemID string, props config.ItemProps) {
+	a.Do(func() {
+		it := a.d.Store.Library.Find(itemID)
+		if it == nil {
+			a.lastErr = "找不到这张壁纸"
+			return
+		}
+		props.Normalize()
+		if it.Props == props {
+			return
+		}
+		it.Props = props
+		a.saveLibrary()
+		for _, s := range a.sortedScreens() {
+			if s.item == nil || s.item.ID != itemID {
+				continue
+			}
+			s.item.Props = props
+			if !a.updateScreenPlayback(s) {
+				a.restartPlayback(s)
 			}
 		}
 	})
@@ -102,9 +130,9 @@ func (a *App) updateScreenPlayback(s *screen) bool {
 }
 
 func (a *App) playbackOptions(s *screen, r render.Renderer) (render.PlaybackOptions, string) {
-	opts := a.displayOptions(s)
 	c := a.d.Store.Config
-	p := render.PlaybackOptions{Fit: opts.Fit, Speed: opts.Speed, Muted: c.Render.Muted, Scale: c.Perf.RenderScale}
+	pb := a.effectivePlayback(s)
+	p := render.PlaybackOptions{Fit: pb.Fit, Speed: pb.Speed, Muted: pb.Muted, Volume: pb.Volume, Scale: c.Perf.RenderScale}
 	if !s.canvas.Empty() && s != a.spanLeader() {
 		p.Muted = true
 	}

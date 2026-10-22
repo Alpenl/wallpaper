@@ -16,6 +16,7 @@ func recordingAPI(calls *[]string) playbackAPI {
 	return playbackAPI{
 		rate:     func(v float64) error { return record(fmt.Sprintf("rate:%g", v)) },
 		mute:     func(v bool) error { return record(fmt.Sprintf("mute:%t", v)) },
+		volume:   func(v float64) error { return record(fmt.Sprintf("volume:%g", v)) },
 		fit:      func(v string) error { return record("fit:" + v) },
 		seek:     func(v float64) error { return record(fmt.Sprintf("seek:%g", v)) },
 		play:     func() error { return record("play") },
@@ -116,17 +117,17 @@ func TestLivePlaybackPreservesPauseAndPosition(t *testing.T) {
 		var calls []string
 		api := recordingAPI(&calls)
 		s := playbackState{options: render.DefaultPlaybackOptions(), ready: true, paused: paused, start: 23}
-		next := render.PlaybackOptions{Fit: "stretch", Speed: 2, Muted: false, Scale: 1}
+		next := render.PlaybackOptions{Fit: "stretch", Speed: 2, Muted: false, Volume: 40, Scale: 1}
 		if err := s.update(api, next); err != nil {
 			t.Fatal(err)
 		}
 		if s.paused != paused || s.start != 23 || s.options != next {
 			t.Fatalf("lost playback state: %+v", s)
 		}
-		if !reflect.DeepEqual(calls, []string{"rate:2", "mute:false", "fit:stretch"}) {
+		if !reflect.DeepEqual(calls, []string{"rate:2", "mute:false", "volume:0.4", "fit:stretch"}) {
 			t.Fatalf("unexpected calls: %v", calls)
 		}
-		if err := s.update(api, next); err != nil || len(calls) != 3 {
+		if err := s.update(api, next); err != nil || len(calls) != 4 {
 			t.Fatal("identical update changed native state")
 		}
 	}

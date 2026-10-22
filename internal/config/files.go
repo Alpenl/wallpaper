@@ -13,8 +13,8 @@ import (
 // 当前各文件的 schemaVersion。
 const (
 	ConfigVersion      = 2
-	LibraryVersion     = 2
-	AssignmentsVersion = 2
+	LibraryVersion     = 3 // 3：壁纸组属性 Item.Props
+	AssignmentsVersion = 3 // 3：显示器选项可继承（空值 = 跟随壁纸）
 	StateVersion       = 2
 )
 
@@ -242,6 +242,90 @@ type Item struct {
 	Note        string    `json:"note,omitempty"`
 	Snapshot    string    `json:"snapshot,omitempty"` // cache/<id>/first.png
 	AddedAt     time.Time `json:"addedAt"`
+	Props       ItemProps `json:"props,omitempty"`
+}
+
+// ItemProps 是壁纸组自带的播放属性：随壁纸走，换到哪块屏都一样；显示器选项可逐项覆盖。
+// 零值表示默认：Fit "" = 填充，Speed 0 = 1 倍，Volume 0 = 100，Audio "" = 跟随全局“默认静音”。
+type ItemProps struct {
+	Fit    string  `json:"fit,omitempty"`
+	Speed  float64 `json:"speed,omitempty"`
+	Volume int     `json:"volume,omitempty"`
+	Audio  string  `json:"audio,omitempty"` // "" | mute | sound
+}
+
+// Normalize 把非法值退回默认（零值）。
+func (p *ItemProps) Normalize() {
+	p.Fit = validFit(p.Fit)
+	p.Speed = validSpeed(p.Speed)
+	if p.Volume < 0 || p.Volume > 100 {
+		p.Volume = 0
+	}
+	p.Audio = validAudio(p.Audio)
+}
+
+// Playback 是解析后的实际播放属性。
+type Playback struct {
+	Fit    string
+	Speed  float64
+	Volume int
+	Muted  bool
+}
+
+// ResolvePlayback：显示器覆盖 > 壁纸组属性 > 默认值（填充、1 倍、音量 100、全局默认静音）。
+func ResolvePlayback(item ItemProps, display DisplayOptions, defaultMuted bool) Playback {
+	item.Normalize()
+	display.Normalize()
+	p := Playback{Fit: "fill", Speed: 1, Volume: 100, Muted: defaultMuted}
+	pick := func(vals ...string) string {
+		for _, v := range vals {
+			if v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	if f := pick(display.Fit, item.Fit); f != "" {
+		p.Fit = f
+	}
+	switch {
+	case display.Speed != 0:
+		p.Speed = display.Speed
+	case item.Speed != 0:
+		p.Speed = item.Speed
+	}
+	if item.Volume != 0 {
+		p.Volume = item.Volume
+	}
+	switch pick(display.Audio, item.Audio) {
+	case "mute":
+		p.Muted = true
+	case "sound":
+		p.Muted = false
+	}
+	return p
+}
+
+func validFit(f string) string {
+	switch f {
+	case "fill", "fit", "stretch":
+		return f
+	}
+	return ""
+}
+
+func validSpeed(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0.25 || v > 4 {
+		return 0
+	}
+	return v
+}
+
+func validAudio(a string) string {
+	if a == "mute" || a == "sound" {
+		return a
+	}
+	return ""
 }
 
 // Library 是 library.json。
@@ -295,23 +379,24 @@ type Assignments struct {
 }
 
 // DisplayOptions is persisted by stable display ID, independent of wallpaper assignment.
+// Fit/Speed/Audio are overrides: the zero value follows the wallpaper's own Props.
 type DisplayOptions struct {
-	Fit     string  `json:"fit"`
-	Speed   float64 `json:"speed"`
+	Fit     string  `json:"fit,omitempty"`
+	Speed   float64 `json:"speed,omitempty"`
+	Audio   string  `json:"audio,omitempty"` // "" | mute | sound
 	Paused  bool    `json:"paused"`
 	Profile string  `json:"profile,omitempty"`
 }
 
-func DefaultDisplayOptions() DisplayOptions { return DisplayOptions{Fit: "fill", Speed: 1} }
+func DefaultDisplayOptions() DisplayOptions { return DisplayOptions{} }
+
+// Overrides 报告这块屏是否覆盖了壁纸自带的播放属性。
+func (o DisplayOptions) Overrides() bool { return o.Fit != "" || o.Speed != 0 || o.Audio != "" }
+
 func (o *DisplayOptions) Normalize() {
-	switch o.Fit {
-	case "fill", "fit", "stretch":
-	default:
-		o.Fit = "fill"
-	}
-	if math.IsNaN(o.Speed) || math.IsInf(o.Speed, 0) || o.Speed < 0.25 || o.Speed > 4 {
-		o.Speed = 1
-	}
+	o.Fit = validFit(o.Fit)
+	o.Speed = validSpeed(o.Speed)
+	o.Audio = validAudio(o.Audio)
 	switch o.Profile {
 	case "", "balanced", "smooth", "saver":
 	default:
@@ -441,6 +526,30 @@ type Store struct {
 	ReadOnlyWarn []string
 }
 
+// assignMigrations：v2 的显示器选项总是写满 fit=fill/speed=1。v3 起空值表示“跟随壁纸”，
+// 而 v3 之前壁纸没有自带属性、默认值就是 fill/1，所以把这两个默认值改成“跟随”行为不变。
+var assignMigrations = map[int]Migration{2: func(raw map[string]any) error {
+	inherit := func(o any) {
+		m, ok := o.(map[string]any)
+		if !ok {
+			return
+		}
+		if m["fit"] == "fill" {
+			delete(m, "fit")
+		}
+		if m["speed"] == 1.0 {
+			delete(m, "speed")
+		}
+	}
+	if opts, ok := raw["options"].(map[string]any); ok {
+		for _, o := range opts {
+			inherit(o)
+		}
+	}
+	inherit(raw["spanOptions"])
+	return nil
+}}
+
 // Open 读取全部文件；缺失时用默认值。
 func Open(p Paths) (*Store, error) {
 	if err := p.Ensure(); err != nil {
@@ -452,8 +561,8 @@ func Open(p Paths) (*Store, error) {
 	mk := func(name string) *Saver { return &Saver{Path: filepath.Join(p.Config, name)} }
 	s.ConfigSaver, s.LibrarySaver, s.AssignSaver, s.StateSaver = mk("config.json"), mk("library.json"), mk("assignments.json"), mk("state.json")
 	s.StateSaver.Delay = 30 * time.Second // 16.2：state 节流 30 s
-	load := func(sv *Saver, ver int, v any) error {
-		err := Load(sv.Path, ver, nil, v)
+	load := func(sv *Saver, ver int, v any, migrations map[int]Migration) error {
+		err := Load(sv.Path, ver, migrations, v)
 		switch {
 		case err == nil, errors.Is(err, os.ErrNotExist):
 			return nil
@@ -464,14 +573,14 @@ func Open(p Paths) (*Store, error) {
 		}
 		return err
 	}
-	if err := load(s.ConfigSaver, ConfigVersion, &s.Config); err != nil {
+	if err := load(s.ConfigSaver, ConfigVersion, &s.Config, nil); err != nil {
 		return nil, err
 	}
 	s.Config.Normalize()
-	if err := load(s.LibrarySaver, LibraryVersion, &s.Library); err != nil {
+	if err := load(s.LibrarySaver, LibraryVersion, &s.Library, nil); err != nil {
 		return nil, err
 	}
-	if err := load(s.AssignSaver, AssignmentsVersion, &s.Assign); err != nil {
+	if err := load(s.AssignSaver, AssignmentsVersion, &s.Assign, assignMigrations); err != nil {
 		return nil, err
 	}
 	for k, o := range s.Assign.Options {
@@ -481,7 +590,7 @@ func Open(p Paths) (*Store, error) {
 	if s.Assign.Displays == nil {
 		s.Assign.Displays = map[string]string{}
 	}
-	if err := load(s.StateSaver, StateVersion, &s.State); err != nil {
+	if err := load(s.StateSaver, StateVersion, &s.State, nil); err != nil {
 		return nil, err
 	}
 	s.State.Metrics.Normalize()

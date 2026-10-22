@@ -70,7 +70,7 @@ func (s *Settings) perf(c *ui.Context, v app.View) {
 				}
 				textf(c, "%.0f%%", f).Width(44)
 			})
-			s.switchRowDisabled(c, "mute", "静音播放", "保留源文件音轨；修改后重新加载动态壁纸", cfg.Render.Muted, false, func(x *config.Config, b bool) { x.Render.Muted = b })
+			s.switchRowDisabled(c, "mute", "静音播放", "默认设置：只作用于没有单独设置声音的壁纸；修改后重新加载动态壁纸", cfg.Render.Muted, false, func(x *config.Config, b bool) { x.Render.Muted = b })
 			s.switchRow(c, "resumePos", "从上次位置继续播放", "重新启动后恢复播放位置；mpv、Media Foundation 和 AVFoundation 支持续播", cfg.Render.ResumePosition, func(x *config.Config, b bool) { x.Render.ResumePosition = b })
 		})
 		card(c.Key("decode"), "解码与渲染", "", func() {

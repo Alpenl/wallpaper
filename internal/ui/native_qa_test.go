@@ -86,10 +86,11 @@ func TestLibraryOptimizationCopyMatchesEncoderCapabilities(t *testing.T) {
 
 // These tests exercise controls through real scrolling at the minimum window
 // size rather than only finding offscreen text in a tall synthetic layout.
+// The bottom 72 px belong to the now-playing bar on library/display pages.
 func scrollToControl(t *testing.T, tt *mui.Tester, label string) {
 	t.Helper()
 	for range 15 {
-		if r, ok := tt.Find(label); ok && r.Y >= 130 && r.Y+r.H <= 660 && r.X >= 220 && r.X+r.W <= 900 {
+		if r, ok := tt.Find(label); ok && r.Y >= 130 && r.Y+r.H <= 600 && r.X >= 0 && r.X+r.W <= 900 {
 			return
 		}
 		tt.Scroll(850, 600, 0, 130)

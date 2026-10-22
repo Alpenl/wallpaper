@@ -1,6 +1,7 @@
 // Package ui 是 MyGo 原生 UI（不用 WebView）：托盘（F-09）+ 设置窗口。
 //
-// 设置窗口对标 Wallpaper Engine / Lively 的信息架构（01 章竞品分析）：左侧导航，右侧页面。
+// 设置窗口参照 Wallpaper Engine 以内容为中心（01 章竞品分析）：顶部细导航条（壁纸库 / 显示器 / 设置），
+// 中间是壁纸组网格 + 选中后出现的检查器，底部是每块屏的“正在播放”条（兼作目标显示器选择）。
 //   - 壁纸库：缩略图网格 / 列表、搜索、类型筛选、详情面板（预览、元数据、应用到显示器、一键转码 F-07、删除）、拖入导入（F-06/F-08/F-11）
 //   - 显示器：按真实坐标画的布局示意图、每屏分配（F-03）、运行状态徽章（级别 L0–L4、暂停原因、后端、硬解、限帧，F-17 雏形）
 //   - 播放与性能：性能档位（流畅/均衡/省电 15 fps）、Windows 渲染后端（D-04）、硬件解码、转码编码器（F-07）
@@ -32,7 +33,8 @@ type Controller interface {
 	Assign(display, itemID string) // 单块屏；display 为空 = 只改默认壁纸
 	AssignAll(itemID string)       // 所有显示器（清除单独设置）
 	SetAlias(display, alias string)
-	SetDisplayOptions(display string, options config.DisplayOptions)
+	SetDisplayOptions(display string, options config.DisplayOptions) // 空 Fit/Speed/Audio = 跟随壁纸
+	SetItemProps(itemID string, props config.ItemProps)              // 壁纸组自带的播放属性
 	SetLayout(layout, itemID string)
 	Import(path, applyTo string) // applyTo：空 = 只加入库；显示器 ID = 同时应用到这块屏
 	Remove(itemID string)
@@ -106,7 +108,7 @@ type Settings struct {
 	upd  updState
 
 	page            string
-	navOpen         [3]bool
+	lastSettings    string // 上次打开的设置子页，顶部“设置”标签回到这里
 	query           string
 	filter          int
 	gridSel         int
@@ -157,7 +159,7 @@ type updState struct {
 }
 
 func NewSettings(ctl Controller, goos string) *Settings {
-	s := &Settings{ctl: ctl, GOOS: goos, page: pgLibrary, navOpen: [3]bool{true, true, true}, gridSel: -1, thumbs: map[string]thumb{}}
+	s := &Settings{ctl: ctl, GOOS: goos, page: pgLibrary, lastSettings: pgPerf, gridSel: -1, thumbs: map[string]thumb{}}
 	s.grid.Selected = &s.gridSel
 	s.Refresh()
 	return s
@@ -244,10 +246,15 @@ func (s *Settings) View(c *ui.Context) {
 	}
 	s.applyTheme(c, v.Config.UI)
 	t := c.Theme()
-	ui.Row(c.Key("root")).Fill().Clip().AlignItems(ui.Stretch).Background(t.Background).Children(func() {
-		s.sidebar(c, v)
+	// 以内容为中心（参照 Wallpaper Engine）：顶部细导航条 + 中间壁纸组网格与检查器 + 底部“正在播放”屏幕条。
+	// 设置页不显示屏幕条，内容居中，用顶部二级标签切换。
+	ui.Column(c.Key("root")).Fill().Clip().Background(t.Background).Children(func() {
+		s.topBar(c, v)
+		if isSettingsPage(s.page) {
+			s.settingsTabs(c)
+		}
+		s.banners(c, v)
 		ui.Column(c.Key("main")).Grow(1).Shrink(1).MinWidth(0).MinHeight(0).Children(func() {
-			s.banners(c, v)
 			switch s.page {
 			case pgLibrary:
 				s.library(c, v)
@@ -265,6 +272,9 @@ func (s *Settings) View(c *ui.Context) {
 				s.about(c, v)
 			}
 		})
+		if !isSettingsPage(s.page) {
+			s.nowPlaying(c, v)
+		}
 	})
 	s.firstRun(c, v)
 }
@@ -283,88 +293,12 @@ func (s *Settings) firstRun(c *ui.Context, v app.View) {
 	}
 }
 
-func (s *Settings) sidebar(c *ui.Context, v app.View) {
-	t := c.Theme()
-	ui.Column(c.Key("side")).Width(216).MinHeight(0).Background(sideBg(t)).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
-		ui.Row(c.Key("brand")).Gap(10).Padding(18, 16, 10, 16).AlignItems(ui.Center).Children(func() {
-			ui.Box(c).Size(30, 30).Radius(8).Gradient(accentColor(v.Config.UI.Accent), ui.Hex("#22d3ee"), 135).Children(func() {})
-			ui.Column(c).Children(func() {
-				text(c, "动态壁纸").Bold().FontSize(15)
-				text(c, "Wallpaper "+s.Info.Version).FontSize(11).TextColor(t.TextMuted)
-			})
-		})
-		ui.Sidebar(c.Key("nav"), &s.page, func() {
-			sidebarSection(c.Key("sec0"), "壁纸", &s.navOpen[0], func() {
-				sidebarItem(c.Key("n-lib"), pgLibrary, icLibrary, "壁纸库").Children(func() {
-					if n := len(v.Library); n > 0 {
-						ui.Badge(c, itoa(n))
-					}
-				})
-				sidebarItem(c.Key("n-disp"), pgDisplays, icMonitor, "显示器").Children(func() {
-					if n := len(v.Displays); n > 1 {
-						ui.Badge(c, itoa(n))
-					}
-				})
-			})
-			sidebarSection(c.Key("sec1"), "设置", &s.navOpen[1], func() {
-				sidebarItem(c.Key("n-perf"), pgPerf, icGauge, "播放与性能")
-				sidebarItem(c.Key("n-pause"), pgPause, icPause, "暂停与电源")
-				sidebarItem(c.Key("n-look"), pgLook, icPalette, "通用")
-			})
-			sidebarSection(c.Key("sec2"), "系统", &s.navOpen[2], func() {
-				sidebarItem(c.Key("n-start"), pgStartup, icRefresh, "版本管理")
-				sidebarItem(c.Key("n-about"), pgAbout, icInfo, "关于与诊断")
-			})
-		}).Grow(1).MinHeight(0)
-		// 底部状态卡：一眼看到在不在播放，一键暂停（Lively / WE 托盘都有的“暂停全部”）
-		ui.Column(c.Key("status")).Margin(12).Padding(12).Gap(8).Radius(10).Background(cardBg(t)).Border(1, t.Border).Children(func() {
-			playing, paused := 0, 0
-			for _, d := range v.Displays {
-				switch {
-				case d.ItemID == "":
-				case d.Level == "L0" && d.State == "active":
-					playing++
-				default:
-					paused++
-				}
-			}
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				col := t.Success
-				msg := "正在播放"
-				switch {
-				case v.PausedAll:
-					col, msg = t.Warning, "已全部暂停"
-				case playing == 0 && paused > 0:
-					col, msg = t.Warning, "自动暂停中"
-				case playing == 0:
-					col, msg = t.TextMuted, "未设置壁纸"
-				}
-				ui.Box(c).Size(8, 8).Radius(4).Background(col).Children(func() {})
-				text(c, msg).Bold().FontSize(13)
-			})
-			textf(c, "%d 块屏播放 · %d 块屏暂停", playing, paused).FontSize(12).TextColor(t.TextMuted)
-			ui.Row(c).Gap(6).Children(func() {
-				lbl, ic := "暂停全部", icPause
-				if v.PausedAll {
-					lbl, ic = "继续播放", icPlay
-				}
-				if iconButton(c.Key("pauseall"), ic, lbl, false).Grow(1).Clicked() {
-					s.ctl.SetPausedAll(!v.PausedAll)
-				}
-				if iconButton(c.Key("next"), icSkip, "", false).Label(tr(c, "切换到下一张壁纸")).Tooltip(tr(c, "切换到下一张壁纸")).Disabled(len(v.Library) < 2).Clicked() {
-					s.ctl.Next()
-				}
-			})
-		})
-	})
-}
-
 func (s *Settings) banners(c *ui.Context, v app.View) {
 	t := c.Theme()
 	if !v.SafeMode && v.LastError == "" && len(v.ReadOnly) == 0 {
 		return
 	}
-	ui.Column(c.Key("banners")).Padding(16, 24, 0, 24).Gap(8).Children(func() {
+	ui.Column(c.Key("banners")).Padding(12, 24, 0, 24).Gap(8).Children(func() {
 		if v.SafeMode {
 			banner(c.Key("safe"), t.Warning, "安全模式", "连续多次异常退出，壁纸没有自动启动。确认问题已解决后再恢复。", func() {
 				if primaryButton(c.Key("exitsafe"), "恢复正常").Clicked() {
@@ -397,22 +331,30 @@ func banner(c *ui.Context, col ui.Color, title, msg string, action func()) {
 
 // ---- 共用小部件 ----
 
+// pageWidth 是设置类页面正文的最大宽度。
+const pageWidth = 860
+
 // page 画页面标题和可滚动的内容区。
 func page(c *ui.Context, title, sub string, actions func(), body func()) {
 	t := c.Theme()
-	ui.Row(c.Key("hdr")).Shrink(0).Padding(30, 32, 20, 32).Gap(12).AlignItems(ui.Center).Children(func() {
-		ui.Column(c).Grow(1).Children(func() {
-			text(c, title).Bold().FontSize(22)
-			if sub != "" {
-				text(c, sub).FontSize(13).TextColor(t.TextMuted).Wrap()
+	// 标题和正文同宽居中，不再贴左（原来左侧导航栏占位）。
+	ui.Row(c.Key("hdr")).Shrink(0).Padding(30, 32, 14, 32).Justify(ui.Center).Children(func() {
+		ui.Row(c).Grow(1).MaxWidth(pageWidth).Gap(12).AlignItems(ui.Center).Children(func() {
+			ui.Column(c).Grow(1).Shrink(1).Children(func() {
+				text(c, title).Bold().FontSize(20)
+				if sub != "" {
+					text(c, sub).FontSize(13).TextColor(t.TextMuted).Wrap()
+				}
+			})
+			if actions != nil {
+				actions()
 			}
 		})
-		if actions != nil {
-			actions()
-		}
 	})
 	ui.Scroll(c.Key("body")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, 32, 32, 32).Gap(20).MaxWidth(920).Children(body)
+		ui.Row(c).Padding(0, 32, 32, 32).Justify(ui.Center).Children(func() {
+			ui.Column(c).Grow(1).MaxWidth(pageWidth).Gap(16).Children(body)
+		})
 	})
 }
 

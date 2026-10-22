@@ -111,7 +111,7 @@ func playbackArgs(p render.PlaybackOptions) []string {
 		keep, pan = "no", "0"
 	}
 	a := []string{"--keepaspect=" + keep, "--panscan=" + pan,
-		"--speed=" + strconv.FormatFloat(p.Speed, 'f', -1, 64), "--mute=" + yesno(p.Muted)}
+		"--speed=" + strconv.FormatFloat(p.Speed, 'f', -1, 64), "--mute=" + yesno(p.Muted), "--volume=" + strconv.Itoa(p.Volume)}
 	if p.Muted {
 		// No audio track means no needless audio decode/device work by default.
 		a = append(a, "--no-audio")
@@ -176,6 +176,9 @@ func (r *Renderer) UpdatePlayback(p render.PlaybackOptions) error {
 	}
 	if p.Speed != old.Speed {
 		changes = append(changes, change{"speed", old.Speed, p.Speed})
+	}
+	if p.Volume != old.Volume {
+		changes = append(changes, change{"volume", old.Volume, p.Volume})
 	}
 	for i, ch := range changes {
 		if _, err := r.c.cmd("set_property", ch.name, ch.next); err != nil {
@@ -364,7 +367,7 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 func resumeOptions(o Options, pos float64, fps int) map[string]string {
 	p := playbackOptions(o)
 	options := map[string]string{"start": strconv.FormatFloat(pos, 'f', 3, 64),
-		"speed": strconv.FormatFloat(p.Speed, 'f', -1, 64), "mute": yesno(p.Muted),
+		"speed": strconv.FormatFloat(p.Speed, 'f', -1, 64), "mute": yesno(p.Muted), "volume": strconv.Itoa(p.Volume),
 		"keepaspect": "yes", "panscan": "1", "aid": "auto", "hwdec": playbackHwdec(o)}
 	if p.Muted {
 		options["aid"] = "no"

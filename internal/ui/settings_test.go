@@ -45,8 +45,9 @@ func click(t *testing.T, tt *ui.Tester, label string) {
 
 // 每一页都能渲染（三个平台），导航可点击。
 func TestAllPagesRender(t *testing.T) {
+	// 设置子页在顶部“设置”标签下；第一次进入先点“设置”。
 	pages := []struct{ nav, want string }{
-		{"显示器", "布局"}, {"播放与性能", "性能档位"}, {"暂停与电源", "自动暂停"},
+		{"显示器", "布局"}, {"设置", "性能档位"}, {"播放与性能", "性能档位"}, {"暂停与电源", "自动暂停"},
 		{"通用", "颜色模式"}, {"版本管理", "当前版本"}, {"关于与诊断", "诊断包"}, {"壁纸库", "共 6 张壁纸 · 拖入文件即可导入"},
 	}
 	for _, goos := range []string{"windows", "darwin", "linux"} {
@@ -55,6 +56,7 @@ func TestAllPagesRender(t *testing.T) {
 			click(t, tt, p.nav)
 			must(t, tt, p.want)
 		}
+		click(t, tt, "设置")
 		click(t, tt, "播放与性能")
 		if goos == "windows" {
 			must(t, tt, "渲染后端", "硬件解码")
@@ -67,7 +69,7 @@ func TestAllPagesRender(t *testing.T) {
 
 func TestLibraryDetailActions(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
-	tt.SetSize(1120, 1100)
+	tt.SetSize(1120, 1500)
 	s.SelectItem("ocean")
 	tt.Frame()
 	must(t, tt, "海浪 4K", "建议优化转码", "Wallpaper Engine 导入")
@@ -108,6 +110,39 @@ func TestLibraryDetailActions(t *testing.T) {
 	click(t, tt, "删除")
 	if len(ctl.Removed) != 1 || ctl.Removed[0] != "ocean" {
 		t.Fatal("应删除", ctl.Removed)
+	}
+}
+
+// 声音和播放属性随壁纸组保存；目标显示器的覆盖项可在检查器里清除。
+func TestWallpaperGroupProps(t *testing.T) {
+	ctl, s, tt := newUI(t, "windows")
+	tt.SetSize(1120, 1500)
+	s.SelectItem("ocean")
+	tt.Frame()
+	must(t, tt, "这张壁纸自己的设置", "60%")
+	click(t, tt, "播放声音 开关")
+	if p := ctl.View().Library[1].Props; p.Audio != "mute" || p.Volume != 60 || p.Speed != 0.75 {
+		t.Fatal("sound toggle should only change the group's audio", p)
+	}
+	if tt.HasText("60%") {
+		t.Fatal("volume slider should hide while muted")
+	}
+	click(t, tt, "恢复默认")
+	if p := ctl.View().Library[1].Props; p != (config.ItemProps{}) {
+		t.Fatal("reset props", p)
+	}
+	must(t, tt, "未单独设置，跟随默认静音设置")
+	s.SelectDisplay("d2")
+	tt.Frame()
+	must(t, tt, "2  显示器 2 单独覆盖了：静音")
+	click(t, tt, "清除覆盖")
+	if o := ctl.View().Displays[1].Options; o.Overrides() {
+		t.Fatal("overrides not cleared", o)
+	}
+	must(t, tt, "已清除覆盖")
+	tt.Advance(5 * time.Second)
+	if tt.HasText("清除覆盖") {
+		t.Fatal("notice should disappear")
 	}
 }
 
@@ -169,6 +204,7 @@ func TestEmptyLibrary(t *testing.T) {
 func TestSettingsChangeConfig(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
 	tt.SetSize(1120, 2200)
+	click(t, tt, "设置")
 	click(t, tt, "播放与性能")
 	click(t, tt, "省电")
 	if ctl.View().Config.Perf.Profile != "saver" {
@@ -213,7 +249,7 @@ func TestSettingsChangeConfig(t *testing.T) {
 	}
 }
 
-func TestSidebarPauseAndNext(t *testing.T) {
+func TestStatusBarPauseAndNext(t *testing.T) {
 	ctl, _, tt := newUI(t, "windows")
 	must(t, tt, "正在播放", "1 块屏播放 · 1 块屏暂停")
 	click(t, tt, "暂停全部")
@@ -267,7 +303,7 @@ func TestDisplayRename(t *testing.T) {
 	// 编辑一半切到另一块屏：放弃，不会把名字写到 1 号屏
 	click(t, tt, "重命名")
 	s.renameBuf = "不该保存"
-	click(t, tt, "1  DELL U2723QE")
+	click(t, tt, "1  DELL U2723QE · 主屏")
 	if s.renameID != "" {
 		t.Fatal("切屏应退出编辑")
 	}
@@ -308,6 +344,7 @@ func TestUpdateFlow(t *testing.T) {
 	s.CheckUpdate = func() (*UpdateInfo, error) { return &UpdateInfo{Version: "0.3.0", Size: 3 << 20}, nil }
 	s.ApplyUpdate = func(p func(int64, int64)) error { p(1, 2); applied <- struct{}{}; return nil }
 	s.CanRollback = func() (string, bool) { return "0.1.0", true }
+	click(t, tt, "设置")
 	click(t, tt, "版本管理")
 	click(t, tt, "检查更新")
 	wait(t, tt, "下载并安装 0.3.0")
@@ -369,11 +406,13 @@ func TestDisplayPropertiesApplyOnlyToSelectedDisplay(t *testing.T) {
 	if !ctl.View().Displays[1].Options.Paused || ctl.View().Displays[0].Options.Paused {
 		t.Fatal("pause changed the wrong display")
 	}
-	click(t, tt, "填充")
+	// 默认跟随壁纸；选具体值才写入这块屏的覆盖项。
+	click(t, tt, "跟随壁纸")
 	click(t, tt, "适应")
-	if ctl.View().Displays[1].Options.Fit != "fit" || ctl.View().Displays[0].Options.Fit != "fill" {
+	if ctl.View().Displays[1].Options.Fit != "fit" || ctl.View().Displays[0].Options.Fit != "" {
 		t.Fatal("fit did not persist to selected display")
 	}
+	must(t, tt, "填充会裁切边缘，适应保留全图，拉伸铺满屏幕。当前：适应")
 	click(t, tt, "跟随全局")
 	click(t, tt, "省电")
 	if ctl.View().Displays[1].Options.Profile != "saver" {

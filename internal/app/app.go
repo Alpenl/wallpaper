@@ -75,11 +75,12 @@ type DisplayView struct {
 	HWDec          string
 	Dropped        uint64
 	Metrics        DisplayMetricsView
-	X, Y           int    // 虚拟屏坐标（布局示意图）
-	Reasons        string // 当前生效的暂停/限帧原因（07 章名称，| 分隔）
-	FPSCap         int    // 当前生效的限帧，0 = 不限
-	Note           string // 例如“此后端不支持限帧”
-	Options        config.DisplayOptions
+	X, Y           int                   // 虚拟屏坐标（布局示意图）
+	Reasons        string                // 当前生效的暂停/限帧原因（07 章名称，| 分隔）
+	FPSCap         int                   // 当前生效的限帧，0 = 不限
+	Note           string                // 例如“此后端不支持限帧”
+	Options        config.DisplayOptions // 这块屏的覆盖项（空值 = 跟随壁纸）
+	Effective      config.Playback       // 覆盖项 + 壁纸组属性解析后的实际值
 	Playback       render.Capabilities
 }
 
@@ -1038,7 +1039,7 @@ func (a *App) publish() {
 		_, custom := a.d.Store.Assign.Displays[string(s.d.ID)]
 		dv := DisplayView{ID: string(s.d.ID), Index: i + 1, Name: DisplayName(alias, s.d.Name, i+1), Friendly: s.d.Name, Alias: alias,
 			Device: s.d.Device, Custom: custom, W: s.d.Bounds.Dx(), H: s.d.Bounds.Dy(), PixelW: s.d.PixelSize().X, PixelH: s.d.PixelSize().Y, Primary: s.d.Primary,
-			Metrics: a.displayMetrics(string(s.d.ID)), Level: lv, State: st, X: s.d.Bounds.Min.X, Y: s.d.Bounds.Min.Y, FPSCap: s.curCap, Note: s.note, Options: a.displayOptions(s)}
+			Metrics: a.displayMetrics(string(s.d.ID)), Level: lv, State: st, X: s.d.Bounds.Min.X, Y: s.d.Bounds.Min.Y, FPSCap: s.curCap, Note: s.note, Options: a.displayOptions(s), Effective: a.effectivePlayback(s)}
 		if m := a.ctl.Display(s.n); m != nil {
 			dv.Reasons = reasonsString(m.Effective())
 		}
@@ -1268,7 +1269,11 @@ func (a *App) beginImport(path, applyTo string) {
 			progress := fmt.Sprintf("正在导入 %d/%d：%s", i+1, len(paths), res.Item.Title)
 			result := *res
 			a.Do(func() {
-				replacing := a.d.Store.Library.Find(result.Item.ID) != nil
+				old := a.d.Store.Library.Find(result.Item.ID)
+				replacing := old != nil
+				if replacing && result.Item.Props == (config.ItemProps{}) {
+					result.Item.Props = old.Props // 重新导入同一壁纸时保留用户调好的组属性
+				}
 				a.invalidateItemWork(result.Item.ID)
 				a.d.Store.Library.Upsert(result.Item)
 				if replacing {

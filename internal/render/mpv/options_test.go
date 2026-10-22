@@ -50,7 +50,7 @@ func TestPlaybackArgs(t *testing.T) {
 
 func TestConfigure(t *testing.T) {
 	r := New(Options{})
-	p := render.PlaybackOptions{Fit: "fit", Speed: 2, Muted: false, Scale: .75}
+	p := render.PlaybackOptions{Fit: "fit", Speed: 2, Muted: false, Volume: 60, Scale: .75}
 	if err := r.Configure(p); err != nil {
 		t.Fatal(err)
 	}
@@ -71,10 +71,10 @@ func TestConfigure(t *testing.T) {
 }
 
 func TestResumeOptionsPreservePlaybackAndFilters(t *testing.T) {
-	p := render.PlaybackOptions{Fit: "stretch", Speed: .5, Muted: true, Scale: .75}
+	p := render.PlaybackOptions{Fit: "stretch", Speed: .5, Muted: true, Volume: 40, Scale: .75}
 	o := Options{Hwdec: "vaapi", Playback: &p}
 	got := resumeOptions(o, 3.25, 15)
-	want := map[string]string{"start": "3.250", "speed": "0.5", "mute": "yes", "aid": "no", "keepaspect": "no", "panscan": "0", "hwdec": "vaapi-copy", "vf": scaleFilter(.75) + ",@wpcap:fps=15"}
+	want := map[string]string{"start": "3.250", "speed": "0.5", "mute": "yes", "aid": "no", "keepaspect": "no", "panscan": "0", "hwdec": "vaapi-copy", "volume": "40", "vf": scaleFilter(.75) + ",@wpcap:fps=15"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resume options=%v want=%v", got, want)
 	}

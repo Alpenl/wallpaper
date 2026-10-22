@@ -70,6 +70,7 @@ const (
 	vtMEPlay                = 32
 	vtMEPause               = 33
 	vtMESetMuted            = 35
+	vtMESetVolume           = 37
 	vtMEGetNativeVideoSize  = 40
 	vtMEGetVideoAspectRatio = 41
 	vtMEShutdown            = 42
@@ -536,10 +537,15 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32, options render.Playba
 	// Typed bindings are essential: "this" is an integer argument, while the
 	// time/rate uses XMM1 on Windows amd64 and D0 on Windows arm64. Do not pass
 	// float bits through the integer-only vcall helper.
-	var setRate, setTime func(uintptr, float64) uint32
+	var setRate, setTime, setVolume func(uintptr, float64) uint32
 	var getTime, getDuration func(uintptr) float64
 	purego.RegisterFunc(&setRate, vmethod(engine, vtMESetPlaybackRate))
 	purego.RegisterFunc(&setTime, vmethod(engine, vtMESetCurrentTime))
+	purego.RegisterFunc(&setVolume, vmethod(engine, vtMESetVolume))
+	if hr := setVolume(engine, float64(options.Volume)/100); failed(hr) {
+		fail("SetVolume", hr)
+		return
+	}
 	purego.RegisterFunc(&getTime, vmethod(engine, vtMEGetCurrentTime))
 	purego.RegisterFunc(&getDuration, vmethod(engine, vtMEGetDuration))
 	var supportsRate func(uintptr, float64) int32
@@ -609,6 +615,7 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32, options render.Playba
 			}
 			return hresult("SetMuted", vcall(engine, vtMESetMuted, value))
 		},
+		volume:   func(v float64) error { return hresult("SetVolume", setVolume(engine, v)) },
 		fit:      draw,
 		seek:     func(seconds float64) error { return hresult("SetCurrentTime", setTime(engine, seconds)) },
 		play:     func() error { return hresult("Play", vcall(engine, vtMEPlay)) },
