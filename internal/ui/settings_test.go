@@ -734,7 +734,7 @@ func TestRejectedAsyncRemovalKeepsSelectionAndDoesNotClaimSuccess(t *testing.T) 
 	}
 	ctl.Ctl.Remove("ocean")
 	tt.Frame()
-	if s.selID != "" {
+	if s.selID == "ocean" {
 		t.Fatal("selection not cleared after snapshot confirms removal")
 	}
 }

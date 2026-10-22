@@ -14,6 +14,12 @@ import (
 var typeNames = map[string]string{"video": "视频", "image": "图片", "web": "网页", "shader": "Shader"}
 var originNames = map[string]string{"native": "本应用壁纸包", "lively": "Lively 导入", "we": "Wallpaper Engine 导入", "file": "本地文件"}
 
+var (
+	fitNames  = map[string]string{"fill": "填充", "fit": "适应", "stretch": "拉伸"}
+	fitIDs    = map[string]string{"填充": "fill", "适应": "fit", "拉伸": "stretch"}
+	fitLabels = []string{"填充", "适应", "拉伸"}
+)
+
 func (s *Settings) importFiles() {
 	if s.PickFiles == nil {
 		return
@@ -23,6 +29,8 @@ func (s *Settings) importFiles() {
 	}
 }
 
+// library 是主页：上方“舞台”展示选中的壁纸组（大预览 + 标题 + 应用 + 组属性），下方是收藏网格。
+// 选中项默认是目标显示器正在播放的那张，所以舞台和环境底色总有内容。
 func (s *Settings) library(c *ui.Context, v app.View) {
 	t := c.Theme()
 	// Only clear selection after a refreshed snapshot confirms removal, never
@@ -30,8 +38,13 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 	if s.selID != "" && s.itemByID(v, s.selID) == nil {
 		s.selID, s.confirmRm = "", false
 	}
+	if s.selID == "" && len(v.Library) > 0 {
+		s.selID = v.Library[0].ID
+		if d := s.curDisplay(v); d != nil && s.itemByID(v, d.ItemID) != nil {
+			s.selID = d.ItemID
+		}
+	}
 	items := s.filtered(v)
-	// 选中项跟随 id（筛选、排序变化后仍选中同一张）
 	s.gridSel = -1
 	for i, it := range items {
 		if it.ID == s.selID {
@@ -44,78 +57,33 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 			inUse[d.ItemID] = append(inUse[d.ItemID], dispLabel(c, d))
 		}
 	}
-	drop := ui.Column(c.Key("libdrop")).Grow(1).MinHeight(0).Children(func() {
-		// 筛选条：类型筛选 | 数量 | 网格/列表（搜索与导入在顶部导航条）；空库时只显示拖放区
-		if len(v.Library) > 0 {
-			ui.Row(c.Key("filters")).Padding(14, 20, 10, 20).Gap(6).AlignItems(ui.Center).Children(func() {
-				labels := []string{"全部", "视频", "图片", "建议转码"}
-				for i, l := range labels {
-					n := 0
-					for _, it := range v.Library {
-						switch {
-						case i == 0, i == 1 && it.Type == "video", i == 2 && it.Type == "image", i == 3 && it.Transcode == "recommended":
-							n++
-						}
-					}
-					b := button(c.Key("f"+itoa(i)), fmt.Sprintf("%s %d", tr(c, l), n)).Radius(999).Padding(3, 12).FontSize(12)
-					if s.filter == i {
-						b.Background(t.Accent.Alpha(0.14)).TextColor(t.Accent).Border(1, t.Accent.Alpha(0.4))
-					}
-					if b.Clicked() {
-						s.filter = i
-					}
-				}
-				ui.Box(c).Grow(1).Children(func() {})
-				textf(c, "共 %d 张壁纸 · 拖入文件即可导入", len(v.Library)).FontSize(12).TextColor(t.TextMuted).SingleLine().Shrink(1).Ellipsis("…")
-				view := 0
-				if v.Config.UI.LibraryView == "list" {
-					view = 1
-				}
-				if segmented(c.Key("view"), &view, "网格", "列表").Label(tr(c, "视图")).Changed() {
-					lv := "grid"
-					if view == 1 {
-						lv = "list"
-					}
-					s.ctl.UpdateConfig(func(x *config.Config) { x.UI.LibraryView = lv })
-				}
-			})
-		}
-		if v.Importing || v.LastImport != "" {
-			ui.Row(c.Key("importStatus")).Padding(0, 20, 10, 20).Gap(6).AlignItems(ui.Center).Children(func() {
-				if v.Importing {
-					ui.Spinner(c).Size(14, 14)
-				}
-				text(c, v.LastImport).FontSize(12).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).Shrink(1)
-				if v.ImportQueued > 0 {
-					textf(c, "队列中还有 %d 个请求", v.ImportQueued).FontSize(12).TextColor(t.TextMuted)
-				}
-			})
-		}
-
+	drop := ui.Column(c.Key("libdrop")).Grow(1).MinHeight(0).Radius(20).Children(func() {
 		if len(v.Library) == 0 {
+			if v.Importing || v.LastImport != "" {
+				s.importStatus(c, v)
+			}
 			s.emptyLibrary(c, v)
 			return
 		}
-		ui.Row(c.Key("content")).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Padding(0, 0, 0, 14).Children(func() {
-			ui.Column(c.Key("gridcol")).Grow(1).Shrink(1).MinWidth(0).MinHeight(0).Children(func() {
-				if len(items) == 0 {
-					ui.Column(c).Grow(1).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-						ui.Icon(c, icSearch).FontSize(28).TextColor(t.TextMuted)
-						text(c, "没有符合条件的壁纸").TextColor(t.TextMuted)
-					})
-					return
-				}
-				if v.Config.UI.LibraryView == "list" {
-					s.libList(c, v, items, inUse)
-				} else {
-					s.libGrid(c, v, items, inUse)
-				}
+		if it := s.itemByID(v, s.selID); it != nil {
+			s.hero(c, v, *it, inUse[it.ID])
+		}
+		s.collectionHeader(c, v)
+		if v.Importing || v.LastImport != "" {
+			s.importStatus(c, v)
+		}
+		if len(items) == 0 {
+			ui.Column(c).Grow(1).AlignItems(ui.Center).Justify(ui.Center).Gap(6).Children(func() {
+				ui.Icon(c, icSearch).FontSize(26).TextColor(t.TextMuted)
+				text(c, "没有符合条件的壁纸").TextColor(t.TextMuted)
 			})
-			// 检查器只在选中时出现，未选中时网格占满宽度（内容居中）。
-			if s.gridSel >= 0 {
-				s.detail(c, v, items[s.gridSel], inUse[items[s.gridSel].ID])
-			}
-		})
+			return
+		}
+		if v.Config.UI.LibraryView == "list" {
+			s.libList(c, v, items, inUse)
+		} else {
+			s.libGrid(c, v, items)
+		}
 	})
 	if drop.FileDragOver() {
 		drop.Background(t.Accent.Alpha(0.08)).Border(2, t.Accent.Alpha(0.5))
@@ -125,26 +93,77 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 	}
 }
 
+func (s *Settings) importStatus(c *ui.Context, v app.View) {
+	t := c.Theme()
+	ui.Row(c.Key("importStatus")).Padding(0, 32, 8, 32).Gap(6).AlignItems(ui.Center).Children(func() {
+		if v.Importing {
+			ui.Spinner(c).Size(14, 14)
+		}
+		text(c, v.LastImport).FontSize(12).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).Shrink(1)
+		if v.ImportQueued > 0 {
+			textf(c, "队列中还有 %d 个请求", v.ImportQueued).FontSize(12).TextColor(t.TextMuted)
+		}
+	})
+}
+
+// collectionHeader：“壁纸库”标题 + 类型筛选（胶囊） | 数量 + 网格/列表。
+func (s *Settings) collectionHeader(c *ui.Context, v app.View) {
+	t := c.Theme()
+	ui.Row(c.Key("filters")).Shrink(0).Padding(6, 32, 12, 32).Gap(14).AlignItems(ui.Center).Children(func() {
+		display(c, tr(c, "壁纸库"), 19).SingleLine()
+		capsule(c.Key("ftabs"), func() {
+			labels := []string{"全部", "视频", "图片", "建议转码"}
+			for i, l := range labels {
+				n := 0
+				for _, it := range v.Library {
+					switch {
+					case i == 0, i == 1 && it.Type == "video", i == 2 && it.Type == "image", i == 3 && it.Transcode == "recommended":
+						n++
+					}
+				}
+				if pillTab(c.Key("f"+itoa(i)), nil, fmt.Sprintf("%s %d", tr(c, l), n), s.filter == i).Padding(4, 12).FontSize(12).Clicked() {
+					s.filter = i
+				}
+			}
+		}).Shrink(1).MinWidth(0)
+		ui.Box(c).Grow(1).Children(func() {})
+		textf(c, "共 %d 张壁纸 · 拖入文件即可导入", len(v.Library)).FontSize(12).TextColor(t.TextMuted).SingleLine().Shrink(1).Ellipsis("…")
+		view := 0
+		if v.Config.UI.LibraryView == "list" {
+			view = 1
+		}
+		if segmented(c.Key("view"), &view, "网格", "列表").Label(tr(c, "视图")).Shrink(0).Changed() {
+			lv := "grid"
+			if view == 1 {
+				lv = "list"
+			}
+			s.ctl.UpdateConfig(func(x *config.Config) { x.UI.LibraryView = lv })
+		}
+	})
+}
+
 func (s *Settings) emptyLibrary(c *ui.Context, v app.View) {
 	t := c.Theme()
-	ui.Column(c.Key("empty")).Grow(1).Margin(20).Radius(16).Border(2, t.Border).BorderStyle(ui.BorderDashed).AlignItems(ui.Center).Justify(ui.Center).Gap(10).Children(func() {
-		ui.Box(c).Size(64, 64).Radius(16).Gradient(t.Accent, ui.Hex("#22d3ee"), 135).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			ui.Icon(c, icImport).FontSize(30).TextColor(ui.Hex("#ffffff"))
+	ui.Column(c.Key("empty")).Grow(1).Margin(8, 32, 8, 32).Radius(24).Background(glass(t)).Border(1, hairline(t)).AlignItems(ui.Center).Justify(ui.Center).Gap(12).Children(func() {
+		ui.Box(c).Size(72, 72).Radius(22).Gradient(t.Accent, ui.Hex("#22d3ee"), 135).Shadow(0, 14, 34, 0, t.Accent.Alpha(0.4)).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+			ui.Icon(c, icImport).FontSize(32).TextColor(ui.Hex("#ffffff"))
 		})
-		text(c, "把视频、GIF 或图片拖到这里").Bold().FontSize(17)
+		display(c, tr(c, "把视频、GIF 或图片拖到这里"), 22).Padding(8, 0, 0, 0)
 		text(c, "支持 mp4 / mov / m4v / webm / gif / png / jpg / webp，以及 .wpk、Lively 壁纸包和 Wallpaper Engine 视频壁纸").FontSize(12).TextColor(t.TextMuted)
-		ui.Row(c).Gap(8).Padding(8, 0, 0, 0).Children(func() {
-			if iconButton(c.Key("imp2"), icPlus, "选择文件…", true).Disabled(s.PickFiles == nil).Clicked() {
+		ui.Row(c).Gap(10).Padding(10, 0, 0, 0).Children(func() {
+			if iconButton(c.Key("imp2"), icPlus, "选择文件…", true).Radius(999).Padding(8, 18).Disabled(s.PickFiles == nil).Clicked() {
 				s.importFiles()
 			}
-			if iconButton(c.Key("folder2"), icFolder, "导入文件夹…", false).Disabled(s.PickFolder == nil).Clicked() {
+			if iconButton(c.Key("folder2"), icFolder, "导入文件夹…", false).Radius(999).Padding(8, 18).Disabled(s.PickFolder == nil).Clicked() {
 				s.importFolder()
 			}
 		})
 	})
 }
 
-func (s *Settings) libGrid(c *ui.Context, v app.View, items []config.Item, inUse map[string][]string) {
+// libGrid 是收藏网格：封面铺满卡片、标题压在底部渐变上。选择由卡片自己处理（单击选中、双击应用），
+// 不用 GridView 的选中底色，避免方形高亮衬在圆角卡片后面。
+func (s *Settings) libGrid(c *ui.Context, v app.View, items []config.Item) {
 	t := c.Theme()
 	screens := map[string][]string{}
 	for _, d := range v.Displays {
@@ -152,48 +171,60 @@ func (s *Settings) libGrid(c *ui.Context, v app.View, items []config.Item, inUse
 			screens[d.ItemID] = append(screens[d.ItemID], itoa(d.Index))
 		}
 	}
+	s.grid.Selected = nil
 	s.grid.Key = func(i int) any { return items[i].ID }
 	s.grid.Label = func(i int) string { return items[i].Title }
-	// 卡片就是一组壁纸的封面：画面铺满，标题叠在底部渐变上（Wallpaper Engine 式）。
-	g := ui.GridView(c.Key("grid"), &s.grid, len(items), 210, 136, func(i int) {
+	ui.GridView(c.Key("grid"), &s.grid, len(items), 196, 132, func(i int) {
 		it := items[i]
 		sel := i == s.gridSel
-		card := ui.Box(c.Key("card"+it.ID)).Grow(1).Margin(5).Radius(10).Clip().Background(t.Surface).Border(1, t.Border).Children(func() {
-			s.preview(c, it, 126)
-			ui.Row(c).Absolute().Top(7).Left(7).Gap(4).Children(func() {
-				chip(c, typeNames[it.Type], ui.Hex("#ffffff")).Background(ui.RGBA(0, 0, 0, 0.55))
+		card := ui.Box(c.Key("card"+it.ID)).Grow(1).Margin(7).Radius(14).Clip().Cursor(ui.CursorPointer).Border(1, hairline(t)).Children(func() {
+			s.preview(c, it, 118)
+			ui.Row(c).Absolute().Top(8).Left(8).Gap(4).Children(func() {
 				if it.Transcode == "recommended" {
-					chip(c, "建议转码", ui.Hex("#fbbf24")).Background(ui.RGBA(0, 0, 0, 0.55))
+					chip(c, "建议转码", ui.Hex("#fcd34d")).Background(ui.RGBA(0, 0, 0, 0.5))
 				}
 			})
 			if n := screens[it.ID]; len(n) > 0 {
-				ui.Row(c).Absolute().Top(7).Right(7).Gap(4).AlignItems(ui.Center).Padding(1, 7).Radius(999).Background(t.Accent).Children(func() {
+				ui.Row(c).Absolute().Top(8).Right(8).Gap(4).AlignItems(ui.Center).Padding(2, 8).Radius(999).Background(t.Accent).Shadow(0, 2, 8, 0, t.Accent.Alpha(0.5)).Children(func() {
 					ui.Icon(c, icMonitor).FontSize(11).TextColor(ui.Hex("#ffffff"))
-					ui.Text(c, strings.Join(n, " ")).FontSize(11).TextColor(ui.Hex("#ffffff"))
+					ui.Text(c, strings.Join(n, " ")).FontSize(11).Bold().TextColor(ui.Hex("#ffffff"))
 				}).Label(tr(c, "使用中"))
 			}
-			ui.Column(c).Absolute().Left(0).Right(0).Bottom(0).Padding(18, 10, 7, 10).LinearGradient(ui.LinearGradient{From: ui.RGBA(0, 0, 0, 0), To: ui.RGBA(0, 0, 0, 0.72), Angle: 180}).Children(func() {
+			ui.Column(c).Absolute().Left(0).Right(0).Bottom(0).Padding(22, 12, 9, 12).LinearGradient(ui.LinearGradient{From: ui.RGBA(0, 0, 0, 0), To: ui.RGBA(0, 0, 0, 0.78), Angle: 180}).Children(func() {
 				ui.Text(c, it.Title).Bold().FontSize(13).TextColor(ui.Hex("#ffffff")).SingleLine().Ellipsis("…")
 				meta := tr(c, originNames[it.Origin])
 				if it.Codec != "" {
 					meta = strings.ToUpper(it.Codec) + " · " + meta
 				}
-				text(c, meta).FontSize(11).TextColor(ui.RGBA(255, 255, 255, 0.75)).SingleLine().Ellipsis("…")
+				text(c, meta).FontSize(11).TextColor(ui.RGBA(255, 255, 255, 0.7)).SingleLine().Ellipsis("…")
 			})
-		})
-		if sel {
-			card.Border(3, t.Accent).Shadow(0, 4, 14, 0, t.Accent.Alpha(0.30))
-		} else if card.Hovered() {
-			card.Border(1, t.Accent.Alpha(0.6)).Shadow(0, 4, 12, 0, ui.RGBA(0, 0, 0, 0.18))
+		}).Label(it.Title)
+		switch {
+		case sel:
+			card.Border(2, t.Accent).Shadow(0, 10, 28, -4, t.Accent.Alpha(0.55))
+		case card.Hovered():
+			card.Border(1, ui.RGBA(255, 255, 255, 0.35)).Shadow(0, 12, 26, -6, softShadow(t))
+		default:
+			card.Shadow(0, 6, 16, -6, softShadow(t))
 		}
-	}).Grow(1).MinHeight(0).Padding(0, 0, 16, 0)
-	if g.Changed() && s.gridSel >= 0 && s.gridSel < len(items) {
-		s.selID = items[s.gridSel].ID
-		s.confirmRm = false
+		if card.Clicked() && !sel {
+			s.selID, s.confirmRm, s.detailsOpen = it.ID, false, false
+		}
+		if card.DoubleClicked() {
+			s.applyCurrent(c, v, it.ID)
+		}
+	}).Grow(1).MinHeight(0).Padding(0, 25, 12, 25)
+}
+
+// placeholderColors 是没有首帧截图时按 id 取的稳定渐变色。
+func placeholderColors(id string) (ui.Color, ui.Color) {
+	h := 0
+	for _, r := range id {
+		h = h*31 + int(r)
 	}
-	if g.Submitted() && s.gridSel >= 0 && s.gridSel < len(items) {
-		s.applyCurrent(c, v, items[s.gridSel].ID)
-	}
+	pal := [][2]string{{"#6366f1", "#22d3ee"}, {"#f43f5e", "#f59e0b"}, {"#10b981", "#3b82f6"}, {"#8b5cf6", "#ec4899"}, {"#0ea5e9", "#14b8a6"}}
+	p := pal[(h%len(pal)+len(pal))%len(pal)]
+	return ui.Hex(p[0]), ui.Hex(p[1])
 }
 
 // preview 画缩略图；没有首帧截图时画渐变占位。
@@ -202,17 +233,12 @@ func (s *Settings) preview(c *ui.Context, it config.Item, h float32) {
 		ui.Image(c, bm).Fit(ui.Cover).Height(h).FillWidth()
 		return
 	}
-	h1 := 0
-	for _, r := range it.ID {
-		h1 = h1*31 + int(r)
-	}
-	pal := [][2]string{{"#6366f1", "#22d3ee"}, {"#f43f5e", "#f59e0b"}, {"#10b981", "#3b82f6"}, {"#8b5cf6", "#ec4899"}, {"#0ea5e9", "#14b8a6"}}
-	p := pal[(h1%len(pal)+len(pal))%len(pal)]
+	from, to := placeholderColors(it.ID)
 	ic := icVideo
 	if it.Type == "image" {
 		ic = icImage
 	}
-	ui.Box(c).Height(h).FillWidth().Gradient(ui.Hex(p[0]), ui.Hex(p[1]), 135).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+	ui.Box(c).Height(h).FillWidth().Gradient(from, to, 135).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 		ui.Icon(c, ic).FontSize(26).TextColor(ui.RGBA(255, 255, 255, 0.85))
 	})
 }
@@ -220,13 +246,13 @@ func (s *Settings) preview(c *ui.Context, it config.Item, h float32) {
 func (s *Settings) libList(c *ui.Context, v app.View, items []config.Item, inUse map[string][]string) {
 	t := c.Theme()
 	ui.Scroll(c.Key("listscroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Gap(6).Padding(0, 6, 20, 6).Children(func() {
+		ui.Column(c).Gap(8).Padding(0, 32, 20, 32).Children(func() {
 			for i, it := range items {
 				it, i := it, i
-				row := ui.Row(c.Key("row"+it.ID)).Gap(12).Padding(8).Radius(10).AlignItems(ui.Center).Background(cardBg(t)).Border(1, t.Border).Children(func() {
-					ui.Box(c).Width(96).Radius(6).Clip().Children(func() { s.preview(c, it, 54) })
-					ui.Column(c).Grow(1).Shrink(1).Gap(2).Children(func() {
-						ui.Text(c, it.Title).Bold().FontSize(13).SingleLine().Ellipsis("…")
+				row := ui.Row(c.Key("row"+it.ID)).Gap(14).Padding(8, 14, 8, 8).Radius(14).AlignItems(ui.Center).Background(glass(t)).Border(1, hairline(t)).Cursor(ui.CursorPointer).Children(func() {
+					ui.Box(c).Width(104).Radius(9).Clip().Children(func() { s.preview(c, it, 58) })
+					ui.Column(c).Grow(1).Shrink(1).Gap(3).Children(func() {
+						ui.Text(c, it.Title).Bold().FontSize(14).SingleLine().Ellipsis("…")
 						meta := tr(c, typeNames[it.Type]) + " · " + tr(c, originNames[it.Origin])
 						if it.Codec != "" {
 							meta += " · " + strings.ToUpper(it.Codec)
@@ -241,7 +267,7 @@ func (s *Settings) libList(c *ui.Context, v app.View, items []config.Item, inUse
 					}
 				})
 				if i == s.gridSel {
-					row.Border(2, t.Accent)
+					row.Border(2, t.Accent).Background(t.Accent.Alpha(0.10))
 				}
 				if row.Clicked() {
 					s.selID, s.gridSel, s.confirmRm = it.ID, i, false
@@ -254,125 +280,80 @@ func (s *Settings) libList(c *ui.Context, v app.View, items []config.Item, inUse
 	})
 }
 
-// detail 是检查器：把一张壁纸当作一“组”展示——画面、声音、播放属性和应用目标放在一起。
-func (s *Settings) detail(c *ui.Context, v app.View, it config.Item, using []string) {
+// hero 是舞台：左边大预览，右边标题、应用目标、组属性（声音 / 填充 / 速度）和转码建议。
+func (s *Settings) hero(c *ui.Context, v app.View, it config.Item, using []string) {
 	t := c.Theme()
-	ui.Column(c.Key("detail")).Width(340).Shrink(0).MinHeight(0).Margin(0, 14, 14, 6).Radius(12).Background(cardBg(t)).Border(1, t.Border).Clip().Children(func() {
-		ui.Box(c).Height(190).Shrink(0).Children(func() {
-			s.preview(c, it, 190)
-			ui.Column(c).Absolute().Left(0).Right(0).Bottom(0).Padding(28, 16, 12, 16).LinearGradient(ui.LinearGradient{From: ui.RGBA(0, 0, 0, 0), To: ui.RGBA(0, 0, 0, 0.75), Angle: 180}).Children(func() {
-				ui.Text(c, it.Title).Bold().FontSize(17).TextColor(ui.Hex("#ffffff")).SingleLine().Ellipsis("…")
-				if it.Author != "" {
-					ui.Text(c, it.Author).FontSize(12).TextColor(ui.RGBA(255, 255, 255, 0.8)).SingleLine().Ellipsis("…")
-				}
-			})
-		})
-		ui.Scroll(c.Key("dscroll")).Grow(1).MinHeight(0).Children(func() {
-			ui.Column(c).Padding(12, 16, 16, 16).Gap(12).Children(func() {
-				ui.Row(c).Gap(6).Wrap().Children(func() {
-					chip(c, typeNames[it.Type], t.Accent)
-					if it.Codec != "" {
-						chip(c, strings.ToUpper(it.Codec), t.TextMuted)
+	w, h := c.Size()
+	imgW := min(float32(600), max(float32(320), (w-64)*0.46))
+	if h < 800 {
+		imgW = min(imgW, 400)
+	}
+	imgH := imgW * 9 / 16
+	// 舞台最高占到“窗口 − 导航 − Dock − 一行网格”；小窗口时舞台内部滚动，网格始终可见。
+	ui.Scroll(c.Key("heroscroll")).Shrink(0).MaxHeight(max(200, h-370)).Children(func() {
+		ui.Row(c.Key("hero")).Gap(32).Padding(4, 32, 22, 32).AlignItems(ui.Start).Children(func() {
+			// 舞台：带辉光的大预览
+			ui.Box(c.Key("stage")).Size(imgW, imgH).Shrink(0).Radius(20).Clip().Border(1, hairline(t)).Shadow(0, 24, 60, -12, ui.RGBA(0, 0, 0, 0.5)).Children(func() {
+				s.preview(c, it, imgH)
+				// 次要操作浮在舞台右上角
+				ui.Row(c.Key("stageacts")).Absolute().Top(12).Right(12).Gap(6).Children(func() {
+					info := roundIcon(c.Key("info"), icInfo, "详细信息")
+					if info.Clicked() {
+						s.detailsOpen = !s.detailsOpen
 					}
-					switch it.Transcode {
-					case "recommended":
-						chip(c, "建议转码", t.Warning)
-					case "done":
-						chip(c, "已优化", t.Success)
+					s.details(c, info, it)
+					if roundIcon(c.Key("props"), icMonitor, "屏幕属性").Clicked() {
+						s.page = pgDisplays
+					}
+					if roundIcon(c.Key("reveal"), icFolder, "打开位置").Disabled(s.ShowInFolder == nil).Clicked() {
+						s.ShowInFolder(filepath.Join(it.Dir, it.Entry))
+					}
+					if roundIcon(c.Key("rm"), icTrash, "从壁纸库删除").TextColor(ui.Hex("#fca5a5")).Disabled(v.Importing).Clicked() {
+						s.confirmRm = true
 					}
 				})
 				if len(using) > 0 {
-					text(c, "正在用于："+strings.Join(using, "、")).FontSize(12).TextColor(t.Accent).Wrap()
-				}
-				s.applyBox(c, v, it)
-				s.groupContents(c, v, it)
-				// 转码建议（F-07）
-				st := v.Transcoding[it.ID]
-				if it.Transcode == "recommended" || st != "" {
-					ui.Column(c.Key("tc")).Gap(6).Padding(10).Radius(8).Background(t.Warning.Alpha(0.10)).Border(1, t.Warning.Alpha(0.3)).Children(func() {
-						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-							ui.Icon(c, icWand).FontSize(14).TextColor(t.Warning)
-							text(c, "建议优化转码").Bold().FontSize(13)
-						})
-						note := mediaNote(c.Locale(), it.Note)
-						if note == "" {
-							note = tr(c, "这个文件的编码或规格不利于省电播放。")
-						}
-						// Source/backend notes remain verbatim; the application-owned
-						// promise depends on the encoder's verified capabilities.
-						ui.Text(c, note).FontSize(12).TextColor(t.TextMuted).Wrap()
-						hint := "标准转换将验证 30 fps、无音轨和目标尺寸；原文件保留。"
-						if !v.Encoder.Strict {
-							hint = "兼容转换能力取决于编码器，不保证固定帧率或去音轨；原文件保留。"
-						}
-						text(c, hint).FontSize(12).TextColor(t.TextMuted).Wrap()
-						switch {
-						case st == "等待转码…":
-							text(c, "已加入转码队列，等待当前任务完成。").FontSize(12).TextColor(t.TextMuted).Wrap()
-						case st == "正在转码…":
-							ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-								ui.Spinner(c).Size(14, 14)
-								text(c, "正在转码，可以继续使用其他功能…").FontSize(12)
-							})
-						case !v.HasEncoder:
-							text(c, s.noEncoderHint()).FontSize(12).TextColor(t.Warning).Wrap()
-							if button(c.Key("tcset"), "设置编码器…").Clicked() {
-								s.page = pgPerf
-							}
-						default:
-							if st != "" {
-								text(c, st).FontSize(12).TextColor(t.Danger).Wrap()
-							}
-							if iconButton(c.Key("tcgo"), icWand, "一键优化", false).Clicked() {
-								s.ctl.Transcode(it.ID)
-							}
-						}
+					ui.Row(c).Absolute().Left(12).Bottom(12).Gap(6).Padding(4, 10).Radius(999).Background(ui.RGBA(0, 0, 0, 0.55)).AlignItems(ui.Center).Children(func() {
+						ui.Box(c).Size(6, 6).Radius(3).Background(t.Success).Shadow(0, 0, 6, 1, t.Success.Alpha(0.7)).Children(func() {})
+						ui.Text(c, tr(c, "正在用于：")+strings.Join(using, "、")).FontSize(11).TextColor(ui.Hex("#ffffff")).SingleLine().Ellipsis("…")
 					})
 				}
-				sectionTitle(c, "详细信息")
-				ui.Column(c.Key("meta")).Gap(0).Children(func() {
-					kv := func(k, val string) {
-						ui.Row(c).Gap(8).Padding(6, 0).BorderWidth(0, 0, 1, 0).BorderColor(t.Border.Alpha(0.6)).Children(func() {
-							text(c, k).FontSize(12).TextColor(t.TextMuted).Width(64)
-							ui.Text(c, val).FontSize(12).Grow(1).Wrap()
-						})
-					}
-					kv("来源", tr(c, originNames[it.Origin]))
-					if it.Author != "" {
-						kv("作者", it.Author)
+			})
+			ui.Column(c.Key("info")).Grow(1).Shrink(1).MinWidth(0).Gap(14).Children(func() {
+				ui.Column(c).Gap(6).Children(func() {
+					spec := []string{tr(c, typeNames[it.Type])}
+					if it.Codec != "" {
+						spec = append(spec, strings.ToUpper(it.Codec))
 					}
 					if it.Width > 0 && it.Height > 0 {
-						kv("分辨率", fmt.Sprintf("%d × %d", it.Width, it.Height))
+						spec = append(spec, fmt.Sprintf("%d×%d", it.Width, it.Height))
 					}
-					if it.SizeBytes > 0 {
-						kv("文件大小", humanBytes(it.SizeBytes))
+					if it.DurationSec > 0 {
+						sec := int(it.DurationSec + 0.5)
+						spec = append(spec, fmt.Sprintf("%d:%02d", sec/60, sec%60))
 					}
-					if len(it.Colors) > 0 {
-						kv("颜色", strings.Join(it.Colors, " · "))
-					}
-					if len(it.Tags) > 0 {
-						kv("标签", strings.Join(it.Tags, " · "))
-					}
+					eyebrow(c, strings.Join(spec, "  ·  "))
+					display(c, it.Title, 30).SingleLine().Ellipsis("…")
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						text(c, originNames[it.Origin]).FontSize(13).TextColor(t.TextMuted).SingleLine()
+						if it.Author != "" {
+							ui.Text(c, "· "+it.Author).FontSize(13).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Shrink(1)
+						}
+						switch it.Transcode {
+						case "recommended":
+							chip(c, "建议转码", t.Warning)
+						case "done":
+							chip(c, "已优化", t.Success)
+						}
+					})
 					if it.Description != "" {
-						kv("简介", it.Description)
-					}
-					kv("导入时间", it.AddedAt.Local().Format("2006-01-02 15:04"))
-					kv("入口文件", it.Entry)
-					if it.Note != "" && it.Transcode != "recommended" {
-						kv("备注", mediaNote(c.Locale(), it.Note))
+						ui.Text(c, it.Description).FontSize(13).LineHeight(1.5).TextColor(t.TextMuted).Wrap().MaxWidth(560)
 					}
 				})
-				ui.Row(c.Key("acts")).Gap(6).Children(func() {
-					if iconButton(c.Key("props"), icSliders, "屏幕属性", false).Grow(1).Clicked() {
-						s.page = pgDisplays
-					}
-					if iconButton(c.Key("reveal"), icFolder, "打开位置", false).Grow(1).Disabled(s.ShowInFolder == nil).Clicked() {
-						s.ShowInFolder(filepath.Join(it.Dir, it.Entry))
-					}
-				})
-				if iconButton(c.Key("rm"), icTrash, "从壁纸库删除", false).FillWidth().TextColor(t.Danger).Disabled(v.Importing).Clicked() {
-					s.confirmRm = true
-				}
+				s.applyBox(c, v, it)
+				s.groupProps(c, v, it)
+				s.overrideNotice(c, v)
+				s.transcodeCard(c, v, it)
 			})
 		})
 	})
@@ -386,20 +367,54 @@ func (s *Settings) detail(c *ui.Context, v app.View, it config.Item, using []str
 	}
 }
 
-// sectionTitle 是检查器里的小节标题。
-func sectionTitle(c *ui.Context, label string) {
-	text(c, label).Bold().FontSize(12).TextColor(c.Theme().TextMuted).Padding(4, 0, 0, 0)
+// roundIcon 是浮在舞台画面上的圆形次要操作（深色磨砂，任何画面上都清楚）。
+func roundIcon(c *ui.Context, ic *ui.SVG, label string) ui.Element {
+	return button(c, "").Radius(999).Padding(8).Background(ui.RGBA(0, 0, 0, 0.45)).Border(1, ui.RGBA(255, 255, 255, 0.16)).TextColor(ui.Hex("#ffffff")).Shrink(0).Children(func() {
+		ui.Icon(c, ic).FontSize(15)
+	}).Label(tr(c, label)).Tooltip(tr(c, label))
 }
 
-var (
-	fitNames  = map[string]string{"fill": "填充", "fit": "适应", "stretch": "拉伸"}
-	fitIDs    = map[string]string{"填充": "fill", "适应": "fit", "拉伸": "stretch"}
-	fitLabels = []string{"填充", "适应", "拉伸"}
-)
+// details 是“详细信息”弹出层。
+func (s *Settings) details(c *ui.Context, anchor ui.Element, it config.Item) {
+	t := c.Theme()
+	ui.Popover(c.Key("detailsPop"), anchor, &s.detailsOpen, func() {
+		ui.Column(c).Width(300).Gap(0).Padding(4).Children(func() {
+			kv := func(k, val string) {
+				ui.Row(c).Gap(10).Padding(6, 0).BorderWidth(0, 0, 1, 0).BorderColor(hairline(t)).Children(func() {
+					text(c, k).FontSize(12).TextColor(t.TextMuted).Width(64)
+					ui.Text(c, val).FontSize(12).Grow(1).Wrap()
+				})
+			}
+			kv("来源", tr(c, originNames[it.Origin]))
+			if it.Author != "" {
+				kv("作者", it.Author)
+			}
+			if it.Width > 0 && it.Height > 0 {
+				kv("分辨率", fmt.Sprintf("%d × %d", it.Width, it.Height))
+			}
+			if it.SizeBytes > 0 {
+				kv("文件大小", humanBytes(it.SizeBytes))
+			}
+			if len(it.Colors) > 0 {
+				kv("颜色", strings.Join(it.Colors, " · "))
+			}
+			if len(it.Tags) > 0 {
+				kv("标签", strings.Join(it.Tags, " · "))
+			}
+			if it.Description != "" {
+				kv("简介", it.Description)
+			}
+			kv("导入时间", it.AddedAt.Local().Format("2006-01-02 15:04"))
+			kv("入口文件", it.Entry)
+			if it.Note != "" && it.Transcode != "recommended" {
+				kv("备注", mediaNote(c.Locale(), it.Note))
+			}
+		})
+	})
+}
 
-// groupContents 列出这组壁纸包含什么：画面、声音（开关 + 音量）、播放属性。
-// 声音和播放属性随壁纸保存；目标显示器若覆盖了其中某项，在下方提示并可一键清除覆盖。
-func (s *Settings) groupContents(c *ui.Context, v app.View, it config.Item) {
+// groupProps 是“壁纸组属性”磨砂卡：声音（开关 + 音量）、填充、速度，随壁纸保存。
+func (s *Settings) groupProps(c *ui.Context, v app.View, it config.Item) {
 	t := c.Theme()
 	props := it.Props
 	setProps := func(fn func(p *config.ItemProps)) {
@@ -407,113 +422,140 @@ func (s *Settings) groupContents(c *ui.Context, v app.View, it config.Item) {
 		fn(&p)
 		s.ctl.SetItemProps(it.ID, p)
 	}
-	ui.Row(c.Key("grouphdr")).AlignItems(ui.Center).Children(func() {
-		ui.Box(c).Grow(1).Children(func() { sectionTitle(c, "壁纸组内容") })
-		if props != (config.ItemProps{}) {
-			if button(c.Key("resetprops"), "恢复默认").FontSize(11).Padding(1, 8).Clicked() {
-				s.ctl.SetItemProps(it.ID, config.ItemProps{})
-			}
-		}
-	})
 	eff := config.ResolvePlayback(props, config.DisplayOptions{}, v.Config.Render.Muted)
-	ui.Column(c.Key("group")).Radius(10).Border(1, t.Border).Children(func() {
-		part := func(key string, ic *ui.SVG, title, desc string, last bool, control func(), extra func()) {
-			ui.Column(c.Key(key)).Gap(8).Padding(10, 12).BorderWidth(0, 0, b2w(!last), 0).BorderColor(t.Border.Alpha(0.6)).Children(func() {
-				ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-					ui.Box(c).Size(28, 28).Shrink(0).Radius(7).Background(t.Accent.Alpha(0.12)).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-						ui.Icon(c, ic).FontSize(14).TextColor(t.Accent)
-					})
-					ui.Column(c).Grow(1).Shrink(1).Children(func() {
-						text(c, title).FontSize(13)
-						if desc != "" {
-							ui.Text(c, desc).FontSize(11).TextColor(t.TextMuted).Wrap()
-						}
-					})
-					if control != nil {
-						control()
+	ui.Column(c.Key("group")).Gap(12).Padding(14, 16).Radius(16).Background(glass(t)).Border(1, hairline(t)).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+			eyebrow(c, tr(c, "壁纸组属性")).Shrink(0)
+			text(c, "随壁纸保存，应用到任何显示器都生效").FontSize(11).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Shrink(1).Grow(1)
+			if props != (config.ItemProps{}) {
+				if button(c.Key("resetprops"), "恢复默认").Radius(999).FontSize(11).Padding(2, 10).Shrink(0).Clicked() {
+					s.ctl.SetItemProps(it.ID, config.ItemProps{})
+				}
+			}
+		})
+		// 每项一行：图标 + 名称（固定宽度对齐）| 控件
+		row := func(key string, ic *ui.SVG, label, sub string, control func()) {
+			ui.Row(c.Key(key)).Gap(12).AlignItems(ui.Center).MinHeight(32).Children(func() {
+				ui.Box(c).Size(28, 28).Shrink(0).Radius(9).Background(t.Accent.Alpha(0.14)).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+					ui.Icon(c, ic).FontSize(14).TextColor(t.Accent)
+				})
+				ui.Column(c).Width(132).Shrink(0).Children(func() {
+					text(c, label).FontSize(13).Bold()
+					if sub != "" {
+						text(c, sub).FontSize(11).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 					}
 				})
-				if extra != nil {
-					extra()
-				}
+				ui.Row(c).Grow(1).Shrink(1).MinWidth(0).Gap(10).AlignItems(ui.Center).Children(control)
 			})
 		}
-		// 画面
-		ic, spec := icVideo, []string{tr(c, typeNames[it.Type])}
-		if it.Type == "image" {
-			ic = icImage
+		sub := "这张壁纸自己的设置"
+		switch {
+		case it.Type == "image":
+			sub = "图片壁纸没有声音"
+		case props.Audio == "":
+			sub = "未单独设置，跟随默认静音设置"
 		}
-		if it.Codec != "" {
-			spec = append(spec, strings.ToUpper(it.Codec))
-		}
-		if it.Width > 0 && it.Height > 0 {
-			spec = append(spec, fmt.Sprintf("%d × %d", it.Width, it.Height))
-		}
-		if it.DurationSec > 0 {
-			sec := int(it.DurationSec + 0.5)
-			spec = append(spec, fmt.Sprintf("%d:%02d", sec/60, sec%60))
-		}
-		part("g-pic", ic, "画面", strings.Join(spec, " · "), false, nil, nil)
-		// 声音：开关 + 音量，随壁纸保存；未设置时跟随“播放与性能”里的默认静音
-		if it.Type == "image" {
-			part("g-snd", icSound, "声音", tr(c, "图片壁纸没有声音"), false, nil, nil)
-		} else {
-			desc := tr(c, "这张壁纸自己的设置")
-			if props.Audio == "" {
-				desc = tr(c, "未单独设置，跟随默认静音设置")
+		row("g-snd", icSound, "声音", sub, func() {
+			if it.Type == "image" {
+				return
 			}
 			on := !eff.Muted
-			part("g-snd", icSound, "声音", desc, false, func() {
-				if ui.Switch(c.Key("sound"), &on).Label(tr(c, "播放声音 开关")).Changed() {
-					b := on
-					setProps(func(p *config.ItemProps) {
-						p.Audio = "mute"
-						if b {
-							p.Audio = "sound"
-						}
-					})
-				}
-			}, func() {
-				if eff.Muted {
-					return
-				}
-				ui.Row(c.Key("vol")).Gap(8).AlignItems(ui.Center).Padding(0, 0, 0, 38).Children(func() {
-					text(c, "音量").FontSize(12).TextColor(t.TextMuted).Width(36)
-					vol := float64(eff.Volume)
-					if ui.StepSlider(c.Key("volume"), &vol, 5, 100, 5).Label(tr(c, "音量")).Grow(1).Changed() {
-						n := int(vol)
-						setProps(func(p *config.ItemProps) { p.Volume = n })
+			if ui.Switch(c.Key("sound"), &on).Label(tr(c, "播放声音 开关")).Changed() {
+				b := on
+				setProps(func(p *config.ItemProps) {
+					p.Audio = "mute"
+					if b {
+						p.Audio = "sound"
 					}
-					textf(c, "%d%%", eff.Volume).FontSize(12).Width(36)
 				})
-			})
-		}
-		// 播放属性
-		part("g-props", icSliders, "播放属性", tr(c, "随壁纸保存，应用到任何显示器都生效"), true, nil, func() {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(0, 0, 0, 38).Children(func() {
-				text(c, "填充").FontSize(12).TextColor(t.TextMuted).Width(36)
-				fit := fitNames[eff.Fit]
-				if selectControl(c.Key("ifit"), &fit, fitLabels).Label(tr(c, "壁纸填充方式")).Grow(1).Changed() {
-					id := fitIDs[fit]
-					setProps(func(p *config.ItemProps) { p.Fit = id })
+			}
+			if !eff.Muted {
+				vol := float64(eff.Volume)
+				if ui.Slider(c.Key("volume"), &vol, 5, 100).Label(tr(c, "音量")).Grow(1).Shrink(1).MinWidth(60).MaxWidth(200).Changed() {
+					n := (int(vol) + 2) / 5 * 5
+					setProps(func(p *config.ItemProps) { p.Volume = max(5, n) })
 				}
-			})
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(0, 0, 0, 38).Children(func() {
-				text(c, "速度").FontSize(12).TextColor(t.TextMuted).Width(36)
-				speed := eff.Speed
-				if it.Type == "image" {
-					text(c, "静态图片不支持速度").FontSize(12).TextColor(t.TextMuted)
-					return
+				textf(c, "%d%%", eff.Volume).FontSize(12).TextColor(t.TextMuted).Width(36)
+			}
+		})
+		row("g-fit", icImage, "填充", "", func() {
+			idx := 0
+			for i, l := range fitLabels {
+				if fitIDs[l] == eff.Fit {
+					idx = i
 				}
-				if ui.NumberInput(c.Key("ispeed"), &speed, 0.25, 4, 0.25).Label(tr(c, "壁纸播放速度")).Grow(1).Changed() {
-					sp := speed
-					setProps(func(p *config.ItemProps) { p.Speed = sp })
-				}
-				text(c, "倍速").FontSize(12).TextColor(t.TextMuted)
-			})
+			}
+			if segmented(c.Key("ifit"), &idx, fitLabels...).Label(tr(c, "壁纸填充方式")).Changed() {
+				id := fitIDs[fitLabels[idx]]
+				setProps(func(p *config.ItemProps) { p.Fit = id })
+			}
+		})
+		row("g-speed", icGauge, "速度", "", func() {
+			if it.Type == "image" {
+				text(c, "静态图片不支持速度").FontSize(12).TextColor(t.TextMuted)
+				return
+			}
+			speed := eff.Speed
+			if ui.NumberInput(c.Key("ispeed"), &speed, 0.25, 4, 0.25).Label(tr(c, "壁纸播放速度")).Width(150).Changed() {
+				sp := speed
+				setProps(func(p *config.ItemProps) { p.Speed = sp })
+			}
+			text(c, "倍速").FontSize(12).TextColor(t.TextMuted).SingleLine()
 		})
 	})
-	s.overrideNotice(c, v)
+}
+
+// transcodeCard 是转码建议（F-07）：一条带暖色描边的磨砂条。
+func (s *Settings) transcodeCard(c *ui.Context, v app.View, it config.Item) {
+	t := c.Theme()
+	st := v.Transcoding[it.ID]
+	if it.Transcode != "recommended" && st == "" {
+		return
+	}
+	ui.Row(c.Key("tc")).Gap(12).Padding(12, 14).Radius(16).Background(t.Warning.Alpha(0.10)).Border(1, t.Warning.Alpha(0.32)).AlignItems(ui.Center).Children(func() {
+		ui.Box(c).Size(32, 32).Shrink(0).Radius(10).Background(t.Warning.Alpha(0.18)).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+			ui.Icon(c, icWand).FontSize(16).TextColor(t.Warning)
+		})
+		ui.Column(c).Grow(1).Shrink(1).Gap(2).Children(func() {
+			text(c, "建议优化转码").Bold().FontSize(13)
+			note := mediaNote(c.Locale(), it.Note)
+			if note == "" {
+				note = tr(c, "这个文件的编码或规格不利于省电播放。")
+			}
+			// Source/backend notes remain verbatim; the application-owned
+			// promise depends on the encoder's verified capabilities.
+			ui.Text(c, note).FontSize(12).TextColor(t.TextMuted).Wrap()
+			hint := "标准转换将验证 30 fps、无音轨和目标尺寸；原文件保留。"
+			if !v.Encoder.Strict {
+				hint = "兼容转换能力取决于编码器，不保证固定帧率或去音轨；原文件保留。"
+			}
+			text(c, hint).FontSize(11).TextColor(t.TextMuted).Wrap()
+			switch {
+			case st == "等待转码…":
+				text(c, "已加入转码队列，等待当前任务完成。").FontSize(12).TextColor(t.TextMuted).Wrap()
+			case st == "正在转码…":
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Spinner(c).Size(14, 14)
+					text(c, "正在转码，可以继续使用其他功能…").FontSize(12)
+				})
+			case !v.HasEncoder:
+				text(c, s.noEncoderHint()).FontSize(12).TextColor(t.Warning).Wrap()
+			case st != "":
+				text(c, st).FontSize(12).TextColor(t.Danger).Wrap()
+			}
+		})
+		switch {
+		case st == "等待转码…" || st == "正在转码…":
+		case !v.HasEncoder:
+			if button(c.Key("tcset"), "设置编码器…").Radius(999).Shrink(0).Clicked() {
+				s.page = pgPerf
+			}
+		default:
+			if iconButton(c.Key("tcgo"), icWand, "一键优化", false).Radius(999).Padding(6, 14).Shrink(0).Clicked() {
+				s.ctl.Transcode(it.ID)
+			}
+		}
+	})
 }
 
 // overrideNotice：目标显示器覆盖了壁纸自带属性时提示，并可清除覆盖。
@@ -546,13 +588,6 @@ func (s *Settings) overrideNotice(c *ui.Context, v app.View) {
 			c.Toast(tr(c, "已清除覆盖"))
 		}
 	})
-}
-
-func b2w(b bool) float32 {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 func (s *Settings) noEncoderHint() string {
@@ -606,10 +641,10 @@ func (s *Settings) applyBox(c *ui.Context, v app.View, it config.Item) {
 			}
 		}
 	}
-	text(c, "应用到").FontSize(12).TextColor(t.TextMuted)
-	ui.Row(c.Key("applyrow")).Gap(8).AlignItems(ui.Center).Children(func() {
-		selectControl(c.Key("applyto"), &s.applySel, opts).Label(tr(c, "应用到显示器")).Grow(1).Shrink(1)
-		if iconButton(c.Key("apply"), icCheck, "应用", true).Clicked() {
+	ui.Row(c.Key("applyrow")).Wrap().Gap(8).AlignItems(ui.Center).Children(func() {
+		eyebrow(c, tr(c, "应用到")).Shrink(0).Padding(0, 4, 0, 0)
+		selectControl(c.Key("applyto"), &s.applySel, opts).Label(tr(c, "应用到显示器")).Radius(999).Grow(1).Shrink(1).MinWidth(120).MaxWidth(260)
+		if iconButton(c.Key("apply"), icCheck, "应用", true).Radius(999).Padding(7, 18).Shrink(0).Shadow(0, 6, 16, 0, t.Accent.Alpha(0.35)).Clicked() {
 			if s.applySel == applyAllLabel {
 				s.ctl.AssignAll(it.ID)
 				c.Toast(tr(c, "已应用到所有显示器"))

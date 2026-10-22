@@ -39,7 +39,7 @@ func (s *Settings) perf(c *ui.Context, v app.View) {
 				for _, p := range profiles {
 					p := p
 					sel := cfg.Perf.Profile == p.id
-					b := ui.Column(c.Key("p"+p.id)).Grow(1).Basis(0).Padding(12).Gap(4).Radius(10).Border(1, t.Border).Cursor(ui.CursorPointer).Children(func() {
+					b := ui.Column(c.Key("p"+p.id)).Grow(1).Basis(0).Padding(14).Gap(4).Radius(14).Background(glass(t)).Border(1, hairline(t)).Cursor(ui.CursorPointer).Children(func() {
 						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 							text(c, p.name).Bold().FontSize(14).Grow(1)
 							if sel {

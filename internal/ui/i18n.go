@@ -31,6 +31,7 @@ var english = map[string]string{
 	"速度":        "Speed",
 	"详细信息":      "Details",
 	"目标显示器":     "Target display",
+	"壁纸组属性":     "Wallpaper properties",
 	"静音":        "Muted",
 	"跟随壁纸":      "Follow wallpaper",
 	"音量":        "Volume",

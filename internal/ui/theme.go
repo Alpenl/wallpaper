@@ -35,22 +35,26 @@ func (s *Settings) applyTheme(c *ui.Context, u config.UI) {
 	}
 	if s.theme == nil || s.themeKey != key {
 		var t ui.Theme
+		// 控件是半透明“磨砂”面：窗口底下铺着模糊的壁纸（ambient），控件透出它的色调。
+		// Background 保持不透明：菜单、对话框和弹出层用它做面板。
 		if dark {
 			t = *ui.DarkTheme()
-			t.Background = ui.Hex("#18181b")
-			t.Surface = ui.Hex("#27272a")
-			t.SurfaceHover = ui.Hex("#303034")
-			t.SurfacePressed = ui.Hex("#38383d")
-			t.Border = ui.Hex("#303034")
-			t.TextMuted = ui.Hex("#8e8e96")
+			t.Background = ui.Hex("#111115")
+			t.Surface = ui.RGBA(255, 255, 255, 0.07)
+			t.SurfaceHover = ui.RGBA(255, 255, 255, 0.11)
+			t.SurfacePressed = ui.RGBA(255, 255, 255, 0.15)
+			t.Border = ui.RGBA(255, 255, 255, 0.10)
+			t.Text = ui.Hex("#f4f4f5")
+			t.TextMuted = ui.Hex("#a1a1aa")
 		} else {
 			t = *ui.LightTheme()
-			t.Background = ui.Hex("#f7f7f5")
-			t.Surface = ui.Hex("#ffffff")
-			t.SurfaceHover = ui.Hex("#f0f0ed")
-			t.SurfacePressed = ui.Hex("#e7e7e4")
-			t.Border = ui.Hex("#e8e8e5")
-			t.TextMuted = ui.Hex("#71717a")
+			t.Background = ui.Hex("#f6f5f2")
+			t.Surface = ui.RGBA(255, 255, 255, 0.72)
+			t.SurfaceHover = ui.RGBA(255, 255, 255, 0.92)
+			t.SurfacePressed = ui.RGBA(0, 0, 0, 0.05)
+			t.Border = ui.RGBA(0, 0, 0, 0.08)
+			t.Text = ui.Hex("#18181b")
+			t.TextMuted = ui.Hex("#6b6b74")
 		}
 		a := accentColor(u.Accent)
 		t.Accent = a
@@ -58,22 +62,64 @@ func (s *Settings) applyTheme(c *ui.Context, u config.UI) {
 		t.AccentPressed = a.Mix(ui.Hex("#000000"), 0.12)
 		t.Focus = a.Alpha(0.6)
 		t.Selection = a.Alpha(0.25)
-		t.Radius = 8
+		t.Radius = 10
 		s.theme, s.themeKey = &t, key
 	}
 	c.SetTheme(s.theme)
 }
 
-func cardBg(t *ui.Theme) ui.Color {
+// ---- 设计令牌 ----
+// 视觉语言：模糊壁纸做环境底色 + 磨砂玻璃面板 + 细描边 + 大标题/小字距标签。
+
+// glass 是浮在环境底色上的面板。
+func glass(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.Hex("#202024")
+		return ui.RGBA(255, 255, 255, 0.055)
 	}
-	return ui.Hex("#ffffff")
+	return ui.RGBA(255, 255, 255, 0.62)
 }
 
-func sideBg(t *ui.Theme) ui.Color {
+// glassStrong 用于需要更实的面（底部 Dock、选中的标签）。
+func glassStrong(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.Hex("#141416")
+		return ui.RGBA(30, 30, 36, 0.78)
 	}
-	return ui.Hex("#f0f0ed")
+	return ui.RGBA(255, 255, 255, 0.86)
 }
+
+// hairline 是玻璃面板的 1px 描边。
+func hairline(t *ui.Theme) ui.Color {
+	if t.Dark {
+		return ui.RGBA(255, 255, 255, 0.09)
+	}
+	return ui.RGBA(0, 0, 0, 0.07)
+}
+
+// ambientVeil 盖在模糊壁纸上，让文字保持对比度。
+func ambientVeil(t *ui.Theme) ui.Color {
+	if t.Dark {
+		return ui.RGBA(10, 10, 14, 0.64)
+	}
+	return ui.RGBA(246, 245, 242, 0.72)
+}
+
+func softShadow(t *ui.Theme) ui.Color {
+	if t.Dark {
+		return ui.RGBA(0, 0, 0, 0.45)
+	}
+	return ui.RGBA(30, 30, 50, 0.16)
+}
+
+// eyebrow 是标题上方的小字标签（加大字距）。
+func eyebrow(c *ui.Context, label string) ui.Element {
+	return ui.Text(c, label).FontSize(11).LetterSpacing(1.2).Bold().TextColor(c.Theme().TextMuted).SingleLine().Ellipsis("…")
+}
+
+// display 是页面主标题。
+func display(c *ui.Context, label string, size float32) ui.Element {
+	return ui.Text(c, label).FontSize(size).Bold().LetterSpacing(-0.02 * size)
+}
+
+func cardBg(t *ui.Theme) ui.Color { return glass(t) }
+
+func sideBg(t *ui.Theme) ui.Color { return glassStrong(t) }
