@@ -59,7 +59,7 @@ func runUI(f *flags) int {
 	settings.Info = ui.Info{Version: version, Platform: runtime.GOOS + "/" + runtime.GOARCH, EncoderName: e.enc,
 		DataDir: filepath.Dir(e.paths.Logs), LogsDir: e.paths.Logs, SignedBuild: signedBuild == "1", UpdateKey: updatePub() != nil}
 	if runtime.GOOS != "darwin" {
-		settings.Info.MpvPath = e.mpvPath(e.store.Config)
+		settings.Info.MpvPath = e.mpvPath(e.configSnapshot())
 	}
 	sh := &ui.Shell{S: settings, OnQuit: quit}
 	e.app.OnChange(sh.Changed)
@@ -83,10 +83,14 @@ func runUI(f *flags) int {
 			mygo.Power.OnSuspend(sig(visibility.Suspend, true))
 			mygo.Power.OnResume(sig(visibility.Suspend, false))
 		}
-		first := !e.store.Config.Startup.Asked
-		if err := sh.Start(first || e.app.View().SafeMode); err != nil {
+		cfg := e.configSnapshot()
+		first := !cfg.Startup.Asked
+		if err := sh.Start(first || e.app.View().SafeMode || cfg.Startup.OpenSettings); err != nil {
 			e.log.Error("tray", "err", err)
 			sh.Open() // 没有托盘（例如部分 Linux 面板）时至少给窗口
+		}
+		if cfg.Update.AutoCheck && cfg.Update.FeedURL != "" && settings.Info.UpdateKey {
+			settings.CheckUpdates()
 		}
 		go func() { // 稳定运行 60 s 后确认本次更新（F-15）
 			select {
@@ -106,7 +110,7 @@ func runUI(f *flags) int {
 		e.log.Error("mygo", "err", err)
 		return 1
 	}
-	if relaunchAfterQuit {
+	if relaunchAfterQuit.Load() {
 		relaunch(e.exe)
 	}
 	return 0

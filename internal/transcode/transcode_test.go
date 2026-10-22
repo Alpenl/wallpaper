@@ -21,7 +21,7 @@ func TestDecide(t *testing.T) {
 		{media.Info{Kind: "video", Codec: "hevc", W: 3840, H: 2160, FPS: 30}, "darwin", None},
 		{media.Info{Kind: "video", Codec: "h264", W: 7680, H: 4320, FPS: 30}, "windows", Recommend},
 		{media.Info{Kind: "video", Codec: "h264", W: 1920, H: 1080, FPS: 120}, "linux", Recommend},
-		{media.Info{Kind: "video", Codec: "gif"}, "windows", None},
+		{media.Info{Kind: "video", Codec: "gif"}, "windows", Recommend},
 		{media.Info{Kind: "video", Codec: "gif"}, "darwin", Required},
 		{media.Info{Kind: "video", Codec: "vp9", Container: "webm"}, "darwin", Required},
 		{media.Info{Kind: "video", Codec: "av1"}, "windows", Recommend},
@@ -33,7 +33,7 @@ func TestDecide(t *testing.T) {
 			t.Errorf("%+v on %s: %v %v", c.in, c.goos, p.Action, p.Notes)
 		}
 	}
-	if p := Decide(&media.Info{Kind: "video", Codec: "h264", HasAudio: true}, "windows"); p.Action != None || len(p.Notes) != 1 {
+	if p := Decide(&media.Info{Kind: "video", Codec: "h264", HasAudio: true}, "windows"); p.Action != Recommend || len(p.Notes) != 1 {
 		t.Error(p)
 	}
 	if System("windows") != nil || System("linux") != nil {
@@ -49,7 +49,7 @@ func TestFFmpegEncoderReal(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "in.mp4")
 	if out, err := exec.Command("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=60:duration=2", "-f", "lavfi", "-i", "sine=duration=2", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", src).CombinedOutput(); err != nil {
-		t.Skip(string(out))
+		t.Fatal(string(out))
 	}
 	dst := filepath.Join(dir, "out"+ext)
 	if err := fn(context.Background(), src, dst); err != nil {
@@ -62,4 +62,18 @@ func TestFFmpegEncoderReal(t *testing.T) {
 	if s := strings.TrimSpace(string(out)); s != "video,30/1" {
 		t.Fatalf("want only video 30fps, got %q", s)
 	}
+	trace, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "info", "-i", dst, "-map", "0:v:0", "-c:v", "copy", "-bsf:v", "trace_headers", "-f", "null", "-").CombinedOutput()
+	if err != nil {
+		t.Fatal(err, string(trace))
+	}
+	idr := 0
+	for _, line := range strings.Split(string(trace), "\n") {
+		if strings.Contains(line, "nal_unit_type") && strings.HasSuffix(strings.TrimSpace(line), "= 5") {
+			idr++
+		}
+	}
+	if idr != 2 {
+		t.Fatalf("two-second GOP30 output must contain two IDR slices, got %d", idr)
+	}
+
 }

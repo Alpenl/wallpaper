@@ -28,7 +28,7 @@ func TestImportVideoFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	it := r.Item
-	if it.Type != "video" || it.Codec != "h264" || it.Transcode != "none" || it.Snapshot == "" || it.Title != "h264_audio" {
+	if it.Type != "video" || it.Codec != "h264" || it.Transcode != "recommended" || it.Snapshot == "" || it.Title != "h264_audio" {
 		t.Fatalf("%+v", it)
 	}
 	m, err := wpk.LoadDir(it.Dir)
@@ -111,6 +111,9 @@ func TestImportLively(t *testing.T) {
 		t.Fatal(err, r)
 	}
 	m, _ := wpk.LoadDir(r.Item.Dir)
+	if r.Item.Author != "a" || r.Item.Description != "d" || len(r.Item.Tags) != 1 || r.Item.Tags[0] != "x" || r.Item.Width != 64 || r.Item.SizeBytes <= 0 {
+		t.Fatalf("search metadata lost: %+v", r.Item)
+	}
 	if m.Author.Name != "a" || m.License != "MIT" || m.Origin.Kind != "lively" {
 		t.Fatalf("%+v", m)
 	}
@@ -190,5 +193,29 @@ func TestHelpers(t *testing.T) {
 	}
 	if (livelyInfo{Type: []byte("99")}).typeName() != "unknown" {
 		t.Fatal()
+	}
+}
+
+func TestUnsupportedWPKCannotReplaceExistingItem(t *testing.T) {
+	o := opts(t, "linux")
+	id := "3f2b8c1e-9a7d-4e2f-8b1a-0c6d5e4f3a21"
+	dir := filepath.Join(o.Library, id)
+	os.MkdirAll(dir, 0755)
+	keep := filepath.Join(dir, "keep")
+	os.WriteFile(keep, []byte("original"), 0600)
+	zp := filepath.Join(t.TempDir(), "web.wpk")
+	f, _ := os.Create(zp)
+	zw := zip.NewWriter(f)
+	for name, body := range map[string]string{"manifest.json": `{"format":"wpk","schema":1,"id":"` + id + `","version":1,"type":"web","entry":"index.html","title":{"en":"Web"},"web":{}}`, "preview.png": "PNG", "index.html": "<html/>"} {
+		w, _ := zw.Create(name)
+		w.Write([]byte(body))
+	}
+	zw.Close()
+	f.Close()
+	if _, err := Import(context.Background(), zp, o); err == nil {
+		t.Fatal("unsupported package accepted")
+	}
+	if b, err := os.ReadFile(keep); err != nil || string(b) != "original" {
+		t.Fatal("existing item changed", string(b), err)
 	}
 }

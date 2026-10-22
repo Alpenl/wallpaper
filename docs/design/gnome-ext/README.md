@@ -1,5 +1,7 @@
 # 最小 GNOME Shell 扩展（第 17 轮，GNOME 46–48）
 
+> **独立研究实验**：本目录不是 `internal/` 下的生产实现。下文旧实验结果保留其原始范围，不自动计入本轮产品验收；当前状态与模块测试范围见 [验证记录](../../VALIDATION.md)。
+
 目录：`wpd-shell@wpd.github.io/`（`metadata.json`、`extension.js`、`io.github.wpd.Shell1.xml`）。原型，未在真实 GNOME Shell 中运行过。
 
 ## 做了什么

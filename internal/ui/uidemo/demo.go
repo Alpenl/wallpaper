@@ -8,25 +8,31 @@ import (
 
 	"wpapp/internal/app"
 	"wpapp/internal/config"
+	"wpapp/internal/desktop"
+	"wpapp/internal/render"
+	"wpapp/internal/transcode"
 )
 
 // Ctl 实现 ui.Controller。
 type Ctl struct {
-	mu       sync.Mutex
-	V        app.View
-	Imported []string
-	ImportTo []string
-	Assigns  []string // "显示器=壁纸"，"*" 表示所有显示器
-	Removed  []string
-	Transc   []string
-	Nexts    int
-	ExitSafe bool
+	mu                 sync.Mutex
+	V                  app.View
+	Imported           []string
+	ImportTo           []string
+	Assigns            []string // "显示器=壁纸"，"*" 表示所有显示器
+	Removed            []string
+	Transc             []string
+	Nexts              int
+	ExitSafe           bool
+	independent        []app.DisplayView
+	independentDefault string
 }
 
 func (f *Ctl) View() app.View {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	v := f.V
+	v.Config = f.V.Config.Clone()
 	v.Library = append([]config.Item(nil), f.V.Library...)
 	v.Displays = append([]app.DisplayView(nil), f.V.Displays...)
 	return v
@@ -49,6 +55,14 @@ func (f *Ctl) SetPausedAll(b bool) {
 func (f *Ctl) Assign(d, id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.V.Layout == "span" {
+		f.V.Default = id
+		for i := range f.V.Displays {
+			f.V.Displays[i].ItemID = id
+		}
+		f.Assigns = append(f.Assigns, "span="+id)
+		return
+	}
 	if d == "" {
 		f.V.Default = id
 	}
@@ -149,13 +163,65 @@ func New(thumbs map[string]string) *Ctl {
 	cfg := config.Defaults()
 	cfg.Startup.Asked = true
 	return &Ctl{V: app.View{
-		Config: cfg, Library: lib, Default: "aurora", HasEncoder: true,
+		Capabilities: desktop.Caps{Spanning: true, Video: true, PerDisplay: true, ForegroundApp: true}, Config: cfg, Library: lib, Default: "aurora", HasEncoder: true,
+		Encoder:    transcode.Capabilities{Available: true, Strict: true, GIF: true, TargetSize: true, FPS30: true, RemovesAudio: true, Name: "Demo H.264"},
 		LastImport: "已导入「极光之夜」",
 		Power:      app.Power{OnBattery: false, Percent: 86},
 		Displays: []app.DisplayView{
-			{ID: "d1", Index: 1, Name: "DELL U2723QE", Friendly: "DELL U2723QE", Custom: true, W: 3840, H: 2160, X: 0, Y: 0, Primary: true, ItemID: "aurora", Level: "L0", State: "active", Backend: "mpv", HWDec: "d3d11va"},
-			{ID: "d2", Index: 2, Name: "显示器 2", Custom: true, W: 2560, H: 1600, X: 3840, Y: 560, ItemID: "city", Level: "L1", State: "active", Backend: "mpv", HWDec: "d3d11va", Reasons: "Fullscreen"},
+			{Options: config.DisplayOptions{Fit: "fill", Speed: 1}, Playback: render.Capabilities{Fit: true, Speed: true, Audio: true, Scale: true}, ID: "d1", Index: 1, Name: "DELL U2723QE", Friendly: "DELL U2723QE", Custom: true, W: 3840, H: 2160, X: 0, Y: 0, Primary: true, ItemID: "aurora", Level: "L0", State: "active", Backend: "mpv", HWDec: "d3d11va"},
+			{Options: config.DisplayOptions{Fit: "fill", Speed: 1}, Playback: render.Capabilities{Fit: true, Speed: true, Audio: true, Scale: true}, ID: "d2", Index: 2, Name: "显示器 2", Custom: true, W: 2560, H: 1600, X: 3840, Y: 560, ItemID: "city", Level: "L1", State: "active", Backend: "mpv", HWDec: "d3d11va", Reasons: "Fullscreen"},
 		},
 		Transcoding: map[string]string{},
 	}}
+}
+
+func (f *Ctl) SetDisplayOptions(id string, options config.DisplayOptions) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.V.Displays {
+		if f.V.Layout == "span" {
+			f.V.Displays[i].Options.Fit, f.V.Displays[i].Options.Speed = options.Fit, options.Speed
+		}
+		if f.V.Displays[i].ID == id {
+			f.V.Displays[i].Options = options
+			if options.Paused {
+				f.V.Displays[i].Level, f.V.Displays[i].Reasons = "L1", "User"
+			} else {
+				f.V.Displays[i].Level, f.V.Displays[i].Reasons = "L0", ""
+			}
+		}
+	}
+}
+func (f *Ctl) RefreshStorage() {}
+func (f *Ctl) ClearCache()     {}
+
+// SetLayout mirrors the production control's retained independent assignments.
+func (f *Ctl) SetLayout(layout, itemID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if layout == "span" && f.V.Capabilities.Spanning {
+		if f.V.Layout != "span" {
+			f.independent = append([]app.DisplayView(nil), f.V.Displays...)
+			f.independentDefault = f.V.Default
+		}
+		f.V.Layout = "span"
+		f.V.Default = itemID
+		for i := range f.V.Displays {
+			f.V.Displays[i].ItemID = itemID
+			f.V.Displays[i].Custom = false
+		}
+	} else if layout == "independent" {
+		if f.independent != nil {
+			for i := range f.V.Displays {
+				for _, old := range f.independent {
+					if old.ID == f.V.Displays[i].ID {
+						f.V.Displays[i].ItemID, f.V.Displays[i].Custom = old.ItemID, old.Custom
+						f.V.Displays[i].Options.Fit, f.V.Displays[i].Options.Speed = old.Options.Fit, old.Options.Speed
+					}
+				}
+			}
+			f.V.Default = f.independentDefault
+		}
+		f.V.Layout = "independent"
+	}
 }

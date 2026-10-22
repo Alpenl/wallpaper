@@ -36,15 +36,19 @@ type Options struct {
 }
 
 type Host struct {
-	o      Options
-	log    *slog.Logger
-	c      *xgb.Conn
-	scr    *xproto.ScreenInfo
-	events chan desktop.Event
-	stop   chan struct{}
-	mu     sync.Mutex
-	surfs  map[xproto.Window]bool
-	once   sync.Once
+	o                   Options
+	log                 *slog.Logger
+	c                   *xgb.Conn
+	scr                 *xproto.ScreenInfo
+	events              chan desktop.Event
+	stop                chan struct{}
+	mu                  sync.Mutex
+	surfs               map[xproto.Window]bool
+	once                sync.Once
+	foreground          desktop.ForegroundTracker
+	foregroundSupported bool
+	foregroundAtoms     foregroundAtoms
+	foregroundHostname  string
 }
 
 func New(o Options) *Host {
@@ -67,8 +71,9 @@ func (h *Host) Start() error {
 	}
 	h.c = c
 	h.scr = xproto.Setup(c).DefaultScreen(c)
+	h.initForeground()
 	go h.drain()
-	go h.pollBattery()
+	go h.pollSignals()
 	return nil
 }
 
@@ -84,27 +89,39 @@ func (h *Host) drain() {
 	}
 }
 
-func (h *Host) emit(e desktop.Event) {
+func (h *Host) emit(e desktop.Event) bool {
 	select {
 	case h.events <- e:
+		return true
 	default:
+		return false
 	}
 }
 
-// pollBattery：任一 type=Battery 的 status=Discharging 视为电池供电。
-func (h *Host) pollBattery() {
+// pollSignals samples foreground identity every second and battery every five
+// seconds. Keeping one probe loop avoids extra timers or child processes.
+func (h *Host) pollSignals() {
 	last, lastPct := false, -2
-	t := time.NewTicker(5 * time.Second)
+	var nextBattery time.Time
+	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	for {
-		on, pct := ReadBattery(h.o.PowerSupplyDir)
-		if on != last {
-			last = on
-			h.emit(desktop.Event{Kind: desktop.EventSignal, Reason: visibility.Battery, Active: on, Source: "sysfs"})
+		var executable string
+		if h.foregroundSupported {
+			executable = h.foregroundExecutable()
 		}
-		if pct != lastPct {
-			lastPct = pct
-			h.emit(desktop.Event{Kind: desktop.EventBattery, Percent: pct, Source: "sysfs"})
+		h.foreground.Update(executable, "x11-ewmh", h.emit)
+		if now := time.Now(); !now.Before(nextBattery) {
+			nextBattery = now.Add(5 * time.Second)
+			on, pct := ReadBattery(h.o.PowerSupplyDir)
+			if on != last {
+				last = on
+				h.emit(desktop.Event{Kind: desktop.EventSignal, Reason: visibility.Battery, Active: on, Source: "sysfs"})
+			}
+			if pct != lastPct {
+				lastPct = pct
+				h.emit(desktop.Event{Kind: desktop.EventBattery, Percent: pct, Source: "sysfs"})
+			}
 		}
 		select {
 		case <-h.stop:
@@ -229,7 +246,9 @@ func (h *Host) Health() error {
 }
 
 func (h *Host) Events() <-chan desktop.Event { return h.events }
-func (h *Host) Caps() desktop.Caps           { return desktop.Caps{Video: true} }
+func (h *Host) Caps() desktop.Caps {
+	return desktop.Caps{Video: true, ForegroundApp: h.foregroundSupported}
+}
 
 // SetSystemWallpaper：GNOME gsettings（尽力而为；没有 gsettings 时返回错误，app 只记日志）。
 func (h *Host) SetSystemWallpaper(_ desktop.DisplayID, path string) error {

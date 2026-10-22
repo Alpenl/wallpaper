@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -24,6 +25,11 @@ func (s *Settings) importFiles() {
 
 func (s *Settings) library(c *ui.Context, v app.View) {
 	t := c.Theme()
+	// Only clear selection after a refreshed snapshot confirms removal, never
+	// merely because an asynchronous delete request was submitted or rejected.
+	if s.selID != "" && s.itemByID(v, s.selID) == nil {
+		s.selID, s.confirmRm = "", false
+	}
 	items := s.filtered(v)
 	// 选中项跟随 id（筛选、排序变化后仍选中同一张）
 	s.gridSel = -1
@@ -35,57 +41,47 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 	inUse := map[string][]string{}
 	for _, d := range v.Displays {
 		if d.ItemID != "" {
-			inUse[d.ItemID] = append(inUse[d.ItemID], dispLabel(d))
+			inUse[d.ItemID] = append(inUse[d.ItemID], dispLabel(c, d))
 		}
 	}
 	drop := ui.Column(c.Key("libdrop")).Grow(1).MinHeight(0).Children(func() {
 		// 标题栏：搜索、筛选、视图、导入
 		ui.Row(c.Key("hdr")).Padding(22, 28, 10, 28).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Grow(1).Children(func() {
-				ui.Text(c, "壁纸库").Bold().FontSize(22)
-				ui.Textf(c, "共 %d 张壁纸 · 拖入文件即可导入", len(v.Library)).FontSize(13).TextColor(t.TextMuted)
+				text(c, "壁纸库").Bold().FontSize(22)
+				textf(c, "共 %d 张壁纸 · 拖入文件即可导入", len(v.Library)).FontSize(13).TextColor(t.TextMuted)
 			})
-			ui.TextInput(c.Key("q"), &s.query).Placeholder("搜索名称或来源").Label("搜索壁纸").Width(200)
+
 			view := 0
 			if v.Config.UI.LibraryView == "list" {
 				view = 1
 			}
-			if ui.Segmented(c.Key("view"), &view, "网格", "列表").Label("视图").Changed() {
+			if segmented(c.Key("view"), &view, "网格", "列表").Label(tr(c, "视图")).Changed() {
 				lv := "grid"
 				if view == 1 {
 					lv = "list"
 				}
 				s.ctl.UpdateConfig(func(x *config.Config) { x.UI.LibraryView = lv })
 			}
-			ui.Button(c.Key("more"), "更多导入").Menu(func(m *ui.Menu) {
-				if m.Item("导入 Lively 壁纸包（.zip）…").Disabled(s.PickFiles == nil).Chosen() {
+			button(c.Key("more"), "更多导入").Menu(func(m *ui.Menu) {
+				if m.Item(tr(c, "导入 Lively 壁纸包（.zip）…")).Disabled(s.PickFiles == nil).Chosen() {
 					s.importFiles()
 				}
-				if m.Item("导入 Wallpaper Engine 壁纸文件夹…").Chosen() {
-					if s.PickFolder != nil {
-						if d := s.PickFolder(); d != "" {
-							s.importPath(d)
-						}
-					} else {
-						s.wip(c, "选择文件夹导入")
-					}
+				if m.Item(tr(c, "导入文件夹…")).Disabled(s.PickFolder == nil || v.Importing).Chosen() {
+					s.importFolder()
 				}
 				m.Separator()
-				if m.Item("新建网页壁纸（v1）").Chosen() {
-					s.wip(c, "网页壁纸")
+				if m.Item(tr(c, "支持的格式与能力说明")).Chosen() {
+					s.page = pgAbout
 				}
-				if m.Item("新建 Shader 壁纸（v1）").Chosen() {
-					s.wip(c, "Shader 壁纸")
-				}
-				if m.Item("从创意工坊下载（v1）").Chosen() {
-					s.wip(c, "创意工坊")
-				}
+
 			})
 			if iconButton(c.Key("imp"), icPlus, "导入壁纸", true).Disabled(s.PickFiles == nil || v.Importing).Clicked() {
 				s.importFiles()
 			}
 		})
 		ui.Row(c.Key("filters")).Padding(0, 28, 12, 28).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c.Key("q"), &s.query).Placeholder(tr(c, "搜索名称、标签、作者")).Label(tr(c, "搜索壁纸")).Width(180)
 			labels := []string{"全部", "视频", "图片", "建议转码"}
 			for i, l := range labels {
 				n := 0
@@ -95,7 +91,7 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 						n++
 					}
 				}
-				b := ui.Button(c.Key("f"+itoa(i)), fmt.Sprintf("%s %d", l, n)).Radius(999).Padding(3, 12).FontSize(12)
+				b := button(c.Key("f"+itoa(i)), fmt.Sprintf("%s %d", tr(c, l), n)).Radius(999).Padding(3, 12).FontSize(12)
 				if s.filter == i {
 					b.Background(t.Accent.Alpha(0.14)).TextColor(t.Accent).Border(1, t.Accent.Alpha(0.4))
 				}
@@ -103,16 +99,19 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 					s.filter = i
 				}
 			}
-			ui.Spacer(c)
-			if v.Importing || v.LastImport != "" {
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					if v.Importing {
-						ui.Spinner(c).Size(14, 14)
-					}
-					ui.Text(c, v.LastImport).FontSize(12).TextColor(t.TextMuted).SingleLine().Ellipsis("…").MaxWidth(420)
-				})
-			}
 		})
+		if v.Importing || v.LastImport != "" {
+			ui.Row(c.Key("importStatus")).Padding(0, 28, 10, 28).Gap(6).AlignItems(ui.Center).Children(func() {
+				if v.Importing {
+					ui.Spinner(c).Size(14, 14)
+				}
+				text(c, v.LastImport).FontSize(12).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).Shrink(1)
+				if v.ImportQueued > 0 {
+					textf(c, "队列中还有 %d 个请求", v.ImportQueued).FontSize(12).TextColor(t.TextMuted)
+				}
+			})
+		}
+
 		if len(v.Library) == 0 {
 			s.emptyLibrary(c, v)
 			return
@@ -122,7 +121,7 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 				if len(items) == 0 {
 					ui.Column(c).Grow(1).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 						ui.Icon(c, icSearch).FontSize(28).TextColor(t.TextMuted)
-						ui.Text(c, "没有符合条件的壁纸").TextColor(t.TextMuted)
+						text(c, "没有符合条件的壁纸").TextColor(t.TextMuted)
 					})
 					return
 				}
@@ -137,8 +136,8 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 			} else {
 				ui.Column(c.Key("nodetail")).Width(300).Margin(0, 28, 28, 16).Padding(20).Radius(12).Background(cardBg(t)).Border(1, t.Border).AlignItems(ui.Center).Justify(ui.Center).Gap(8).Children(func() {
 					ui.Icon(c, icImage).FontSize(28).TextColor(t.TextMuted)
-					ui.Text(c, "选择一张壁纸查看详情").TextColor(t.TextMuted)
-					ui.Text(c, "双击可应用到当前显示器").FontSize(12).TextColor(t.TextMuted)
+					text(c, "选择一张壁纸查看详情").TextColor(t.TextMuted)
+					text(c, "双击可应用到当前显示器").FontSize(12).TextColor(t.TextMuted)
 				})
 			}
 		})
@@ -157,14 +156,14 @@ func (s *Settings) emptyLibrary(c *ui.Context, v app.View) {
 		ui.Box(c).Size(64, 64).Radius(16).Gradient(t.Accent, ui.Hex("#22d3ee"), 135).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ui.Icon(c, icImport).FontSize(30).TextColor(ui.Hex("#ffffff"))
 		})
-		ui.Text(c, "把视频、GIF 或图片拖到这里").Bold().FontSize(17)
-		ui.Text(c, "支持 mp4 / mov / m4v / webm / gif / png / jpg / webp，以及 .wpk、Lively 壁纸包和 Wallpaper Engine 视频壁纸").FontSize(12).TextColor(t.TextMuted)
+		text(c, "把视频、GIF 或图片拖到这里").Bold().FontSize(17)
+		text(c, "支持 mp4 / mov / m4v / webm / gif / png / jpg / webp，以及 .wpk、Lively 壁纸包和 Wallpaper Engine 视频壁纸").FontSize(12).TextColor(t.TextMuted)
 		ui.Row(c).Gap(8).Padding(8, 0, 0, 0).Children(func() {
 			if iconButton(c.Key("imp2"), icPlus, "选择文件…", true).Disabled(s.PickFiles == nil).Clicked() {
 				s.importFiles()
 			}
-			if iconButton(c.Key("disc2"), icDiscover, "浏览创意工坊", false).Clicked() {
-				s.wip(c, "创意工坊")
+			if iconButton(c.Key("folder2"), icFolder, "导入文件夹…", false).Disabled(s.PickFolder == nil).Clicked() {
+				s.importFolder()
 			}
 		})
 	})
@@ -194,11 +193,11 @@ func (s *Settings) libGrid(c *ui.Context, v app.View, items []config.Item, inUse
 			})
 			ui.Column(c).Padding(8, 10).Gap(2).Children(func() {
 				ui.Text(c, it.Title).Bold().FontSize(13).SingleLine().Ellipsis("…")
-				meta := originNames[it.Origin]
+				meta := tr(c, originNames[it.Origin])
 				if it.Codec != "" {
 					meta = strings.ToUpper(it.Codec) + " · " + meta
 				}
-				ui.Text(c, meta).FontSize(11).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+				text(c, meta).FontSize(11).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 			})
 		})
 		if sel {
@@ -247,11 +246,11 @@ func (s *Settings) libList(c *ui.Context, v app.View, items []config.Item, inUse
 					ui.Box(c).Width(96).Radius(6).Clip().Children(func() { s.preview(c, it, 54) })
 					ui.Column(c).Grow(1).Shrink(1).Gap(2).Children(func() {
 						ui.Text(c, it.Title).Bold().FontSize(13).SingleLine().Ellipsis("…")
-						meta := typeNames[it.Type] + " · " + originNames[it.Origin]
+						meta := tr(c, typeNames[it.Type]) + " · " + tr(c, originNames[it.Origin])
 						if it.Codec != "" {
 							meta += " · " + strings.ToUpper(it.Codec)
 						}
-						ui.Text(c, meta).FontSize(12).TextColor(t.TextMuted)
+						text(c, meta).FontSize(12).TextColor(t.TextMuted)
 					})
 					if it.Transcode == "recommended" {
 						chip(c, "建议转码", t.Warning)
@@ -294,7 +293,7 @@ func (s *Settings) detail(c *ui.Context, v app.View, it config.Item, using []str
 					}
 				})
 				if len(using) > 0 {
-					ui.Text(c, "正在用于："+strings.Join(using, "、")).FontSize(12).TextColor(t.Accent)
+					text(c, "正在用于："+strings.Join(using, "、")).FontSize(12).TextColor(t.Accent)
 				}
 				s.applyBox(c, v, it)
 				// 转码建议（F-07）
@@ -303,27 +302,36 @@ func (s *Settings) detail(c *ui.Context, v app.View, it config.Item, using []str
 					ui.Column(c.Key("tc")).Gap(6).Padding(10).Radius(8).Background(t.Warning.Alpha(0.10)).Border(1, t.Warning.Alpha(0.3)).Children(func() {
 						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 							ui.Icon(c, icWand).FontSize(14).TextColor(t.Warning)
-							ui.Text(c, "建议优化转码").Bold().FontSize(13)
+							text(c, "建议优化转码").Bold().FontSize(13)
 						})
-						note := it.Note
+						note := mediaNote(c.Locale(), it.Note)
 						if note == "" {
-							note = "这个文件的编码或规格不利于省电播放。"
+							note = tr(c, "这个文件的编码或规格不利于省电播放。")
 						}
-						ui.Text(c, note+" 转码为 30 fps、去音轨、每秒一个关键帧，播放更省电、循环更顺滑。原文件保留。").FontSize(12).TextColor(t.TextMuted).Wrap()
+						// Source/backend notes remain verbatim; the application-owned
+						// promise depends on the encoder's verified capabilities.
+						ui.Text(c, note).FontSize(12).TextColor(t.TextMuted).Wrap()
+						hint := "标准转换将验证 30 fps、无音轨和目标尺寸；原文件保留。"
+						if !v.Encoder.Strict {
+							hint = "兼容转换能力取决于编码器，不保证固定帧率或去音轨；原文件保留。"
+						}
+						text(c, hint).FontSize(12).TextColor(t.TextMuted).Wrap()
 						switch {
+						case st == "等待转码…":
+							text(c, "已加入转码队列，等待当前任务完成。").FontSize(12).TextColor(t.TextMuted).Wrap()
 						case st == "正在转码…":
 							ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 								ui.Spinner(c).Size(14, 14)
-								ui.Text(c, "正在转码，可以继续使用其他功能…").FontSize(12)
+								text(c, "正在转码，可以继续使用其他功能…").FontSize(12)
 							})
 						case !v.HasEncoder:
-							ui.Text(c, s.noEncoderHint()).FontSize(12).TextColor(t.Warning).Wrap()
-							if ui.Button(c.Key("tcset"), "设置编码器…").Clicked() {
+							text(c, s.noEncoderHint()).FontSize(12).TextColor(t.Warning).Wrap()
+							if button(c.Key("tcset"), "设置编码器…").Clicked() {
 								s.page = pgPerf
 							}
 						default:
 							if st != "" {
-								ui.Text(c, st).FontSize(12).TextColor(t.Danger).Wrap()
+								text(c, st).FontSize(12).TextColor(t.Danger).Wrap()
 							}
 							if iconButton(c.Key("tcgo"), icWand, "一键优化", false).Clicked() {
 								s.ctl.Transcode(it.ID)
@@ -334,41 +342,62 @@ func (s *Settings) detail(c *ui.Context, v app.View, it config.Item, using []str
 				ui.Column(c.Key("meta")).Gap(0).Children(func() {
 					kv := func(k, val string) {
 						ui.Row(c).Gap(8).Padding(6, 0).BorderWidth(0, 0, 1, 0).BorderColor(t.Border.Alpha(0.6)).Children(func() {
-							ui.Text(c, k).FontSize(12).TextColor(t.TextMuted).Width(64)
+							text(c, k).FontSize(12).TextColor(t.TextMuted).Width(64)
 							ui.Text(c, val).FontSize(12).Grow(1).Wrap()
 						})
 					}
-					kv("来源", originNames[it.Origin])
+					kv("来源", tr(c, originNames[it.Origin]))
+					if it.Author != "" {
+						kv("作者", it.Author)
+					}
+					if it.Width > 0 && it.Height > 0 {
+						kv("分辨率", fmt.Sprintf("%d × %d", it.Width, it.Height))
+					}
+					if it.SizeBytes > 0 {
+						kv("文件大小", humanBytes(it.SizeBytes))
+					}
+					if len(it.Colors) > 0 {
+						kv("颜色", strings.Join(it.Colors, " · "))
+					}
+					if len(it.Tags) > 0 {
+						kv("标签", strings.Join(it.Tags, " · "))
+					}
+					if it.Description != "" {
+						kv("简介", it.Description)
+					}
 					kv("导入时间", it.AddedAt.Local().Format("2006-01-02 15:04"))
 					kv("入口文件", it.Entry)
 					if it.Note != "" && it.Transcode != "recommended" {
-						kv("备注", it.Note)
+						kv("备注", mediaNote(c.Locale(), it.Note))
 					}
 				})
 				ui.Row(c.Key("acts")).Gap(6).Children(func() {
-					if iconButton(c.Key("props"), icSliders, "属性", false).Grow(1).Clicked() {
-						s.wip(c, "壁纸属性面板（速度、填充方式）")
+					if iconButton(c.Key("props"), icSliders, "屏幕属性", false).Grow(1).Clicked() {
+						s.page = pgDisplays
 					}
 					if iconButton(c.Key("reveal"), icFolder, "打开位置", false).Grow(1).Disabled(s.ShowInFolder == nil).Clicked() {
-						s.ShowInFolder(it.Dir)
+						s.ShowInFolder(filepath.Join(it.Dir, it.Entry))
 					}
 				})
-				if iconButton(c.Key("rm"), icTrash, "从壁纸库删除", false).FillWidth().TextColor(t.Danger).Clicked() {
+				if iconButton(c.Key("rm"), icTrash, "从壁纸库删除", false).FillWidth().TextColor(t.Danger).Disabled(v.Importing).Clicked() {
 					s.confirmRm = true
 				}
 			})
 		})
 	})
-	if ui.AlertDialog(c.Key("rmdlg"), &s.confirmRm, "删除「"+it.Title+"」？", "会同时删除导入时复制的文件和缩略图，使用它的显示器会恢复系统壁纸。此操作不能撤销。", "取消", "删除") == 1 {
+	if alertDialog(c.Key("rmdlg"), &s.confirmRm, fmt.Sprintf(tr(c, "删除「%s」？"), it.Title), "会同时删除导入时复制的文件和缩略图，使用它的显示器会恢复系统壁纸。此操作不能撤销。", "取消", "删除") == 1 {
+		if v.Importing {
+			c.Toast(tr(c, "请等待导入完成后再删除。"))
+			return
+		}
 		s.ctl.Remove(it.ID)
-		s.selID = ""
-		c.Toast("已删除「" + it.Title + "」")
+		c.Toast(tr(c, "删除请求已提交"))
 	}
 }
 
 func (s *Settings) noEncoderHint() string {
 	if s.GOOS == "darwin" {
-		return "没有找到系统自带的 /usr/bin/avconvert。"
+		return "未找到可用编码器。macOS 默认使用系统 AVFoundation；可选配置 ffmpeg，avconvert 仅作有限兼容兜底。"
 	}
 	return "没有找到 ffmpeg。本应用不附带编码器（许可证原因），请自行安装 ffmpeg 并加入 PATH，或在“播放与性能”里指定路径。"
 }
@@ -380,7 +409,7 @@ func (s *Settings) applyCurrent(c *ui.Context, v app.View, itemID string) {
 		return
 	}
 	s.ctl.Assign(d.ID, itemID)
-	c.Toast("已应用到 " + dispLabel(*d))
+	c.Toast(tr(c, "已应用到 ") + dispLabel(c, *d))
 }
 
 const applyAllLabel = "所有显示器"
@@ -389,15 +418,15 @@ const applyAllLabel = "所有显示器"
 func (s *Settings) applyBox(c *ui.Context, v app.View, it config.Item) {
 	t := c.Theme()
 	if len(v.Displays) == 0 {
-		ui.Text(c, "没有检测到显示器").FontSize(12).TextColor(t.TextMuted)
+		text(c, "没有检测到显示器").FontSize(12).TextColor(t.TextMuted)
 		return
 	}
 	opts := make([]string, 0, len(v.Displays)+1)
 	ids := map[string]string{}
 	for _, d := range v.Displays {
-		l := dispLabel(d)
+		l := dispLabel(c, d)
 		if d.Primary {
-			l += "（主屏）"
+			l += tr(c, "（主屏）")
 		}
 		opts = append(opts, l)
 		ids[l] = d.ID
@@ -417,17 +446,17 @@ func (s *Settings) applyBox(c *ui.Context, v app.View, it config.Item) {
 			}
 		}
 	}
-	ui.Text(c, "应用到").FontSize(12).TextColor(t.TextMuted)
+	text(c, "应用到").FontSize(12).TextColor(t.TextMuted)
 	ui.Row(c.Key("applyrow")).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Select(c.Key("applyto"), &s.applySel, opts).Label("应用到显示器").Grow(1).Shrink(1)
+		selectControl(c.Key("applyto"), &s.applySel, opts).Label(tr(c, "应用到显示器")).Grow(1).Shrink(1)
 		if iconButton(c.Key("apply"), icCheck, "应用", true).Clicked() {
 			if s.applySel == applyAllLabel {
 				s.ctl.AssignAll(it.ID)
-				c.Toast("已应用到所有显示器")
+				c.Toast(tr(c, "已应用到所有显示器"))
 			} else if id := ids[s.applySel]; id != "" {
 				s.ctl.Assign(id, it.ID)
 				s.dispSel = id
-				c.Toast("已应用到 " + strings.TrimSuffix(s.applySel, "（主屏）"))
+				c.Toast(tr(c, "已应用到 ") + strings.TrimSuffix(s.applySel, tr(c, "（主屏）")))
 			}
 		}
 	})

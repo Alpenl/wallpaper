@@ -1,15 +1,10 @@
 // Package transcode 是 06 章 6.4 转码规范在 MVP 里的落地：判断导入的素材能否直接播放，
-// 需要转码时只调用系统编码器（macOS：/usr/bin/avconvert，基于 AVFoundation/VideoToolbox），
-// 不捆绑任何 GPL 编码器（11 章 11.5）。Windows/Linux 上调用用户自己安装的 ffmpeg（不随安装包分发，见 Encoder）。
+// 不捆绑编码器：严格转码调用用户安装的 ffmpeg，macOS 使用 VideoToolbox，
+// Windows 使用 Media Foundation；macOS avconvert 仅作为明确标示能力受限的系统回退。
 package transcode
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"time"
 
 	"wpapp/internal/media"
 )
@@ -32,6 +27,9 @@ type Plan struct {
 // Decide 按平台判断。goos 取 runtime.GOOS。
 func Decide(in *media.Info, goos string) Plan {
 	p := Plan{Action: None}
+	if in == nil {
+		return Plan{Action: Required, Notes: []string{"无法探测媒体格式"}}
+	}
 	if in.Kind == "image" {
 		return p
 	}
@@ -49,6 +47,8 @@ func Decide(in *media.Info, goos string) Plan {
 	case "gif":
 		if goos == "darwin" {
 			add(Required, "AVPlayer 不能播放 GIF")
+		} else {
+			add(Recommend, "GIF 应转为视频；没有兼容编码器时只能由播放器直接解码")
 		}
 	case "prores":
 		if goos != "darwin" {
@@ -64,86 +64,11 @@ func Decide(in *media.Info, goos string) Plan {
 	if in.W > 3840 || in.H > 2160 {
 		add(Recommend, fmt.Sprintf("分辨率 %dx%d 超过 4K", in.W, in.H))
 	}
-	if in.FPS > 60.5 {
-		add(Recommend, fmt.Sprintf("帧率 %.0f 超过 60", in.FPS))
+	if in.FPS > 30.5 {
+		add(Recommend, fmt.Sprintf("帧率 %.0f 超过优化目标 30", in.FPS))
 	}
 	if in.HasAudio {
-		p.Notes = append(p.Notes, "含音轨：播放时静音；06 章建议去掉音轨以利无缝循环")
+		add(Recommend, "含音轨：建议去掉音轨以利无缝循环")
 	}
 	return p
-}
-
-// ErrNoEncoder 表示本平台没有可用的系统编码器挂钩。
-var ErrNoEncoder = errors.New("transcode: no system encoder available on this platform in the MVP; please convert to H.264 MP4 first")
-
-// AvconvertPath 是 macOS 自带的 avconvert。
-const AvconvertPath = "/usr/bin/avconvert"
-
-// System 返回本平台的系统编码器调用；没有时返回 nil。
-func System(goos string) func(ctx context.Context, src, dst string) error {
-	if goos != "darwin" {
-		return nil
-	}
-	if _, err := os.Stat(AvconvertPath); err != nil {
-		return nil
-	}
-	return func(ctx context.Context, src, dst string) error {
-		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-		defer cancel()
-		// 未在真机验证：preset 名取自 avconvert --help 的 HEVC 预设，输出 .mov
-		cmd := exec.CommandContext(ctx, AvconvertPath, "--preset", "PresetHEVCHighestQuality", "--source", src, "--output", dst, "--replace")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("avconvert: %v: %s", err, out)
-		}
-		return nil
-	}
-}
-
-// FFmpegArgs 是 06 章 6.4 的转码参数：H.264 yuv420p、30 fps、去音轨、每秒一个 IDR（无缝循环）、宽度不超过 maxW。
-// 不捆绑 ffmpeg（11 章 11.5）：只调用用户自己安装、在 PATH 里或 config.render.ffmpegPath 指定的 ffmpeg。
-func FFmpegArgs(src, dst string, maxW int) []string {
-	if maxW <= 0 {
-		maxW = 3840
-	}
-	return []string{"-hide_banner", "-loglevel", "error", "-y", "-i", src, "-an", "-sn", "-dn",
-		"-vf", fmt.Sprintf("fps=30,scale='min(%d,iw)':-2:flags=bicubic", maxW),
-		"-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
-		"-g", "30", "-keyint_min", "30", "-sc_threshold", "0", "-movflags", "+faststart", dst}
-}
-
-// Encoder 选出本机可用的编码器：macOS 用系统 avconvert；其余平台找用户安装的 ffmpeg（ffmpegPath 优先，其次 PATH）。
-// 返回编码函数、产物扩展名和显示名；都没有时 fn 为 nil。
-func Encoder(goos, ffmpegPath string) (fn func(ctx context.Context, src, dst string) error, ext, name string) {
-	if f := System(goos); f != nil {
-		return f, ".mov", "avconvert（系统自带）"
-	}
-	p := ffmpegPath
-	if p == "" {
-		if lp, err := exec.LookPath("ffmpeg"); err == nil {
-			p = lp
-		}
-	}
-	if p == "" {
-		return nil, "", ""
-	}
-	if _, err := os.Stat(p); err != nil {
-		return nil, "", ""
-	}
-	return func(ctx context.Context, src, dst string) error {
-		ctx, cancel := context.WithTimeout(ctx, 60*time.Minute)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, p, FFmpegArgs(src, dst, 3840)...)
-		hide(cmd)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("ffmpeg: %v: %s", err, tail(out, 300))
-		}
-		return nil
-	}, ".mp4", "ffmpeg（用户安装）"
-}
-
-func tail(b []byte, n int) string {
-	if len(b) > n {
-		b = b[len(b)-n:]
-	}
-	return string(b)
 }

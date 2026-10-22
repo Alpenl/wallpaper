@@ -1,5 +1,7 @@
 # 02 总体架构
 
+> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
+
 > 本章是实现的规格：进程模型、IPC 协议、崩溃恢复、Go 包结构、接口签名。暂停状态机见 [07](07-pause-power-state-machine.md)；配置、日志、遥测见 [16](16-config-logging-telemetry.md)。
 
 ## 2.1 关键决策：MyGo 只负责控制面（ADR-001）

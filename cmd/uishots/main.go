@@ -22,6 +22,9 @@ import (
 
 func main() {
 	out := flag.String("out", "ui_screens", "输出目录")
+	lang := flag.String("lang", "zh-CN", "界面语言（zh-CN / en）")
+	width := flag.Int("width", 1120, "窗口宽度")
+	height := flag.Int("height", 740, "窗口高度")
 	goos := flag.String("goos", "windows", "模拟的平台（影响平台相关设置）")
 	scale := flag.Float64("scale", 1.5, "像素缩放")
 	flag.Parse()
@@ -36,17 +39,16 @@ func main() {
 		thumbs[id] = p
 	}
 	shots := []struct{ name, page, sel string }{
-		{"01-library", "library", "ocean"}, {"02-displays", "displays", ""}, {"02b-displays-rename", "displays", ""}, {"02c-displays-alias", "displays", ""}, {"03-discover", "discover", ""},
-		{"04-perf", "perf", ""}, {"05-pause", "pause", ""}, {"06-power", "power", ""}, {"07-look", "look", ""},
-		{"08-startup", "startup", ""}, {"09-diag", "diag", ""}, {"10-about", "about", ""},
+		{"01-library", "library", "ocean"}, {"02-displays", "displays", ""}, {"02b-displays-rename", "displays", ""}, {"02c-displays-alias", "displays", ""},
+		{"03-playback", "playback", ""}, {"04-rules", "rules", ""}, {"05-general", "general", ""}, {"06-versions", "versions", ""}, {"07-about", "about", ""},
 	}
 	for _, mode := range []string{"light", "dark"} {
 		for _, sh := range shots {
 			ctl := uidemo.New(thumbs)
 			m := mode
-			ctl.UpdateConfig(func(c *config.Config) { c.UI.Theme = m })
+			ctl.UpdateConfig(func(c *config.Config) { c.UI.Theme = m; c.UI.Lang = *lang })
 			s := ui.NewSettings(ctl, *goos)
-			s.Info = ui.Info{Version: "0.2.1-mvp", Platform: *goos + "/amd64", EncoderName: "ffmpeg（用户安装）", MpvPath: `C:\Users\me\AppData\Local\Programs\Wallpaper\mpv\mpv.exe`,
+			s.Info = ui.Info{Version: "ui-development", Platform: *goos + "/amd64", EncoderName: "ffmpeg（用户安装）", MpvPath: `C:\Users\me\AppData\Local\Programs\Wallpaper\mpv\mpv.exe`,
 				DataDir: `C:\Users\me\AppData\Roaming\Wallpaper`, LogsDir: `C:\Users\me\AppData\Roaming\Wallpaper\logs`, UpdateKey: true}
 			s.PickFiles = func() []string { return nil }
 			s.ExportDiag = func() (string, error) { return "diag.zip", nil }
@@ -65,10 +67,10 @@ func main() {
 				s.SelectDisplay("d2")
 			}
 			s.Refresh()
-			tt := mui.NewTester(s.View, 1120, 740)
+			tt := mui.NewTester(s.View, *width, *height)
 			tt.SetScale(float32(*scale))
 			tt.SetDark(mode == "dark")
-			tt.SetLocale("zh-CN")
+			tt.SetLocale(*lang)
 			tt.Frame()
 			p := filepath.Join(*out, fmt.Sprintf("%s-%s.png", sh.name, mode))
 			save(p, tt.Image())
@@ -81,11 +83,13 @@ func main() {
 	for i := range ctl.V.Displays {
 		ctl.V.Displays[i].ItemID = ""
 	}
+	ctl.UpdateConfig(func(c *config.Config) { c.UI.Lang = *lang })
 	s := ui.NewSettings(ctl, *goos)
-	s.Info = ui.Info{Version: "0.2.1-mvp"}
+	s.Info = ui.Info{Version: "ui-development"}
 	s.PickFiles = func() []string { return nil }
-	tt := mui.NewTester(s.View, 1120, 740)
+	tt := mui.NewTester(s.View, *width, *height)
 	tt.SetScale(float32(*scale))
+	tt.SetLocale(*lang)
 	tt.Frame()
 	p := filepath.Join(*out, "00-empty-library-light.png")
 	save(p, tt.Image())

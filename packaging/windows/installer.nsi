@@ -1,6 +1,6 @@
 ; Windows 安装器（D-06：NSIS）。按用户安装到 %LOCALAPPDATA%\Programs\Wallpaper，不需要管理员权限。
 ; makensis -DVERSION=0.1.0 -DARCH=amd64 -DSRC=dist/windows-amd64 -DOUT=dist/Wallpaper-0.1.0-windows-amd64-setup.exe packaging/windows/installer.nsi
-; SRC 下需要 wallpaperd.exe；mpv\mpv.exe 可选（scripts/fetch-mpv.sh 下载，不提交到仓库）。
+; SRC 下需要 wallpaperd.exe 和发布/依赖许可说明。本轮不捆绑 mpv。
 Unicode true
 !ifndef VERSION
   !define VERSION "0.0.0"
@@ -23,6 +23,9 @@ RequestExecutionLevel user
 InstallDir "$LOCALAPPDATA\Programs\${APPNAME}"
 SetCompressor /SOLID lzma
 !include "MUI2.nsh"
+!define MUI_WELCOMEPAGE_TITLE "Wallpaper ${VERSION} (${ARCH})"
+!define MUI_WELCOMEPAGE_TEXT "Native ${ARCH} application. Use the installer matching your Windows architecture.$\r$\n$\r$\nThis developer release does not bundle mpv. Default video playback requires a separately installed mpv; set its executable path in General.$\r$\n$\r$\nRead RELEASE-NOTES.txt in the install folder for signing, runtime and validation limits."
+!insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN "$INSTDIR\wallpaperd.exe"
@@ -37,15 +40,9 @@ Section "Install"
   nsExec::Exec 'taskkill /F /IM wallpaperd.exe'
   SetOutPath "$INSTDIR"
   File "${SRC}/wallpaperd.exe"
-  !if /FileExists "${SRC}/mpv/mpv.exe"
-    SetOutPath "$INSTDIR\mpv"
-    File "${SRC}/mpv/mpv.exe"
-    !if /FileExists "${SRC}/mpv/SOURCE.txt"
-      File "${SRC}/mpv/SOURCE.txt"
-    !endif
-  !else
-    !warning "mpv.exe not found in ${SRC}/mpv — installer will not contain mpv (run scripts/fetch-mpv.sh)"
-  !endif
+  File "${SRC}/RELEASE-NOTES.txt"
+  File "${SRC}/BUILD-INFO.txt"
+  File "${SRC}/THIRD-PARTY-NOTICES.txt"
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\uninstall.exe"
   CreateShortCut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\wallpaperd.exe"
@@ -65,6 +62,9 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${APPNAME}.lnk"
   RMDir /r "$INSTDIR\mpv"
   Delete "$INSTDIR\wallpaperd.exe"
+  Delete "$INSTDIR\RELEASE-NOTES.txt"
+  Delete "$INSTDIR\BUILD-INFO.txt"
+  Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "${UNINSTKEY}"

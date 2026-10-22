@@ -1,5 +1,7 @@
 # 15 参考文献
 
+> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
+
 ## 源码（研究机上的本地 clone，未入库）
 - Lively https://github.com/rocksdanister/lively
 - mpvpaper https://github.com/GhostNaN/mpvpaper

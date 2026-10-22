@@ -11,3 +11,6 @@ docs/design/prototype/bin/
 *.zip
 *.key
 .update/
+
+__pycache__/
+*.pyc

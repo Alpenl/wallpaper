@@ -451,7 +451,7 @@ func TestSafeMode(t *testing.T) {
 	eventually(t, "退出安全模式后加载", func() bool { mu.Lock(); defer mu.Unlock(); return made == 1 })
 }
 
-// F-05：电池 fps15 档 → 渲染器限帧 15；插电恢复 0；省电性能档全程 15。
+// F-05: explicit global FPS limit is now honored, including after power-state changes.
 func TestFPS15BatteryAndSaverProfile(t *testing.T) {
 	e := setup(t, 1, true)
 	eventually(t, "启动", func() bool { r := e.cur("A"); return r != nil && r.isLoaded() })
@@ -467,11 +467,11 @@ func TestFPS15BatteryAndSaverProfile(t *testing.T) {
 		return len(v.Displays) == 1 && v.Displays[0].FPSCap == 15 && v.Power.OnBattery
 	})
 	e.h.ev <- desktop.Event{Kind: desktop.EventSignal, Reason: visibility.Battery, Active: false}
-	eventually(t, "插电 → 不限", func() bool { return e.cur("A").lastCap() == 0 })
+	eventually(t, "插电 → 配置的 30 fps", func() bool { return e.cur("A").lastCap() == 30 })
 	e.a.UpdateConfig(func(c *config.Config) { c.Perf.Profile = "saver" })
 	eventually(t, "省电档 → 15", func() bool { return e.cur("A").lastCap() == 15 })
 	e.a.UpdateConfig(func(c *config.Config) { c.Perf.Profile = "smooth" })
-	eventually(t, "流畅档 → 不限", func() bool { return e.cur("A").lastCap() == 0 })
+	eventually(t, "流畅档 → 配置的 30 fps", func() bool { return e.cur("A").lastCap() == 30 })
 	// 过热（ThermalSerious）只限帧不暂停
 	e.h.ev <- desktop.Event{Kind: desktop.EventSignal, Reason: visibility.ThermalSerious, Active: true}
 	eventually(t, "过热 → 15", func() bool { return e.cur("A").lastCap() == 15 })

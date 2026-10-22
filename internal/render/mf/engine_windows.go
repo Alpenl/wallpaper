@@ -2,16 +2,18 @@
 
 package mf
 
-// Media Foundation 后端（Q-W10 的 A/B 候选）。纯 Go、无 cgo：COM 调用全部通过 vtable 下标 + syscall.SyscallN。
+// Media Foundation 后端。纯 Go、无 cgo：整数 COM 调用使用 syscall.SyscallN，
+// double 参数/返回值通过 purego.RegisterFunc 按 Windows amd64/arm64 ABI 绑定。
 // 路线：IMFMediaEngine 帧服务器模式（不给 PLAYBACK_HWND，而是 MF_MEDIA_ENGINE_DXGI_MANAGER）→
 //       每个 vblank 调 OnVideoStreamTick，有新帧时 TransferVideoFrame 到我们自建子 HWND 的 DXGI 交换链后台缓冲 → Present。
 // 这与 mpv 的 --wid 模式在结构上对等：都是“解码器(GPU) → 一次 GPU 拷贝/缩放 → 交换链”。
 // vtable 下标与 GUID 均核对自 mingw-w64 12.0 头文件（mfmediaengine.h / mfobjects.h / dxgi*.h / d3d10.h）。
-// 已知简化：不调用带 double 参数/返回值的方法（GetCurrentTime、SetCurrentTime），因为 syscall 无法正确传递浮点寄存器；
-//           时间一律用 OnVideoStreamTick 返回的 100ns 时间戳。重挂后从头播放（mpv 后端同样如此）。
+// 所有 Media Engine 调用、实时设置和释放均串行执行于 render 线程；MF 回调仅投递事件。
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -19,6 +21,9 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/ebitengine/purego"
+	"wpapp/internal/render"
 )
 
 type guid struct {
@@ -54,19 +59,25 @@ const (
 	// IMFMediaEngineClassFactory
 	vtFactCreateInstance = 3
 	// IMFMediaEngine
-	vtMESetSource          = 6
-	vtMELoad               = 12
-	vtMESetAutoPlay        = 29
-	vtMESetLoop            = 31
-	vtMEPlay               = 32
-	vtMEPause              = 33
-	vtMESetMuted           = 35
-	vtMEGetNativeVideoSize = 40
-	vtMEShutdown           = 42
-	vtMETransferVideoFrame = 43
-	vtMEOnVideoStreamTick  = 44
+	vtMESetSource           = 6
+	vtMELoad                = 12
+	vtMEGetCurrentTime      = 16
+	vtMESetCurrentTime      = 17
+	vtMEGetDuration         = 19
+	vtMESetPlaybackRate     = 24
+	vtMESetAutoPlay         = 29
+	vtMESetLoop             = 31
+	vtMEPlay                = 32
+	vtMEPause               = 33
+	vtMESetMuted            = 35
+	vtMEGetNativeVideoSize  = 40
+	vtMEGetVideoAspectRatio = 41
+	vtMEShutdown            = 42
+	vtMETransferVideoFrame  = 43
+	vtMEOnVideoStreamTick   = 44
 	// IMFMediaEngineEx
-	vtMEExGetStatistics = 46
+	vtMEExGetStatistics           = 46
+	vtMEExIsPlaybackRateSupported = 50
 	// ID3D10Multithread
 	vtMTSetProtected = 5
 	// IDXGIDevice / IDXGIObject / IDXGIFactory2 / IDXGISwapChain1 / IDXGIOutput
@@ -76,6 +87,8 @@ const (
 	vtFactCreateSwapChainHwnd = 15
 	vtSCPresent               = 8
 	vtSCGetBuffer             = 9
+	vtSCResizeBuffers         = 13
+	vtCtxClearState           = 110
 	vtSCGetContainingOutput   = 15
 	vtOutWaitForVBlank        = 10
 )
@@ -103,6 +116,7 @@ var (
 	d3d11    = syscall.NewLazyDLL("d3d11.dll")
 
 	pCoInitializeEx            = ole32.NewProc("CoInitializeEx")
+	pCoUninitialize            = ole32.NewProc("CoUninitialize")
 	pCoCreateInstance          = ole32.NewProc("CoCreateInstance")
 	pSysAllocString            = oleaut32.NewProc("SysAllocString")
 	pSysFreeString             = oleaut32.NewProc("SysFreeString")
@@ -117,11 +131,22 @@ var (
 //
 //go:uintptrescapes
 func vcall(obj uintptr, idx int, args ...uintptr) uint32 {
-	vtbl := *(*uintptr)(unsafe.Pointer(obj))
-	fn := *(*uintptr)(unsafe.Pointer(vtbl + uintptr(idx)*unsafe.Sizeof(uintptr(0))))
+	fn := vmethod(obj, idx)
 	r, _, _ := syscall.SyscallN(fn, append([]uintptr{obj}, args...)...)
 	return uint32(r)
 }
+func vmethod(obj uintptr, idx int) uintptr {
+	vtbl := *(*uintptr)(unsafe.Pointer(obj))
+	return *(*uintptr)(unsafe.Pointer(vtbl + uintptr(idx)*unsafe.Sizeof(uintptr(0))))
+}
+
+func hresult(method string, hr uint32) error {
+	if failed(hr) {
+		return fmt.Errorf("mf: %s hr=0x%08x", method, hr)
+	}
+	return nil
+}
+
 func release(obj *uintptr) {
 	if *obj != 0 {
 		vcall(*obj, vtRelease)
@@ -164,54 +189,63 @@ func initNotify() {
 }
 
 type mfEngine struct {
-	path       string
-	swap       string
-	statsEvery time.Duration
-	mu         sync.Mutex
-	running    bool
-	quit       chan struct{}
-	done       chan struct{}
-	wake       chan struct{}
-	paused     atomic.Bool
-	fpsCap     atomic.Int32 // F-05：>0 时按此帧率节流 Transfer+Present（MF 仍解码每一帧，省的是拷贝/呈现/合成）
-	engine     atomic.Uintptr
+	path        string
+	swap        string
+	statsEvery  time.Duration
+	mu          sync.Mutex
+	statsDone   chan struct{}
+	running     bool
+	stopping    bool
+	options     render.PlaybackOptions
+	startAt     float64
+	commands    chan engineCommand
+	events      chan engineEvent
+	position    atomic.Uint64
+	nativeStats atomic.Value // [3]int64, sampled only by the render thread
+	quit        chan struct{}
+	done        chan struct{}
+	paused      atomic.Bool
+	fpsCap      atomic.Int32 // F-05：>0 时按此帧率节流 Transfer+Present（MF 仍解码每一帧，省的是拷贝/呈现/合成）
 
 	// 统计（render 线程写，stats 读）
 	presented, appSkipped, loops atomic.Int64
 	lastPTS                      atomic.Int64
 	restartReq                   atomic.Bool
-	engineExForStats             atomic.Uintptr
 	tickErr                      atomic.Int64
 	endedFallback                atomic.Int64
 	readyCh                      chan error
 	t0                           time.Time
-	firstOnce                    sync.Once
 	// 回调（由 mfhost 子进程设置）
 	onFatal func(why string)
 	onFirst func(ms int64)
 	onStats func(st map[string]any)
 }
 
+type engineEvent struct {
+	kind uint32
+	p1   uintptr
+	p2   uint32
+}
+
+type engineCommand struct {
+	apply  func(*playbackState, playbackAPI) error
+	result chan error
+}
+
 func (b *mfEngine) onEvent(ev uint32, p1 uintptr, p2 uint32) {
+	b.mu.Lock()
+	events, active := b.events, b.running && !b.stopping
+	b.mu.Unlock()
+	if !active {
+		return
+	}
 	switch ev {
-	case meEventError:
-		logf("MF_EVENT ERROR code=%d hr=0x%08x", p1, p2)
-	case meEventLoadedMetadata, meEventCanPlay:
-		logf("MF_EVENT %d", ev)
-		// 不依赖 AutoPlay：元数据就绪后显式 Play（Wine 下 AutoPlay 不生效，真机上重复调用无害）
-		if e := b.engine.Load(); e != 0 && !b.paused.Load() {
-			logf("MF Play hr=0x%08x", vcall(e, vtMEPlay))
+	case meEventError, meEventLoadedMetadata, meEventCanPlay, meEventSeeked, meEventEnded, meEventFirstFrameReady:
+		select {
+		case events <- engineEvent{ev, p1, p2}:
+		default:
+			b.fatal("media-event-queue-overflow")
 		}
-	case meEventEnded:
-		// SetLoop(TRUE) 时真机不应收到 ENDED【文档】；若收到（Wine 实测会），按 HTML5 语义对已结束的媒体再 Play() 会从头播放
-		b.endedFallback.Add(1)
-		if e := b.engine.Load(); e != 0 && !b.paused.Load() {
-			logf("MF_EVENT ENDED → Play() 兜底循环 hr=0x%08x", vcall(e, vtMEPlay))
-		}
-	case meEventPlaying, meEventFirstFrameReady:
-		logf("MF_EVENT %d", ev)
-	case meEventSeeked:
-		// 循环播放时 Media Engine 在末尾内部 seek 回 0【推断，待真机日志确认；循环计数另以 pts 回退为准】
 	}
 }
 
@@ -220,19 +254,34 @@ func (b *mfEngine) start(hwnd uintptr, w, h int32) error {
 	b.mu.Lock()
 	if b.running {
 		b.mu.Unlock()
-		return nil
+		return fmt.Errorf("mf: engine is already running or still stopping")
 	}
-	b.running = true
-	b.quit, b.done, b.wake = make(chan struct{}), make(chan struct{}), make(chan struct{}, 1)
+	b.running, b.stopping = true, false
+	b.commands = make(chan engineCommand)
+	b.events = make(chan engineEvent, 32)
+	b.position.Store(math.Float64bits(b.startAt))
+	b.nativeStats.Store([3]int64{-1, -1, -1})
+	b.quit, b.done, b.statsDone = make(chan struct{}), make(chan struct{}), make(chan struct{})
 	b.readyCh = make(chan error, 1)
 	b.t0 = time.Now()
-	b.firstOnce = sync.Once{}
 	b.restartReq.Store(false)
 	b.presented.Store(0)
+	o, startAt, paused := b.options, b.startAt, b.paused.Load()
+	quit, statsDone := b.quit, b.statsDone
+	statsStart := make(chan struct{})
 	b.mu.Unlock()
+	go func() {
+		defer close(statsDone)
+		select {
+		case <-quit:
+			return
+		case <-statsStart:
+			b.statsLoop(quit)
+		}
+	}()
 	initNotify()
 	notifySink.Store(b)
-	go b.renderThread(hwnd, uint32(w), uint32(h))
+	go b.renderThread(hwnd, uint32(w), uint32(h), o, startAt, paused)
 	select {
 	case err := <-b.readyCh:
 		if err != nil {
@@ -243,40 +292,82 @@ func (b *mfEngine) start(hwnd uintptr, w, h int32) error {
 		b.stop()
 		return fmt.Errorf("E_TIMEOUT: MF 初始化超过 10 s")
 	}
-	go b.statsLoop()
+	close(statsStart)
 	return nil
 }
 
-func (b *mfEngine) stop() {
+func (b *mfEngine) stop() error {
 	b.mu.Lock()
 	if !b.running {
 		b.mu.Unlock()
-		return
+		return nil
 	}
-	b.running = false
-	close(b.quit)
-	done := b.done
+	if !b.stopping {
+		b.stopping = true
+		close(b.quit)
+	}
+	done, statsDone := b.done, b.statsDone
 	b.mu.Unlock()
+	if err := waitForShutdown(done, statsDone, 5*time.Second); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.running = false
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *mfEngine) invoke(apply func(*playbackState, playbackAPI) error) error {
+	b.mu.Lock()
+	if !b.running || b.stopping {
+		b.mu.Unlock()
+		return fmt.Errorf("mf: not running")
+	}
+	commands, done, quit := b.commands, b.done, b.quit
+	b.mu.Unlock()
+	command := engineCommand{apply: apply, result: make(chan error, 1)}
 	select {
+	case commands <- command:
 	case <-done:
-	case <-time.After(5 * time.Second):
-		logf("MF stop 超时（render 线程未在 5 s 内退出）")
+		return fmt.Errorf("mf: engine closed")
+	case <-quit:
+		return fmt.Errorf("mf: engine stopping")
+	}
+	select {
+	case err := <-command.result:
+		return err
+	case <-done:
+		return fmt.Errorf("mf: engine closed during control operation")
 	}
 }
 
-func (b *mfEngine) setPause(p bool) {
-	b.paused.Store(p)
-	if e := b.engine.Load(); e != 0 {
-		if p {
-			vcall(e, vtMEPause)
-		} else {
-			vcall(e, vtMEPlay)
+func (b *mfEngine) setPause(paused bool) error {
+	return b.invoke(func(state *playbackState, api playbackAPI) error {
+		if err := state.setPause(api, paused); err != nil {
+			return err
 		}
-	}
-	select {
-	case b.wake <- struct{}{}:
-	default:
-	}
+		b.paused.Store(paused)
+		return nil
+	})
+}
+
+func (b *mfEngine) updatePlayback(o render.PlaybackOptions) error {
+	return b.invoke(func(state *playbackState, api playbackAPI) error {
+		if err := state.update(api, o); err != nil {
+			if errors.Is(err, errNativeStateUnknown) {
+				b.fatal(err.Error())
+			}
+			return err
+		}
+		b.mu.Lock()
+		b.options = state.options
+		b.mu.Unlock()
+		return nil
+	})
+}
+
+func (b *mfEngine) currentPosition() float64 {
+	return math.Float64frombits(b.position.Load())
 }
 
 // fatal：引擎无法继续（DEVICE_REMOVED、卡住）。子进程模式下由 mfhost 发 error{fatal} 后退出，交给主进程的 supervisor 重启。
@@ -290,20 +381,26 @@ func (b *mfEngine) fatal(why string) {
 	}
 }
 
-func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32) {
+func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32, options render.PlaybackOptions, startAt float64, paused bool) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer close(b.done)
 	var dev, ctx, mt, mgr, attr, fact, engine, engineEx, dxgiDev, adapter, factory, sc, tex, output uintptr
+	var comInitialized, mfInitialized bool
 	defer func() {
-		b.engine.Store(0)
+		notifySink.CompareAndSwap(b, nil)
 		if engine != 0 {
 			vcall(engine, vtMEShutdown)
 		}
 		for _, p := range []*uintptr{&output, &tex, &sc, &factory, &adapter, &dxgiDev, &engineEx, &engine, &fact, &attr, &mgr, &mt, &ctx, &dev} {
 			release(p)
 		}
-		pMFShutdown.Call()
+		if mfInitialized {
+			pMFShutdown.Call()
+		}
+		if comInitialized {
+			pCoUninitialize.Call()
+		}
 	}()
 	fail := func(step string, hr uint32) {
 		logf("MF_FATAL %s hr=0x%08x", step, hr)
@@ -313,11 +410,16 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32) {
 		}
 	}
 
-	pCoInitializeEx.Call(0, 0 /*COINIT_MULTITHREADED*/)
+	if hr, _, _ := pCoInitializeEx.Call(0, 0 /*COINIT_MULTITHREADED*/); failed(uint32(hr)) {
+		fail("CoInitializeEx", uint32(hr))
+		return
+	}
+	comInitialized = true
 	if r, _, _ := pMFStartup.Call(0x00020070, 0); failed(uint32(r)) {
 		fail("MFStartup", uint32(r))
 		return
 	}
+	mfInitialized = true
 	// D3D11 设备：BGRA_SUPPORT(0x20) | VIDEO_SUPPORT(0x800)
 	r, _, _ := pD3D11CreateDevice.Call(0, 1 /*HARDWARE*/, 0, 0x20|0x800, 0, 0, 7,
 		uintptr(unsafe.Pointer(&dev)), 0, uintptr(unsafe.Pointer(&ctx)))
@@ -338,10 +440,22 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32) {
 		fail("ResetDevice", hr)
 		return
 	}
-	pMFCreateAttributes.Call(uintptr(unsafe.Pointer(&attr)), 3)
-	vcall(attr, vtAttrSetUnknown, uintptr(unsafe.Pointer(&mfMediaEngineDXGIManager)), mgr)
-	vcall(attr, vtAttrSetUnknown, uintptr(unsafe.Pointer(&mfMediaEngineCallback)), uintptr(unsafe.Pointer(&notifyInst)))
-	vcall(attr, vtAttrSetUINT32, uintptr(unsafe.Pointer(&mfMediaEngineVideoOutputFormat)), dxgiFormatB8G8R8A8)
+	if hr, _, _ := pMFCreateAttributes.Call(uintptr(unsafe.Pointer(&attr)), 3); failed(uint32(hr)) {
+		fail("MFCreateAttributes", uint32(hr))
+		return
+	}
+	if hr := vcall(attr, vtAttrSetUnknown, uintptr(unsafe.Pointer(&mfMediaEngineDXGIManager)), mgr); failed(hr) {
+		fail("Set DXGI manager", hr)
+		return
+	}
+	if hr := vcall(attr, vtAttrSetUnknown, uintptr(unsafe.Pointer(&mfMediaEngineCallback)), uintptr(unsafe.Pointer(&notifyInst))); failed(hr) {
+		fail("Set notify callback", hr)
+		return
+	}
+	if hr := vcall(attr, vtAttrSetUINT32, uintptr(unsafe.Pointer(&mfMediaEngineVideoOutputFormat)), dxgiFormatB8G8R8A8); failed(hr) {
+		fail("Set video output format", hr)
+		return
+	}
 	if r, _, _ := pCoCreateInstance.Call(uintptr(unsafe.Pointer(&clsidMFMediaEngineClassFactory)), 0, 1, /*INPROC_SERVER*/
 		uintptr(unsafe.Pointer(&iidIMFMediaEngineClassFactory)), uintptr(unsafe.Pointer(&fact))); failed(uint32(r)) {
 		fail("CoCreateInstance(MFMediaEngineClassFactory)", uint32(r))
@@ -352,22 +466,49 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32) {
 		return
 	}
 	vcall(engine, vtQueryInterface, uintptr(unsafe.Pointer(&iidIMFMediaEngineEx)), uintptr(unsafe.Pointer(&engineEx)))
-	vcall(engine, vtMESetMuted, 1)
-	vcall(engine, vtMESetLoop, 1)
-	vcall(engine, vtMESetAutoPlay, 1)
+	muted := uintptr(1)
+	if !options.Muted {
+		muted = 0
+	}
+	if hr := vcall(engine, vtMESetMuted, muted); failed(hr) {
+		fail("SetMuted", hr)
+		return
+	}
+	if hr := vcall(engine, vtMESetLoop, 1); failed(hr) {
+		fail("SetLoop", hr)
+		return
+	}
+	// Never autoplay before the initial rate and asynchronous resume seek finish.
+	if hr := vcall(engine, vtMESetAutoPlay, 0); failed(hr) {
+		fail("SetAutoPlay", hr)
+		return
+	}
 	abs, _ := filepath.Abs(b.path)
 	bstr, _, _ := pSysAllocString.Call(up(u16(abs)))
+	if bstr == 0 {
+		fail("SysAllocString", 0x8007000e)
+		return
+	}
 	hr := vcall(engine, vtMESetSource, bstr)
 	pSysFreeString.Call(bstr)
 	if failed(hr) {
 		fail("SetSource", hr)
 		return
 	}
-	vcall(engine, vtMELoad)
+	if hr := vcall(engine, vtMELoad); failed(hr) {
+		fail("Load", hr)
+		return
+	}
 
 	// 交换链：从设备反查 IDXGIFactory2
-	vcall(dev, vtQueryInterface, uintptr(unsafe.Pointer(&iidIDXGIDevice)), uintptr(unsafe.Pointer(&dxgiDev)))
-	vcall(dxgiDev, vtDevGetAdapter, uintptr(unsafe.Pointer(&adapter)))
+	if hr := vcall(dev, vtQueryInterface, uintptr(unsafe.Pointer(&iidIDXGIDevice)), uintptr(unsafe.Pointer(&dxgiDev))); failed(hr) {
+		fail("Query IDXGIDevice", hr)
+		return
+	}
+	if hr := vcall(dxgiDev, vtDevGetAdapter, uintptr(unsafe.Pointer(&adapter))); failed(hr) {
+		fail("GetAdapter", hr)
+		return
+	}
 	if hr := vcall(adapter, vtObjGetParent, uintptr(unsafe.Pointer(&iidIDXGIFactory2)), uintptr(unsafe.Pointer(&factory))); failed(hr) {
 		fail("GetParent(IDXGIFactory2)", hr)
 		return
@@ -392,34 +533,181 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32) {
 		logf("MF GetContainingOutput 失败 hr=0x%08x，退化为 4 ms 轮询", hr)
 		output = 0
 	}
-	b.engine.Store(engine)
-	if b.paused.Load() {
-		vcall(engine, vtMEPause)
-	}
-	logf("MF_READY hwnd=0x%x %dx%d swap=%s engineEx=%v", hwnd, w, h, b.swap, engineEx != 0)
-	b.readyCh <- nil
+	// Typed bindings are essential: "this" is an integer argument, while the
+	// time/rate uses XMM1 on Windows amd64 and D0 on Windows arm64. Do not pass
+	// float bits through the integer-only vcall helper.
+	var setRate, setTime func(uintptr, float64) uint32
+	var getTime, getDuration func(uintptr) float64
+	purego.RegisterFunc(&setRate, vmethod(engine, vtMESetPlaybackRate))
+	purego.RegisterFunc(&setTime, vmethod(engine, vtMESetCurrentTime))
+	purego.RegisterFunc(&getTime, vmethod(engine, vtMEGetCurrentTime))
+	purego.RegisterFunc(&getDuration, vmethod(engine, vtMEGetDuration))
+	var supportsRate func(uintptr, float64) int32
 	if engineEx != 0 {
-		b.engineExForStats.Store(engineEx)
-		defer b.engineExForStats.Store(0)
+		purego.RegisterFunc(&supportsRate, vmethod(engineEx, vtMEExIsPlaybackRateSupported))
 	}
 
-	dst := rect{0, 0, int32(w), int32(h)}
+	state := playbackState{options: options, paused: paused, start: startAt}
+	bufferW, bufferH := w, h
 	black := uint32(0xff000000)
+	draw := func(fit string) error {
+		var aspectW, aspectH uint32
+		if err := hresult("GetVideoAspectRatio", vcall(engine, vtMEGetVideoAspectRatio, uintptr(unsafe.Pointer(&aspectW)), uintptr(unsafe.Pointer(&aspectH)))); err != nil {
+			return err
+		}
+		geometry, ok := frameGeometry(fit, aspectW, aspectH, w, h)
+		if !ok {
+			return fmt.Errorf("mf: invalid %s geometry aspect=%dx%d canvas=%dx%d", fit, aspectW, aspectH, w, h)
+		}
+		if geometry.width != bufferW || geometry.height != bufferH {
+			// Release direct and context-held backbuffer references before resize.
+			release(&tex)
+			vcall(ctx, vtCtxClearState)
+			hr := vcall(sc, vtSCResizeBuffers, 0, uintptr(geometry.width), uintptr(geometry.height), 0, 0)
+			if !failed(hr) {
+				bufferW, bufferH = geometry.width, geometry.height
+			}
+			// Reacquire even on failure so a settings rollback can draw the old buffer.
+			getErr := hresult("GetBuffer after ResizeBuffers", vcall(sc, vtSCGetBuffer, 0, uintptr(unsafe.Pointer(&iidID3D11Texture2D)), uintptr(unsafe.Pointer(&tex))))
+			if err := hresult("ResizeBuffers", hr); err != nil {
+				return err
+			}
+			if getErr != nil {
+				return getErr
+			}
+		}
+		if tex == 0 {
+			return fmt.Errorf("mf: no swapchain backbuffer")
+		}
+		dst := rect{0, 0, int32(bufferW), int32(bufferH)}
+		if err := hresult("TransferVideoFrame", vcall(engine, vtMETransferVideoFrame, tex, uintptr(unsafe.Pointer(&geometry.source)), uintptr(unsafe.Pointer(&dst)), uintptr(unsafe.Pointer(&black)))); err != nil {
+			return err
+		}
+		hr := vcall(sc, vtSCPresent, 0, 0)
+		if hr == dxgiErrDeviceRemoved || hr == dxgiErrDeviceReset {
+			b.fatal("device-removed")
+		}
+		if err := hresult("Present", hr); err != nil {
+			return err
+		}
+		if b.presented.Add(1) == 1 && b.onFirst != nil {
+			go b.onFirst(time.Since(b.t0).Milliseconds())
+		}
+		return nil
+	}
+	api := playbackAPI{
+		rate: func(rate float64) error {
+			if supportsRate != nil && supportsRate(engineEx, rate) == 0 {
+				return fmt.Errorf("mf: this media does not support playback rate %g", rate)
+			}
+			return hresult("SetPlaybackRate", setRate(engine, rate))
+		},
+		mute: func(muted bool) error {
+			value := uintptr(0)
+			if muted {
+				value = 1
+			}
+			return hresult("SetMuted", vcall(engine, vtMESetMuted, value))
+		},
+		fit:      draw,
+		seek:     func(seconds float64) error { return hresult("SetCurrentTime", setTime(engine, seconds)) },
+		play:     func() error { return hresult("Play", vcall(engine, vtMEPlay)) },
+		pause:    func() error { return hresult("Pause", vcall(engine, vtMEPause)) },
+		duration: func() float64 { return getDuration(engine) },
+	}
+	sample := func() {
+		if state.metadata && !state.seeking {
+			if seconds := getTime(engine); validPosition(seconds) {
+				b.position.Store(math.Float64bits(seconds))
+			}
+		}
+		b.nativeStats.Store([3]int64{nativeStat(engineEx, meStatFramesRendered), nativeStat(engineEx, meStatFramesDropped), nativeStat(engineEx, meStatFramesCorrupted)})
+	}
+	defer sample() // Last exact position is preserved through an L3 teardown.
+	failPlayback := func(err error) {
+		logf("MF playback error: %v", err)
+		if state.ready {
+			b.fatal(err.Error())
+		} else {
+			select {
+			case b.readyCh <- err:
+			default:
+			}
+		}
+	}
+	handleEvent := func(event engineEvent) error {
+		switch event.kind {
+		case meEventError:
+			return fmt.Errorf("mf: media error code=%d hr=0x%08x", event.p1, event.p2)
+		case meEventLoadedMetadata, meEventCanPlay:
+			if event.kind == meEventCanPlay {
+				state.canPlay = true
+			}
+			if err := state.loaded(api); err != nil {
+				return err
+			}
+			if state.seeking {
+				b.position.Store(math.Float64bits(state.start))
+			}
+		case meEventSeeked:
+			state.seeking = false
+		case meEventEnded:
+			b.endedFallback.Add(1)
+			if state.ready && !state.paused {
+				if err := api.play(); err != nil {
+					return err
+				}
+			}
+		}
+		ready, err := state.startReady(api)
+		if err != nil {
+			return err
+		}
+		if ready {
+			sample()
+			logf("MF_READY hwnd=0x%x %dx%d swap=%s engineEx=%v fit=%s speed=%g", hwnd, w, h, b.swap, engineEx != 0, state.options.Fit, state.options.Speed)
+			b.readyCh <- nil
+		}
+		return nil
+	}
+	progress := time.NewTicker(500 * time.Millisecond)
+	defer progress.Stop()
 	var lastPTS, minDelta int64 = -1, 0
 	var lastPresent time.Time
 	for {
-		select {
-		case <-b.quit:
-			return
-		default:
-		}
-		if b.paused.Load() { // 暂停：不再等 vblank、不 Present → GPU/CPU 约 0
+		// Paused players still service commands/events and sample position, but
+		// do not decode/present continuously or wait for every vblank.
+		if !state.ready || state.paused {
 			select {
 			case <-b.quit:
 				return
-			case <-b.wake:
+			case command := <-b.commands:
+				command.result <- command.apply(&state, api)
+			case event := <-b.events:
+				if err := handleEvent(event); err != nil {
+					failPlayback(err)
+					return
+				}
+			case <-progress.C:
+				sample()
 			}
 			continue
+		}
+		select {
+		case <-b.quit:
+			return
+		case command := <-b.commands:
+			command.result <- command.apply(&state, api)
+			continue
+		case event := <-b.events:
+			if err := handleEvent(event); err != nil {
+				failPlayback(err)
+				return
+			}
+			continue
+		case <-progress.C:
+			sample()
+		default:
 		}
 		if output != 0 {
 			vcall(output, vtOutWaitForVBlank)
@@ -427,9 +715,9 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32) {
 			time.Sleep(4 * time.Millisecond)
 		}
 		var pts int64
-		if thr := vcall(engine, vtMEOnVideoStreamTick, uintptr(unsafe.Pointer(&pts))); thr != 0 { // S_FALSE=无新帧
-			if failed(thr) && b.tickErr.Add(1) == 1 {
-				logf("MF OnVideoStreamTick 首次错误 hr=0x%08x", thr)
+		if hr := vcall(engine, vtMEOnVideoStreamTick, uintptr(unsafe.Pointer(&pts))); hr != 0 {
+			if failed(hr) && b.tickErr.Add(1) == 1 {
+				logf("MF OnVideoStreamTick first error hr=0x%08x", hr)
 			}
 			continue
 		}
@@ -437,38 +725,27 @@ func (b *mfEngine) renderThread(hwnd uintptr, w, h uint32) {
 			delta := pts - lastPTS
 			switch {
 			case delta < 0:
-				b.loops.Add(1) // 时间戳回退 = 循环回到开头
+				b.loops.Add(1)
 			case delta > 0 && (minDelta == 0 || delta < minDelta):
 				minDelta = delta
 			case minDelta > 0 && delta > minDelta*3/2:
-				b.appSkipped.Add(delta/minDelta - 1) // 我们的取帧线程错过的帧（与 MF 内部丢帧分开统计）
+				b.appSkipped.Add(delta/minDelta - 1)
 			}
 		}
 		lastPTS = pts
 		b.lastPTS.Store(pts)
-		if c := b.fpsCap.Load(); c > 0 && time.Since(lastPresent) < time.Second/time.Duration(c)-2*time.Millisecond {
-			continue // 限帧：本 vblank 不取帧
-		}
-		lastPresent = time.Now()
-		if hr := vcall(engine, vtMETransferVideoFrame, tex, 0, uintptr(unsafe.Pointer(&dst)), uintptr(unsafe.Pointer(&black))); failed(hr) {
-			logf("MF TransferVideoFrame hr=0x%08x", hr)
+		if cap := b.fpsCap.Load(); cap > 0 && time.Since(lastPresent) < time.Second/time.Duration(cap)-2*time.Millisecond {
 			continue
 		}
-		hr := vcall(sc, vtSCPresent, 0, 0) // 已在 vblank 后，syncInterval=0 避免再等一帧
-		if hr == dxgiErrDeviceRemoved || hr == dxgiErrDeviceReset {
-			logf("DEVICE_REMOVED hr=0x%08x → 重建 MF 后端（W-T9）", hr)
-			b.fatal("device-removed")
+		if err := draw(state.options.Fit); err != nil {
+			failPlayback(err)
 			return
 		}
-		if b.presented.Add(1) == 1 && b.onFirst != nil {
-			ms := time.Since(b.t0).Milliseconds()
-			go b.onFirst(ms)
-		}
+		lastPresent = time.Now()
 	}
 }
 
-func (b *mfEngine) stat(id uint32) int64 {
-	ex := b.engineExForStats.Load()
+func nativeStat(ex uintptr, id uint32) int64 {
 	if ex == 0 {
 		return -1
 	}
@@ -487,13 +764,12 @@ func (b *mfEngine) stat(id uint32) int64 {
 }
 
 // 与 mpv 后端同口径：每 -stats 记录一次；卡住判定 = (loops, pts) 连续 2 次不变且未暂停（Q-P3 的同一规则）
-func (b *mfEngine) statsLoop() {
+func (b *mfEngine) statsLoop(quit <-chan struct{}) {
 	t := time.NewTicker(b.statsEvery)
 	defer t.Stop()
 	type key struct{ loops, pts int64 }
 	var last key
 	same := 0
-	quit := b.quit
 	for {
 		select {
 		case <-quit:
@@ -501,14 +777,15 @@ func (b *mfEngine) statsLoop() {
 		case <-t.C:
 		}
 		k := key{b.loops.Load(), b.lastPTS.Load()}
-		st := map[string]any{"rendered": b.stat(meStatFramesRendered), "dropped": b.stat(meStatFramesDropped),
-			"corrupted": b.stat(meStatFramesCorrupted), "presented": b.presented.Load(), "appSkipped": b.appSkipped.Load(),
+		native := b.nativeStats.Load().([3]int64)
+		st := map[string]any{"rendered": native[0], "dropped": native[1],
+			"corrupted": native[2], "pos": b.currentPosition(), "presented": b.presented.Load(), "appSkipped": b.appSkipped.Load(),
 			"loops": k.loops, "endedFallback": b.endedFallback.Load(), "pts100ns": k.pts, "paused": b.paused.Load()}
 		if b.onStats != nil {
 			b.onStats(st)
 		}
 		logf("MFSTATS rendered=%d dropped=%d corrupted=%d presented=%d appSkipped=%d loops=%d endedFallback=%d pts100ns=%d paused=%v",
-			b.stat(meStatFramesRendered), b.stat(meStatFramesDropped), b.stat(meStatFramesCorrupted),
+			native[0], native[1], native[2],
 			b.presented.Load(), b.appSkipped.Load(), k.loops, b.endedFallback.Load(), k.pts, b.paused.Load())
 		if !b.paused.Load() && k == last {
 			if same++; same >= 2 {

@@ -9,20 +9,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 )
 
 // Info 是探测结果。
 type Info struct {
-	Container   string  `json:"container"` // mp4 | mov | webm | gif | png | jpeg | webp | bmp
-	Kind        string  `json:"kind"`      // video | image
-	Codec       string  `json:"codec"`     // h264 | hevc | av1 | vp9 | prores | other | ""
-	FourCC      string  `json:"fourcc,omitempty"`
-	W           int     `json:"w,omitempty"`
-	H           int     `json:"h,omitempty"`
-	FPS         float64 `json:"fps,omitempty"`
-	DurationSec float64 `json:"durationSec,omitempty"`
-	HasAudio    bool    `json:"hasAudio"`
+	Container           string  `json:"container"` // mp4 | mov | webm | gif | png | jpeg | webp | bmp
+	Kind                string  `json:"kind"`      // video | image
+	Codec               string  `json:"codec"`     // h264 | hevc | av1 | vp9 | prores | other | ""
+	FourCC              string  `json:"fourcc,omitempty"`
+	W                   int     `json:"w,omitempty"`
+	H                   int     `json:"h,omitempty"`
+	FPS                 float64 `json:"fps,omitempty"`
+	DurationSec         float64 `json:"durationSec,omitempty"`
+	HasAudio            bool    `json:"hasAudio"`
+	VideoTracks         int     `json:"videoTracks,omitempty"`
+	FrameCount          uint64  `json:"frameCount,omitempty"`
+	ConstantFrameRate   bool    `json:"constantFrameRate,omitempty"`
+	StartsWithKeyframe  bool    `json:"startsWithKeyframe,omitempty"`
+	MaxKeyframeInterval uint64  `json:"maxKeyframeInterval,omitempty"`
 }
 
 // ErrUnknown 表示不认识的文件类型。
@@ -51,7 +57,16 @@ func Probe(r io.ReaderAt, size int64) (*Info, error) {
 	head = head[:n]
 	switch {
 	case bytes.HasPrefix(head, []byte("GIF8")):
-		return &Info{Container: "gif", Kind: "video", Codec: "gif"}, nil
+		// Only inspect the fixed logical-screen descriptor. Frame decoding and
+		// allocation stay in the isolated native/ffmpeg encoder process.
+		if len(head) < 13 || (string(head[:6]) != "GIF87a" && string(head[:6]) != "GIF89a") {
+			return nil, errors.New("media: invalid GIF header")
+		}
+		w, h := int(binary.LittleEndian.Uint16(head[6:8])), int(binary.LittleEndian.Uint16(head[8:10]))
+		if w == 0 || h == 0 {
+			return nil, errors.New("media: invalid GIF canvas")
+		}
+		return &Info{Container: "gif", Kind: "video", Codec: "gif", W: w, H: h}, nil
 	case bytes.HasPrefix(head, []byte("\x89PNG")):
 		return &Info{Container: "png", Kind: "image"}, nil
 	case bytes.HasPrefix(head, []byte{0xff, 0xd8, 0xff}):
@@ -77,7 +92,10 @@ type box struct {
 func readBoxes(r io.ReaderAt, off, end int64) ([]box, error) {
 	var out []box
 	hdr := make([]byte, 16)
-	for off+8 <= end {
+	if off < 0 || end < off {
+		return nil, errors.New("media: invalid box range")
+	}
+	for end-off >= 8 {
 		if _, err := r.ReadAt(hdr[:8], off); err != nil {
 			return out, err
 		}
@@ -94,7 +112,7 @@ func readBoxes(r io.ReaderAt, off, end int64) ([]box, error) {
 		case 0:
 			sz = end - off
 		}
-		if sz < hl || off+sz > end {
+		if sz < hl || sz > end-off {
 			return out, fmt.Errorf("media: bad box %q", typ)
 		}
 		out = append(out, box{typ, off + hl, sz - hl})
@@ -115,9 +133,8 @@ func find(bs []box, t string) (box, bool) {
 	return box{}, false
 }
 
-func children(r io.ReaderAt, b box) []box {
-	cs, _ := readBoxes(r, b.off, b.off+b.size)
-	return cs
+func children(r io.ReaderAt, b box) ([]box, error) {
+	return readBoxes(r, b.off, b.off+b.size)
 }
 
 func readN(r io.ReaderAt, b box, max int64) []byte {
@@ -129,7 +146,7 @@ func readN(r io.ReaderAt, b box, max int64) []byte {
 
 func probeISO(r io.ReaderAt, size int64) (*Info, error) {
 	top, err := readBoxes(r, 0, size)
-	if err != nil && len(top) == 0 {
+	if err != nil {
 		return nil, err
 	}
 	info := &Info{Container: "mp4", Kind: "video"}
@@ -145,15 +162,26 @@ func probeISO(r io.ReaderAt, size int64) (*Info, error) {
 	if moov.size > maxBox {
 		return nil, errors.New("media: moov too large")
 	}
-	for _, trak := range children(r, moov) {
+	tracks, err := children(r, moov)
+	if err != nil {
+		return nil, err
+	}
+	for _, trak := range tracks {
 		if trak.typ != "trak" {
 			continue
 		}
-		mdia, ok := find(children(r, trak), "mdia")
+		tc, err := children(r, trak)
+		if err != nil {
+			return nil, err
+		}
+		mdia, ok := find(tc, "mdia")
 		if !ok {
 			continue
 		}
-		mc := children(r, mdia)
+		mc, err := children(r, mdia)
+		if err != nil {
+			return nil, err
+		}
 		hdlr, ok := find(mc, "hdlr")
 		if !ok {
 			continue
@@ -166,6 +194,7 @@ func probeISO(r io.ReaderAt, size int64) (*Info, error) {
 		case "soun":
 			info.HasAudio = true
 		case "vide":
+			info.VideoTracks++
 			if info.Codec != "" {
 				continue // 只看第一条视频轨
 			}
@@ -188,11 +217,18 @@ func probeISO(r io.ReaderAt, size int64) (*Info, error) {
 			if !ok {
 				continue
 			}
-			stbl, ok := find(children(r, minf), "stbl")
+			mic, err := children(r, minf)
+			if err != nil {
+				return nil, err
+			}
+			stbl, ok := find(mic, "stbl")
 			if !ok {
 				continue
 			}
-			sc := children(r, stbl)
+			sc, err := children(r, stbl)
+			if err != nil {
+				return nil, err
+			}
 			if stsd, ok := find(sc, "stsd"); ok {
 				b := readN(r, stsd, 8+8+78)
 				// stsd: ver/flags(4) count(4)，然后第一个 sample entry：size(4) type(4) reserved(6) dref(2) predef(16) w(2) h(2)
@@ -205,19 +241,18 @@ func probeISO(r io.ReaderAt, size int64) (*Info, error) {
 				}
 			}
 			if stts, ok := find(sc, "stts"); ok && timescale > 0 {
-				b := readN(r, stts, 8+8*1024)
-				if len(b) >= 8 {
-					cnt := int(binary.BigEndian.Uint32(b[4:8]))
-					var samples, ticks uint64
-					for i := 0; i < cnt && 8+i*8+8 <= len(b); i++ {
-						c := uint64(binary.BigEndian.Uint32(b[8+i*8:]))
-						d := uint64(binary.BigEndian.Uint32(b[12+i*8:]))
-						samples += c
-						ticks += c * d
+				if err := parseTiming(r, stts, timescale, info); err != nil {
+					return nil, err
+				}
+			}
+			if info.FrameCount > 0 {
+				if stss, ok := find(sc, "stss"); ok {
+					if err := parseSyncSamples(r, stss, info); err != nil {
+						return nil, err
 					}
-					if ticks > 0 {
-						info.FPS = float64(samples) * float64(timescale) / float64(ticks)
-					}
+				} else {
+					// ISO BMFF: absent stss means every sample is a sync sample.
+					info.StartsWithKeyframe, info.MaxKeyframeInterval = true, 1
 				}
 			}
 		}
@@ -226,6 +261,76 @@ func probeISO(r io.ReaderAt, size int64) (*Info, error) {
 		return nil, errors.New("media: no video track")
 	}
 	return info, nil
+}
+
+// Parse complete, bounded sample tables. A prefix-only fps average can mislabel
+// variable-rate or maliciously truncated output as a successful 30fps rendition.
+func parseTiming(r io.ReaderAt, b box, timescale uint32, info *Info) error {
+	if b.size < 8 || b.size > maxBox {
+		return errors.New("media: invalid stts size")
+	}
+	data := readN(r, b, maxBox)
+	if int64(len(data)) != b.size {
+		return errors.New("media: truncated stts")
+	}
+	count := uint64(binary.BigEndian.Uint32(data[4:8]))
+	if count > uint64((len(data)-8)/8) {
+		return errors.New("media: truncated stts entries")
+	}
+	var samples, ticks uint64
+	var delta uint32
+	constant := count > 0
+	for i := uint64(0); i < count; i++ {
+		entry := data[8+i*8:]
+		c := uint64(binary.BigEndian.Uint32(entry[:4]))
+		d := binary.BigEndian.Uint32(entry[4:8])
+		if c == 0 || d == 0 || samples > math.MaxUint64-c || ticks > math.MaxUint64-c*uint64(d) {
+			return errors.New("media: invalid stts timing")
+		}
+		if i == 0 {
+			delta = d
+		} else if d != delta {
+			constant = false
+		}
+		samples += c
+		ticks += c * uint64(d)
+	}
+	info.FrameCount, info.ConstantFrameRate = samples, constant
+	if ticks > 0 {
+		info.FPS = float64(samples) * float64(timescale) / float64(ticks)
+	}
+	return nil
+}
+
+func parseSyncSamples(r io.ReaderAt, b box, info *Info) error {
+	if b.size < 8 || b.size > maxBox {
+		return errors.New("media: invalid stss size")
+	}
+	data := readN(r, b, maxBox)
+	if int64(len(data)) != b.size {
+		return errors.New("media: truncated stss")
+	}
+	count := uint64(binary.BigEndian.Uint32(data[4:8]))
+	if count > uint64((len(data)-8)/4) {
+		return errors.New("media: truncated stss entries")
+	}
+	var prev uint64
+	for i := uint64(0); i < count; i++ {
+		n := uint64(binary.BigEndian.Uint32(data[8+i*4:]))
+		if n <= prev || n > info.FrameCount {
+			return errors.New("media: invalid sync sample index")
+		}
+		if i == 0 {
+			info.StartsWithKeyframe = n == 1
+		} else {
+			info.MaxKeyframeInterval = max(info.MaxKeyframeInterval, n-prev)
+		}
+		prev = n
+	}
+	if prev > 0 {
+		info.MaxKeyframeInterval = max(info.MaxKeyframeInterval, info.FrameCount-prev+1)
+	}
+	return nil
 }
 
 func codecOf(fc string) string {

@@ -2,7 +2,7 @@
 # 交叉编译 5 个目标（CGO_ENABLED=0），产物在 dist/<os>-<arch>/，并生成 dist/SHA256SUMS。
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSION=${VERSION:-0.2.1-mvp}
+VERSION=${VERSION:-0.3.0-mvp}
 TARGETS=${TARGETS:-"windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64"}
 mkdir -p dist
 for t in $TARGETS; do

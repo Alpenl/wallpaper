@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
-# 用 NSIS 生成安装器：dist/Wallpaper-<ver>-windows-<arch>-setup.exe。需要 makensis（apt install nsis）。
-# arm64 安装器默认不带 mpv（shinchiro 有 aarch64 构建：scripts/fetch-mpv.sh aarch64 后会自动带上）。
+# Per-user NSIS installers. mpv is deliberately not bundled by this release.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSION=${VERSION:-0.2.1-mvp}
+source scripts/package-common.sh
+package_validate
+package_require_metadata
+command -v makensis >/dev/null || { echo 'missing makensis (Debian/Ubuntu: apt-get install nsis)' >&2; exit 1; }
+mkdir -p dist/package-staging
+stage=$(mktemp -d "$PWD/dist/package-staging/windows.XXXXXX")
+trap 'rm -rf "$stage"' EXIT
 for arch in ${ARCHES:-amd64 arm64}; do
-  src=dist/windows-$arch
-  [ -f "$src/wallpaperd.exe" ] || { echo "missing $src/wallpaperd.exe (run scripts/build.sh)"; exit 1; }
-  m=x86_64; [ "$arch" = arm64 ] && m=aarch64
-  if [ -f third_party/mpv/$m/mpv.exe ]; then mkdir -p "$src/mpv"; cp third_party/mpv/$m/mpv.exe third_party/mpv/$m/SOURCE.txt "$src/mpv/"; fi
+  case "$arch" in amd64|arm64) ;; *) echo "unsupported Windows arch: $arch" >&2; exit 1;; esac
+  bin=dist/windows-$arch/wallpaperd.exe
+  package_check_binary "$bin" "windows/$arch"
+  src="$stage/$arch"
+  mkdir -p "$src"
+  cp "$bin" "$src/wallpaperd.exe"
+  cp dist/package-metadata/{RELEASE-NOTES,BUILD-INFO,THIRD-PARTY-NOTICES}.txt "$src/"
+  # Fresh staging never inherits third_party/mpv or a previous dist/*/mpv.
   scripts/sign-windows.sh "$src/wallpaperd.exe"
-  out=dist/Wallpaper-$VERSION-windows-$arch-setup.exe
-  makensis -V2 -DVERSION="$VERSION" -DARCH="$arch" -DSRC="$PWD/$src" -DOUT="$PWD/$out" packaging/windows/installer.nsi
+  out="$RELEASE_DIR/Wallpaper-$VERSION-windows-$arch-setup.exe"
+  makensis -V2 -DVERSION="$VERSION" -DARCH="$arch" -DSRC="$src" -DOUT="$out" packaging/windows/installer.nsi
   scripts/sign-windows.sh "$out"
   ls -la "$out"
 done

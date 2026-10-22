@@ -114,9 +114,12 @@ type Saver struct {
 	Delay    time.Duration
 	ReadOnly bool
 	mu       sync.Mutex
+	writeMu  sync.Mutex
 	pending  func() any
 	t        *time.Timer
 	OnError  func(error)
+	// writeAtomic 可在测试中替换，以控制磁盘写入的完成时机；nil 使用 WriteAtomic。
+	writeAtomic func(string, any) error
 }
 
 // Schedule 记录最新快照，Delay 之后写入。snap 在写入时调用，须自行保证并发安全。
@@ -136,8 +139,21 @@ func (s *Saver) Schedule(snap func() any) {
 	}
 }
 
-// Flush 立即写出待写内容。
+// Flush 等待正在进行的写入，然后立即写出待写内容。
 func (s *Saver) Flush() error {
+	err := s.flush()
+	// 回调可再次 Schedule/Flush；不在持有写锁时调用。
+	if err != nil && s.OnError != nil {
+		s.OnError(err)
+	}
+	return err
+}
+
+func (s *Saver) flush() error {
+	// 必须先取得写锁，再取出最新快照。否则多个 Flush 可能乱序覆盖文件，
+	// 或同时使用同一个 .tmp；即使 pending 为空，退出刷新也必须等待磁盘写完。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.Lock()
 	snap := s.pending
 	s.pending = nil
@@ -149,9 +165,9 @@ func (s *Saver) Flush() error {
 	if snap == nil || s.ReadOnly {
 		return nil
 	}
-	err := WriteAtomic(s.Path, snap())
-	if err != nil && s.OnError != nil {
-		s.OnError(err)
+	write := s.writeAtomic
+	if write == nil {
+		write = WriteAtomic
 	}
-	return err
+	return write(s.Path, snap())
 }

@@ -1,31 +1,41 @@
 #!/usr/bin/env bash
-# 生成 dist/Wallpaper-<ver>-macos-<arch>.app.zip（每个架构一个；没有 lipo 时不做 universal）。
-# LSUIElement=true：只有菜单栏图标，没有 Dock 图标。签名/公证走 scripts/sign-macos.sh（只在 macOS 上生效）。
+# Native macOS .app archives; no Apple Developer ID/notarization by default.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSION=${VERSION:-0.2.1-mvp}
+source scripts/package-common.sh
+package_validate
+package_require_metadata
+if [ -n "${WPAPP_CODESIGN_ID:-}${WPAPP_NOTARY_PROFILE:-}" ] && [ "$(uname)" != Darwin ]; then
+  echo 'macOS signing/notarization requires a macOS host' >&2; exit 1
+fi
 for arch in ${ARCHES:-arm64 amd64}; do
+  case "$arch" in amd64|arm64) ;; *) echo "unsupported macOS arch: $arch" >&2; exit 1;; esac
   bin=dist/darwin-$arch/wallpaperd
-  [ -f "$bin" ] || { echo "missing $bin (run scripts/build.sh)"; exit 1; }
+  package_check_binary "$bin" "darwin/$arch"
   app=dist/macos-$arch/Wallpaper.app
   rm -rf "$app"; mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  cp "$bin" "$app/Contents/MacOS/wallpaperd"; chmod +x "$app/Contents/MacOS/wallpaperd"
+  cp "$bin" "$app/Contents/MacOS/wallpaperd"; chmod 755 "$app/Contents/MacOS/wallpaperd"
+  cp dist/package-metadata/{RELEASE-NOTES,BUILD-INFO,THIRD-PARTY-NOTICES}.txt "$app/Contents/Resources/"
   sed "s/@VERSION@/${VERSION%%-*}/g" packaging/macos/Info.plist.tmpl > "$app/Contents/Info.plist"
   printf 'APPL????' > "$app/Contents/PkgInfo"
   scripts/sign-macos.sh "$app"
-  out=$PWD/dist/Wallpaper-$VERSION-macos-$arch.app.zip
-  rm -f "$out"
-  # 用 Python 打 zip 以保留可执行位与符号链接（盒子上没有 zip/ditto）
+  out="$RELEASE_DIR/Wallpaper-$VERSION-macos-$arch.app.zip"
+  # Explicit Unix metadata preserves executable permissions and symbolic links.
   python3 - "dist/macos-$arch" "$out" <<'PY'
-import os, sys, zipfile, stat
-root, out = sys.argv[1], sys.argv[2]
-with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-    for d, _, fs in os.walk(os.path.join(root, "Wallpaper.app")):
-        for f in sorted(fs):
-            p = os.path.join(d, f); arc = os.path.relpath(p, root)
-            zi = zipfile.ZipInfo.from_file(p, arc); zi.compress_type = zipfile.ZIP_DEFLATED
-            zi.external_attr = (os.stat(p).st_mode & 0xFFFF) << 16
-            z.writestr(zi, open(p, "rb").read())
+from pathlib import Path
+import os, sys, zipfile
+root, out = Path(sys.argv[1]), Path(sys.argv[2])
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
+    for path in sorted((root / 'Wallpaper.app').rglob('*')):
+        if path.is_dir() and not path.is_symlink():
+            continue
+        name = path.relative_to(root).as_posix()
+        info = zipfile.ZipInfo.from_file(path, name)
+        info.create_system = 3
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = (path.lstat().st_mode & 0xFFFF) << 16
+        data = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+        archive.writestr(info, data)
 PY
   ls -la "$out"
 done

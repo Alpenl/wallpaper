@@ -28,13 +28,15 @@ import (
 
 // Options 是导入依赖。
 type Options struct {
-	Library   string
-	Cache     string
-	GOOS      string
-	Probe     func(path string) (*media.Info, error)
-	Snapshot  func(src, dstPNG string) error                   // 可为 nil
-	Transcode func(ctx context.Context, src, dst string) error // 可为 nil（本平台无系统编码器）
-	Lang      string
+	Library         string
+	Cache           string
+	GOOS            string
+	Probe           func(path string) (*media.Info, error)
+	Snapshot        func(src, dstPNG string) error                   // 可为 nil
+	Transcode       func(ctx context.Context, src, dst string) error // 可为 nil（本平台无系统编码器）
+	TranscodeExt    string                                           // .mp4/.mov/.m4v; empty preserves the legacy .mov contract
+	CanTranscodeGIF bool                                             // only advertise when this encoder accepts GIF sources
+	Lang            string
 }
 
 // Result 是导入结果。
@@ -106,6 +108,37 @@ func zipHas(p, name string) bool {
 }
 
 func importWPK(src string, o Options) (*Result, error) {
+	// Reject unavailable renderers before Extract replaces an existing ID.
+	zr, err := zip.OpenReader(src)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range zr.File {
+		if strings.EqualFold(f.Name, "manifest.json") {
+			rd, e := f.Open()
+			if e != nil {
+				zr.Close()
+				return nil, e
+			}
+			b, e := io.ReadAll(io.LimitReader(rd, wpk.MaxManifest+1))
+			rd.Close()
+			if e != nil {
+				zr.Close()
+				return nil, e
+			}
+			m, e := wpk.Parse(b)
+			if e != nil {
+				zr.Close()
+				return nil, e
+			}
+			if m.Type != "video" && m.Type != "image" {
+				zr.Close()
+				return nil, fmt.Errorf("%w: %s 类型的壁纸", ErrUnsupported, m.Type)
+			}
+			break
+		}
+	}
+	zr.Close()
 	r, err := wpk.Extract(src, o.Library)
 	if err != nil {
 		return nil, err
@@ -123,6 +156,7 @@ func importWPK(src string, o Options) (*Result, error) {
 	if m.Video != nil {
 		it.Codec = m.Video.Codec
 	}
+	applyMetadata(&it, m)
 	res := &Result{Item: it}
 	snapshotItem(o, &res.Item, filepath.Join(r.Dir, filepath.FromSlash(m.Entry)), res)
 	return res, nil
@@ -174,6 +208,10 @@ func importFile(ctx context.Context, src string, o Options, origin, title string
 		return nil, fmt.Errorf("import: 无法识别的文件: %w", err)
 	}
 	plan := transcode.Decide(info, o.GOOS)
+	if info.Codec == "gif" && o.Transcode != nil && o.CanTranscodeGIF {
+		plan.Action = transcode.Required
+		plan.Notes = append(plan.Notes, "GIF 将转换为视频；未提供编码器时支持的平台仍可直接播放 GIF")
+	}
 	res := &Result{Warnings: plan.Notes}
 	id := NewID()
 	tmp, err := os.MkdirTemp(o.Library, ".import-")
@@ -199,14 +237,26 @@ func importFile(ctx context.Context, src string, o Options, origin, title string
 		if o.Transcode == nil {
 			return nil, fmt.Errorf("%w: %s", ErrNeedsTranscode, strings.Join(plan.Notes, "；"))
 		}
-		name = strings.TrimSuffix(name, filepath.Ext(name)) + ".mov"
+		ext := strings.ToLower(o.TranscodeExt)
+		if ext == "" {
+			ext = ".mov"
+		}
+		if ext != ".mov" && ext != ".mp4" && ext != ".m4v" {
+			return nil, fmt.Errorf("import: invalid transcode extension %q", ext)
+		}
+		name = strings.TrimSuffix(name, filepath.Ext(name)) + ext
 		dst = filepath.Join(tmp, "content", name)
 		if err := o.Transcode(ctx, src, dst); err != nil {
 			return nil, err
 		}
-		if ni, err := o.Probe(dst); err == nil {
-			info = ni
+		ni, err := o.Probe(dst)
+		if err != nil {
+			return nil, fmt.Errorf("import: 转码产物验证失败: %w", err)
 		}
+		if ni == nil || ni.Kind != "video" || (ni.Codec != "h264" && ni.Codec != "hevc") {
+			return nil, errors.New("import: 转码产物不是可播放的 H.264/HEVC 视频")
+		}
+		info = ni
 		status = "done"
 	} else if err := copyFile(src, dst); err != nil {
 		return nil, err
@@ -243,13 +293,18 @@ func importFile(ctx context.Context, src string, o Options, origin, title string
 	}
 	ok = true
 	res.Item = config.Item{ID: id, Dir: final, Schema: 0, Origin: origin, Title: title, Type: info.Kind, Entry: m.Entry,
-		Codec: info.Codec, Transcode: status, Note: strings.Join(plan.Notes, "；"), AddedAt: time.Now().UTC()}
+		Codec: info.Codec, Transcode: status, Note: strings.Join(plan.Notes, "；"), AddedAt: time.Now().UTC(), Width: info.W, Height: info.H, DurationSec: info.DurationSec}
+	applyMetadata(&res.Item, m)
 	snapshotItem(o, &res.Item, filepath.Join(final, "content", name), res)
 	return res, nil
 }
 
 // snapshotItem 生成 cache/<id>/first.png 和包里的 preview.png（失败只记警告）。
 func snapshotItem(o Options, it *config.Item, media string, res *Result) {
+	defer func() { it.Colors = PreviewColors(it.Snapshot) }()
+	if st, err := os.Stat(media); err == nil {
+		it.SizeBytes = st.Size()
+	}
 	dir := filepath.Join(o.Cache, it.ID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		res.Warnings = append(res.Warnings, "截图目录: "+err.Error())
@@ -257,9 +312,11 @@ func snapshotItem(o Options, it *config.Item, media string, res *Result) {
 	}
 	if it.Type == "image" {
 		p := filepath.Join(dir, "first"+strings.ToLower(filepath.Ext(media)))
-		if err := copyFile(media, p); err == nil {
-			it.Snapshot = p
+		if err := replacePreview(media, p); err != nil {
+			res.Warnings = append(res.Warnings, "图片预览失败: "+err.Error())
+			return
 		}
+		it.Snapshot = p
 		return
 	}
 	if o.Snapshot == nil {
@@ -275,6 +332,34 @@ func snapshotItem(o Options, it *config.Item, media string, res *Result) {
 	if !exists(filepath.Join(it.Dir, "preview.png")) && !exists(filepath.Join(it.Dir, "preview.webp")) {
 		_ = copyFile(p, filepath.Join(it.Dir, "preview.png"))
 	}
+}
+
+// replacePreview stages the complete image beside its destination. Reimporting
+// a package with the same ID must replace its old preview, not silently retain
+// the old bytes because copyFile intentionally refuses existing destinations.
+func replacePreview(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.CreateTemp(filepath.Dir(dst), ".preview-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(out.Name())
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(out.Name(), dst)
 }
 
 func copyFile(src, dst string) error {
@@ -413,4 +498,16 @@ func importWE(ctx context.Context, dir string, o Options) (*Result, error) {
 		return nil, err
 	}
 	return importFile(ctx, src, o, "we", p.Title, nil)
+}
+
+// applyMetadata retains searchable package metadata without activating scripts.
+func applyMetadata(it *config.Item, m *wpk.Manifest) {
+	if m.Author != nil {
+		it.Author = m.Author.Name
+	}
+	it.Description = m.Description.Pick("zh-CN")
+	it.Tags = append([]string(nil), m.Tags...)
+	if m.Video != nil {
+		it.Width, it.Height, it.DurationSec = m.Video.W, m.Video.H, m.Video.DurationSec
+	}
 }

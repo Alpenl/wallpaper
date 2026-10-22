@@ -2,18 +2,20 @@ package config
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
 
 // 当前各文件的 schemaVersion。
 const (
-	ConfigVersion      = 1
-	LibraryVersion     = 1
-	AssignmentsVersion = 1
-	StateVersion       = 1
+	ConfigVersion      = 2
+	LibraryVersion     = 2
+	AssignmentsVersion = 2
+	StateVersion       = 2
 )
 
 // Config 是 config.json（16.2）。默认值见 Defaults，对应 DECISIONS_PENDING 的 D-07/D-15。
@@ -41,14 +43,22 @@ type Perf struct {
 }
 
 type Pause struct {
-	BatteryPolicy    string `json:"batteryPolicy"` // pause | fps15 | ignore
-	LowBatteryPct    int    `json:"lowBatteryPct"`
-	ResumeDebounceMs int    `json:"resumeDebounceMs"`
-	OnFullscreen     bool   `json:"onFullscreen"`
-	OnCovered        bool   `json:"onCovered"`
+	BatteryPolicy    string    `json:"batteryPolicy"` // pause | fps15 | ignore
+	LowBatteryPct    int       `json:"lowBatteryPct"`
+	ResumeDebounceMs int       `json:"resumeDebounceMs"`
+	OnFullscreen     bool      `json:"onFullscreen"`
+	OnCovered        bool      `json:"onCovered"`
+	AppRules         []AppRule `json:"appRules,omitempty"`
+}
+
+// AppRule matches an executable basename, never a window title. First matching rule wins.
+type AppRule struct {
+	Executable string `json:"executable"`
+	Action     string `json:"action"` // pause | saver | ignore (fullscreen/covered only)
 }
 
 type Startup struct {
+	OpenSettings  bool `json:"openSettings"`
 	LaunchAtLogin bool `json:"launchAtLogin"`
 	Asked         bool `json:"asked"` // F-10：首次运行时询问过
 }
@@ -60,10 +70,14 @@ type Privacy struct {
 
 // Render 选择渲染后端（D-04：Windows 默认 mpv，可选 mf）。
 type Render struct {
-	WindowsBackend string `json:"windowsBackend"`
-	MpvPath        string `json:"mpvPath,omitempty"` // 空 = 安装目录下的 mpv/mpv(.exe)，再找 PATH
-	Hwdec          string `json:"hwdec,omitempty"`
-	FFmpegPath     string `json:"ffmpegPath,omitempty"` // F-07：用户自己安装的 ffmpeg（不随安装包分发）
+	TranscodeResolution string `json:"transcodeResolution"` // display | 1080p | 1440p | 2160p
+	Muted               bool   `json:"muted"`
+	ResumePosition      bool   `json:"resumePosition"`
+	AutoTranscode       bool   `json:"autoTranscode"`
+	WindowsBackend      string `json:"windowsBackend"`
+	MpvPath             string `json:"mpvPath,omitempty"` // 空 = 安装目录下的 mpv/mpv(.exe)，再找 PATH
+	Hwdec               string `json:"hwdec,omitempty"`
+	FFmpegPath          string `json:"ffmpegPath,omitempty"` // F-07：用户自己安装的 ffmpeg（不随安装包分发）
 }
 
 type UI struct {
@@ -82,9 +96,9 @@ func Defaults() Config {
 	return Config{SchemaVersion: ConfigVersion,
 		Perf:    Perf{Profile: "balanced", FPSCap: 30, RenderScale: 1},
 		Pause:   Pause{BatteryPolicy: "pause", LowBatteryPct: 20, ResumeDebounceMs: 300, OnFullscreen: true, OnCovered: true},
-		Startup: Startup{LaunchAtLogin: false},
+		Startup: Startup{LaunchAtLogin: false, OpenSettings: true},
 		Privacy: Privacy{Telemetry: false, CrashReports: "never"},
-		Render:  Render{WindowsBackend: "mpv"},
+		Render:  Render{TranscodeResolution: "display", WindowsBackend: "mpv", Muted: true, ResumePosition: true},
 		UI:      UI{Lang: "zh-CN", Theme: "system", Accent: "blue", LibraryView: "grid", ImportApply: "none"},
 		Update:  Update{AutoCheck: true}}
 }
@@ -130,23 +144,104 @@ func (c *Config) Normalize() {
 	if c.UI.ImportApply != "current" {
 		c.UI.ImportApply = "none"
 	}
+	if math.IsNaN(c.Perf.RenderScale) || math.IsInf(c.Perf.RenderScale, 0) || c.Perf.RenderScale < 0.25 || c.Perf.RenderScale > 1 {
+		c.Perf.RenderScale = 1
+	}
+	switch c.Render.TranscodeResolution {
+	case "display", "1080p", "1440p", "2160p":
+	default:
+		c.Render.TranscodeResolution = "display"
+	}
+	switch c.Render.Hwdec {
+	case "", "auto-safe", "auto", "no", "d3d11va", "dxva2", "vaapi", "vdpau", "videotoolbox":
+	default:
+		c.Render.Hwdec = ""
+	}
+	rules := make([]AppRule, 0, len(c.Pause.AppRules))
+	seen := map[string]bool{}
+	for _, rule := range c.Pause.AppRules {
+		rule.Executable = ExecutableName(strings.TrimSpace(rule.Executable))
+		if rule.Executable == "" || len(rule.Executable) > 256 || strings.ContainsAny(rule.Executable, "\x00\r\n") {
+			continue
+		}
+		if rule.Action != "pause" && rule.Action != "saver" && rule.Action != "ignore" {
+			continue
+		}
+		key := rule.Executable
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		rules = append(rules, rule)
+		if len(rules) == 64 {
+			break
+		}
+	}
+	if len(rules) == 0 {
+		rules = nil
+	}
+	c.Pause.AppRules = rules
 	c.Privacy.Telemetry = false
+}
+
+// Clone returns a detached configuration suitable for snapshots and edits.
+func (c Config) Clone() Config {
+	c.Pause.AppRules = append([]AppRule(nil), c.Pause.AppRules...)
+	return c
+}
+
+// ExecutableName accepts a path or basename, but deliberately never matches titles.
+func ExecutableName(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "\\", "/")
+	if s == "" {
+		return ""
+	}
+	n := filepath.Base(s)
+	if n == "." || n == "/" {
+		return ""
+	}
+	return n
+}
+
+func (p Pause) AppAction(executable string) string {
+	name := ExecutableName(executable)
+	if name == "" {
+		return ""
+	}
+	for _, r := range p.AppRules {
+		if name == r.Executable || runtime.GOOS == "windows" && strings.EqualFold(name, r.Executable) {
+			return r.Action
+		}
+	}
+	return ""
 }
 
 // Item 是 library.json 的一项。
 type Item struct {
-	ID        string    `json:"id"`
-	Dir       string    `json:"dir"` // library/<id>
-	Schema    int       `json:"schema"`
-	Origin    string    `json:"origin"` // native | lively | we | file
-	Title     string    `json:"title"`
-	Type      string    `json:"type"` // video | image
-	Entry     string    `json:"entry"`
-	Codec     string    `json:"codec,omitempty"`
-	Transcode string    `json:"transcode"` // none | recommended | done
-	Note      string    `json:"note,omitempty"`
-	Snapshot  string    `json:"snapshot,omitempty"` // cache/<id>/first.png
-	AddedAt   time.Time `json:"addedAt"`
+	ID          string    `json:"id"`
+	Author      string    `json:"author,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Tags        []string  `json:"tags,omitempty"`
+	Colors      []string  `json:"colors,omitempty"`
+	Width       int       `json:"width,omitempty"`
+	Height      int       `json:"height,omitempty"`
+	DurationSec float64   `json:"durationSec,omitempty"`
+	SizeBytes   int64     `json:"sizeBytes,omitempty"`
+	Dir         string    `json:"dir"` // library/<id>
+	Schema      int       `json:"schema"`
+	Origin      string    `json:"origin"` // native | lively | we | file
+	Title       string    `json:"title"`
+	Type        string    `json:"type"` // video | image
+	Entry       string    `json:"entry"`
+	Codec       string    `json:"codec,omitempty"`
+	Transcode   string    `json:"transcode"` // none | recommended | done
+	Note        string    `json:"note,omitempty"`
+	Snapshot    string    `json:"snapshot,omitempty"` // cache/<id>/first.png
+	AddedAt     time.Time `json:"addedAt"`
 }
 
 // Library 是 library.json。
@@ -188,10 +283,48 @@ func (l *Library) Remove(id string) bool {
 // Assignments 是 assignments.json：显示器稳定 ID（desktop.DisplayID）→ 壁纸 id。
 // Aliases 是用户给显示器起的名字（同样按稳定 ID 存，换接口顺序、重启后不变）。
 type Assignments struct {
-	SchemaVersion int               `json:"schemaVersion"`
-	Default       string            `json:"default,omitempty"`
-	Displays      map[string]string `json:"displays"`
-	Aliases       map[string]string `json:"aliases,omitempty"`
+	// Layout defaults to independent. Span keeps independent assignments intact.
+	Layout        string                    `json:"layout,omitempty"`
+	SpanItem      string                    `json:"spanItem,omitempty"`
+	SpanOptions   DisplayOptions            `json:"spanOptions,omitempty"`
+	SchemaVersion int                       `json:"schemaVersion"`
+	Default       string                    `json:"default,omitempty"`
+	Displays      map[string]string         `json:"displays"`
+	Aliases       map[string]string         `json:"aliases,omitempty"`
+	Options       map[string]DisplayOptions `json:"options,omitempty"`
+}
+
+// DisplayOptions is persisted by stable display ID, independent of wallpaper assignment.
+type DisplayOptions struct {
+	Fit     string  `json:"fit"`
+	Speed   float64 `json:"speed"`
+	Paused  bool    `json:"paused"`
+	Profile string  `json:"profile,omitempty"`
+}
+
+func DefaultDisplayOptions() DisplayOptions { return DisplayOptions{Fit: "fill", Speed: 1} }
+func (o *DisplayOptions) Normalize() {
+	switch o.Fit {
+	case "fill", "fit", "stretch":
+	default:
+		o.Fit = "fill"
+	}
+	if math.IsNaN(o.Speed) || math.IsInf(o.Speed, 0) || o.Speed < 0.25 || o.Speed > 4 {
+		o.Speed = 1
+	}
+	switch o.Profile {
+	case "", "balanced", "smooth", "saver":
+	default:
+		o.Profile = ""
+	}
+}
+func (a *Assignments) OptionsFor(display string) DisplayOptions {
+	o, ok := a.Options[display]
+	if !ok {
+		return DefaultDisplayOptions()
+	}
+	o.Normalize()
+	return o
 }
 
 // Migrate 把旧 ID 下的单屏设置（壁纸、别名）搬到新 ID；新 ID 已有设置时不覆盖。返回是否有改动。
@@ -209,6 +342,13 @@ func (a *Assignments) Migrate(newID string, legacy []string) bool {
 				a.Displays[newID] = v
 			}
 			delete(a.Displays, old)
+			changed = true
+		}
+		if v, ok := a.Options[old]; ok {
+			if _, has := a.Options[newID]; !has {
+				a.Options[newID] = v
+			}
+			delete(a.Options, old)
 			changed = true
 		}
 		if v, ok := a.Aliases[old]; ok {
@@ -260,6 +400,7 @@ func (a *Assignments) For(display string) string {
 
 // State 是 state.json。
 type State struct {
+	Metrics       LocalMetrics       `json:"metrics"`
 	SchemaVersion int                `json:"schemaVersion"`
 	CleanShutdown bool               `json:"cleanShutdown"`
 	Starts        []time.Time        `json:"starts"`             // 非正常退出后的启动时间（安全模式判定）
@@ -333,12 +474,17 @@ func Open(p Paths) (*Store, error) {
 	if err := load(s.AssignSaver, AssignmentsVersion, &s.Assign); err != nil {
 		return nil, err
 	}
+	for k, o := range s.Assign.Options {
+		o.Normalize()
+		s.Assign.Options[k] = o
+	}
 	if s.Assign.Displays == nil {
 		s.Assign.Displays = map[string]string{}
 	}
 	if err := load(s.StateSaver, StateVersion, &s.State); err != nil {
 		return nil, err
 	}
+	s.State.Metrics.Normalize()
 	if s.State.Positions == nil {
 		s.State.Positions = map[string]float64{}
 	}

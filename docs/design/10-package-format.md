@@ -1,5 +1,7 @@
 # 10 壁纸包格式 v0（完整规格）
 
+> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
+
 > 机器可读的 schema：[schema/manifest.v0.schema.json](schema/manifest.v0.schema.json)；示例：[schema/example.video.json](schema/example.video.json)、[schema/example.web.json](schema/example.web.json)。
 
 ## 10.1 参考格式（导入兼容的依据）

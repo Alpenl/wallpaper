@@ -1,5 +1,9 @@
 # 09 多显示器 / DPI / HDR
 
+> **本轮实现接续**：Win/mac 已增加每屏裁切原生宿主的空间跨屏，支持独立/跨屏模式往返保存，按屏暂停和静态首帧裁切。它不是复制模式，也没有单解码器/跨屏帧时钟保证；混合 DPI 与真实多屏仍待验收。详见 [原生跨屏](../SPANNING.md)。下文历史设计不因此变成实测结果。
+
+> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
+
 | 项 | Windows | macOS | 依据 |
 |---|---|---|---|
 | 枚举 | `EnumDisplayMonitors` + `GetMonitorInfo`；刷新率用 `EnumDisplaySettings`；MyGo `Screen.Displays()` 没有刷新率和 HDR 字段 | `NSScreen.screens`、`backingScaleFactor`、`maximumFramesPerSecond`；HDR 看 `maximumExtendedDynamicRangeColorComponentValue` | 【源码】mygo `modules.go:210`；其余为【文档】API |

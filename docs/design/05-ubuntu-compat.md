@@ -1,5 +1,7 @@
 # 05 Ubuntu / Linux 兼容（仅作兼容参考，不是 MVP 目标）
 
+> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
+
 > 目的：证明 02 章的接口（`desktop.Host`、`Caps.ExternalSurfaceOnly`、`render.Renderer`）能装下 Linux 的各种实现路径，并且**不需要 cgo**。Linux 版本排在 MVP 之后。
 
 ## 5.1 会话矩阵（2026-10）

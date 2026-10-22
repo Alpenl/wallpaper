@@ -37,20 +37,20 @@ func (s *Settings) applyTheme(c *ui.Context, u config.UI) {
 		var t ui.Theme
 		if dark {
 			t = *ui.DarkTheme()
-			t.Background = ui.Hex("#15171c")
-			t.Surface = ui.Hex("#262a32")
-			t.SurfaceHover = ui.Hex("#2e333c")
-			t.SurfacePressed = ui.Hex("#363b45")
-			t.Border = ui.Hex("#2f343d")
-			t.TextMuted = ui.Hex("#9aa3b2")
+			t.Background = ui.Hex("#18181b")
+			t.Surface = ui.Hex("#27272a")
+			t.SurfaceHover = ui.Hex("#303034")
+			t.SurfacePressed = ui.Hex("#38383d")
+			t.Border = ui.Hex("#303034")
+			t.TextMuted = ui.Hex("#8e8e96")
 		} else {
 			t = *ui.LightTheme()
-			t.Background = ui.Hex("#f4f5f7")
+			t.Background = ui.Hex("#f7f7f5")
 			t.Surface = ui.Hex("#ffffff")
-			t.SurfaceHover = ui.Hex("#f1f3f6")
-			t.SurfacePressed = ui.Hex("#e7eaef")
-			t.Border = ui.Hex("#e3e6eb")
-			t.TextMuted = ui.Hex("#6b7280")
+			t.SurfaceHover = ui.Hex("#f0f0ed")
+			t.SurfacePressed = ui.Hex("#e7e7e4")
+			t.Border = ui.Hex("#e8e8e5")
+			t.TextMuted = ui.Hex("#71717a")
 		}
 		a := accentColor(u.Accent)
 		t.Accent = a
@@ -66,14 +66,14 @@ func (s *Settings) applyTheme(c *ui.Context, u config.UI) {
 
 func cardBg(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.Hex("#1d2026")
+		return ui.Hex("#202024")
 	}
 	return ui.Hex("#ffffff")
 }
 
 func sideBg(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.Hex("#111317")
+		return ui.Hex("#141416")
 	}
-	return ui.Hex("#eceef2")
+	return ui.Hex("#f0f0ed")
 }

@@ -42,17 +42,20 @@ type scr struct {
 type macDeb = Debounce3
 
 type Host struct {
-	o      Options
-	log    *slog.Logger
-	events chan desktop.Event
-	stop   chan struct{}
-	once   sync.Once
-	mu     sync.Mutex
-	scrs   []*scr
-	surfs  map[objc.ID]*surface
+	o                   Options
+	log                 *slog.Logger
+	events              chan desktop.Event
+	stop                chan struct{}
+	once                sync.Once
+	mu                  sync.Mutex
+	scrs                []*scr
+	surfs               map[objc.ID]*surface
+	displaysInitialized bool
 
-	thermal  int
-	lowPower bool
+	thermal             int
+	lowPower            bool
+	foreground          desktop.ForegroundTracker
+	foregroundSupported bool
 }
 
 func New(o Options) *Host {
@@ -62,10 +65,12 @@ func New(o Options) *Host {
 	return &Host{o: o, log: o.Log, events: make(chan desktop.Event, 256), stop: make(chan struct{}), surfs: map[objc.ID]*surface{}}
 }
 
-func (h *Host) emit(e desktop.Event) {
+func (h *Host) emit(e desktop.Event) bool {
 	select {
 	case h.events <- e:
+		return true
 	default:
+		return false
 	}
 }
 
@@ -73,7 +78,10 @@ func (h *Host) Start() error {
 	if err := macos.Load(); err != nil {
 		return err
 	}
-	macos.Main(h.refresh)
+	macos.Main(func() {
+		h.refresh()
+		h.foregroundSupported = foregroundAvailable()
+	})
 	go h.sampler()
 	go h.battery()
 	go h.powerLoop()
@@ -99,10 +107,16 @@ func (h *Host) refresh() {
 		sum := sha256.Sum256([]byte(key))
 		b := macos.CGDisplayBounds(num)
 		scale := objc.Send[float64](s, macos.Sel("backingScaleFactor"))
+		bounds := image.Rect(int(b.Origin.X), int(b.Origin.Y), int(b.Origin.X+b.Size.W), int(b.Origin.Y+b.Size.H))
+		var modePixels image.Point
+		if mode := macos.CGDisplayCopyDisplayMode(num); mode != 0 {
+			modePixels = image.Pt(int(macos.CGDisplayModeGetPixelWidth(mode)), int(macos.CGDisplayModeGetPixelHeight(mode)))
+			macos.CGDisplayModeRelease(mode)
+		}
 		name := macos.GoString(s.Send(macos.Sel("localizedName")))
 		out = append(out, &scr{cgID: num, ns: s, d: desktop.Display{ID: desktop.DisplayID("m-" + hex.EncodeToString(sum[:6])), Name: desktop.CleanName(name), Device: fmt.Sprint(num),
 			Scale: scale, Primary: i == 0,
-			Bounds: image.Rect(int(b.Origin.X), int(b.Origin.Y), int(b.Origin.X+b.Size.W), int(b.Origin.Y+b.Size.H))}})
+			Bounds: bounds, Pixels: displayPixels(bounds.Size(), modePixels, scale)}})
 	}
 	// 按物理排列排序；两块同型号、EDID 无序列号的屏 UUID 可能相同，去重后加 #2。
 	sort.SliceStable(out, func(i, j int) bool {
@@ -121,8 +135,33 @@ func (h *Host) refresh() {
 		out[i].d.ID = ds[i].ID
 	}
 	h.mu.Lock()
+	preserveScreenSignals(h.scrs, out)
+	previous := make([]desktop.Display, len(h.scrs))
+	for i, s := range h.scrs {
+		previous[i] = s.d
+	}
+	changed := h.displaysInitialized && !sameDisplayTopology(previous, ds)
 	h.scrs = out
+	h.displaysInitialized = true
 	h.mu.Unlock()
+	if changed {
+		h.emit(desktop.Event{Kind: desktop.EventDisplaysChanged, Source: "NSScreen topology"})
+	}
+}
+
+// refresh runs synchronously between sampler iterations. Preserve both the
+// debounced state and in-flight counts, including across geometry changes, so
+// a previous true signal can still produce its matching false notification.
+func preserveScreenSignals(previous, current []*scr) {
+	byID := make(map[desktop.DisplayID]*scr, len(previous))
+	for _, s := range previous {
+		byID[s.d.ID] = s
+	}
+	for _, s := range current {
+		if old := byID[s.d.ID]; old != nil {
+			s.fs, s.cov = old.fs, old.cov
+		}
+	}
 }
 
 func (h *Host) Displays() []desktop.Display {
@@ -136,37 +175,59 @@ func (h *Host) Displays() []desktop.Display {
 }
 
 type surface struct {
-	h    *Host
-	win  objc.ID
-	view objc.ID
-	b    image.Rectangle
+	h      *Host
+	win    objc.ID
+	view   objc.ID // Renderer view; the NSWindow content view clips a spanning canvas.
+	b      image.Rectangle
+	closed bool // Accessed only on the AppKit main thread.
 }
 
 func (s *surface) Native() uintptr         { return uintptr(s.view) }
 func (s *surface) Bounds() image.Rectangle { return s.b }
 func (s *surface) SetVisible(v bool) error {
+	var err error
 	macos.Main(func() {
+		if s.closed {
+			err = errors.New("mac: surface closed")
+			return
+		}
 		if v {
 			s.win.Send(macos.Sel("orderFront:"), objc.ID(0))
 		} else {
 			s.win.Send(macos.Sel("orderOut:"), objc.ID(0))
 		}
 	})
-	return nil
+	return err
 }
 func (s *surface) Close() error {
 	macos.Main(func() {
+		if s.closed {
+			return
+		}
+		s.closed = true
 		s.win.Send(macos.Sel("orderOut:"), objc.ID(0))
 		s.win.Send(macos.Sel("close"))
 		s.win.Send(macos.Sel("release"))
 	})
 	s.h.mu.Lock()
-	delete(s.h.surfs, s.win)
+	if s.h.surfs[s.win] == s {
+		delete(s.h.surfs, s.win)
+	}
 	s.h.mu.Unlock()
 	return nil
 }
 
 func (h *Host) CreateSurface(id desktop.DisplayID) (desktop.Surface, error) {
+	return h.createSurface(id, nil)
+}
+
+// CreateCanvasSurface preserves a physical display-sized NSWindow and clips a
+// translated full-desktop rendering view inside its layer-backed content view.
+func (h *Host) CreateCanvasSurface(id desktop.DisplayID, canvas image.Rectangle) (desktop.Surface, error) {
+	return h.createSurface(id, &canvas)
+}
+
+func (h *Host) createSurface(id desktop.DisplayID, canvas *image.Rectangle) (desktop.Surface, error) {
 	h.mu.Lock()
 	var sc *scr
 	for _, s := range h.scrs {
@@ -178,22 +239,81 @@ func (h *Host) CreateSurface(id desktop.DisplayID) (desktop.Surface, error) {
 	if sc == nil {
 		return nil, fmt.Errorf("mac: unknown display %s", id)
 	}
+	if canvas != nil {
+		// Reject invalid geometry before allocating or touching native objects.
+		if _, _, _, _, err := desktop.CanvasFrame(*canvas, sc.d.Bounds, float64(sc.d.Bounds.Dx()), float64(sc.d.Bounds.Dy()), false); err != nil {
+			return nil, err
+		}
+	}
 	var sf *surface
+	var createErr error
 	macos.Main(func() {
 		frame := objc.Send[macos.CGRect](sc.ns, macos.Sel("frame"))
 		win := macos.Class("NSWindow").Send(macos.Sel("alloc"))
 		win = macos.MsgInitWindow(win, macos.Sel("initWithContentRect:styleMask:backing:defer:screen:"), frame, 0, 2, false, sc.ns)
+		if win == 0 {
+			createErr = errors.New("mac: cannot create desktop window")
+			return
+		}
 		win.Send(macos.Sel("setLevel:"), int(macos.CGWindowLevelForKey(2))) // kCGDesktopWindowLevelKey
 		win.Send(macos.Sel("setCollectionBehavior:"), uint(1|16|64))
 		win.Send(macos.Sel("setIgnoresMouseEvents:"), true)
 		win.Send(macos.Sel("setHasShadow:"), false)
 		win.Send(macos.Sel("setReleasedWhenClosed:"), false)
+		defer func() {
+			if sf == nil {
+				win.Send(macos.Sel("close"))
+				win.Send(macos.Sel("release"))
+			}
+		}()
 		win.Send(macos.Sel("setBackgroundColor:"), macos.Class("NSColor").Send(macos.Sel("blackColor")))
 		view := win.Send(macos.Sel("contentView"))
+		if view == 0 {
+			createErr = errors.New("mac: desktop window has no content view")
+			return
+		}
 		view.Send(macos.Sel("setWantsLayer:"), true)
+		bounds := sc.d.Bounds
+		if canvas != nil {
+			native := objc.Send[macos.CGRect](view, macos.Sel("bounds"))
+			// Desktop coordinates are top-down; an ordinary NSView's Y axis is
+			// bottom-up. Do not use backingScaleFactor as a global conversion.
+			x, y, w, ht, err := desktop.CanvasFrame(*canvas, sc.d.Bounds, native.Size.W, native.Size.H, false)
+			if err != nil {
+				createErr = err
+				return
+			}
+			rootLayer := view.Send(macos.Sel("layer"))
+			if rootLayer == 0 {
+				createErr = errors.New("mac: desktop clipping layer unavailable")
+				return
+			}
+			rootLayer.Send(macos.Sel("setMasksToBounds:"), true)
+			inner := macos.Class("NSView").Send(macos.Sel("new"))
+			if inner == 0 {
+				createErr = errors.New("mac: cannot create canvas view")
+				return
+			}
+			macos.MsgSetFrame(inner, macos.Sel("setFrame:"), macos.CGRect{
+				Origin: macos.CGPoint{X: native.Origin.X + x, Y: native.Origin.Y + y},
+				Size:   macos.CGSize{W: w, H: ht},
+			})
+			inner.Send(macos.Sel("setWantsLayer:"), true)
+			if inner.Send(macos.Sel("layer")) == 0 {
+				inner.Send(macos.Sel("release"))
+				createErr = errors.New("mac: canvas rendering layer unavailable")
+				return
+			}
+			view.Send(macos.Sel("addSubview:"), inner)
+			inner.Send(macos.Sel("release")) // Retained by the content view.
+			view, bounds = inner, *canvas
+		}
 		win.Send(macos.Sel("orderFront:"), objc.ID(0))
-		sf = &surface{h: h, win: win, view: view, b: sc.d.Bounds}
+		sf = &surface{h: h, win: win, view: view, b: bounds}
 	})
+	if createErr != nil {
+		return nil, createErr
+	}
 	h.mu.Lock()
 	h.surfs[sf.win] = sf
 	h.mu.Unlock()
@@ -203,7 +323,9 @@ func (h *Host) CreateSurface(id desktop.DisplayID) (desktop.Surface, error) {
 func (h *Host) Health() error { return nil }
 
 func (h *Host) Events() <-chan desktop.Event { return h.events }
-func (h *Host) Caps() desktop.Caps           { return desktop.Caps{Video: true, PerDisplay: true} }
+func (h *Host) Caps() desktop.Caps {
+	return desktop.Caps{Video: true, PerDisplay: true, ForegroundApp: h.foregroundSupported, Spanning: true}
+}
 
 // SetSystemWallpaper：NSWorkspace setDesktopImageURL:forScreen:options:error:
 func (h *Host) SetSystemWallpaper(id desktop.DisplayID, path string) error {
@@ -235,13 +357,17 @@ func (h *Host) sampler() {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	me := int32(os.Getpid())
-	lastN := -1
 	for {
 		select {
 		case <-h.stop:
 			return
 		case <-t.C:
 		}
+		var executable string
+		if h.foregroundSupported {
+			macos.Main(func() { executable = foregroundExecutable() })
+		}
+		h.foreground.Update(executable, "NSWorkspace", h.emit)
 		var wins []Rect
 		if arr := macos.CGWindowListCopyWindowInfo(1|16, 0); arr != 0 {
 			for i, n := 0, macos.CFArrayGetCount(arr); i < n; i++ {
@@ -262,10 +388,6 @@ func (h *Host) sampler() {
 		h.mu.Lock()
 		scrs := h.scrs
 		h.mu.Unlock()
-		if lastN >= 0 && lastN != len(scrs) {
-			h.emit(desktop.Event{Kind: desktop.EventDisplaysChanged, Source: "poll"})
-		}
-		lastN = len(scrs)
 		for _, s := range scrs {
 			b := macos.CGDisplayBounds(s.cgID)
 			cov, fs := Covered(Rect{b.Origin.X, b.Origin.Y, b.Size.W, b.Size.H}, wins)
@@ -324,3 +446,4 @@ func (h *Host) Close() error {
 }
 
 var _ desktop.Host = (*Host)(nil)
+var _ desktop.CanvasHost = (*Host)(nil)

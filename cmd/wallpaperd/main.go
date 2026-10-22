@@ -32,33 +32,34 @@ import (
 	"wpapp/internal/render/mf"
 	"wpapp/internal/render/mpv"
 	"wpapp/internal/telemetry"
-	"wpapp/internal/transcode"
 )
 
-var version = "0.2.1-mvp"
+var version = "0.3.0-mvp"
 
 // updatePubKey 是 F-15 更新清单的 Ed25519 公钥（base64），构建时注入：-ldflags "-X main.updatePubKey=…"。
 // 为空时不能在线更新（界面会说明）。signedBuild 由签名流水线注入 "1"。
 var updatePubKey, signedBuild string
 
 type flags struct {
-	headless   bool
-	standalone bool
-	fake       int
-	importPath string
-	duration   time.Duration
-	debug      bool
-	mfhost     bool
-	pipe, swap string
-	logPath    string
-	helper     string
-	in         string
-	version    bool
-	statusOut  string
-	exportDiag bool
-	updApply   bool
-	updRoll    bool
-	feed       string
+	headless      bool
+	standalone    bool
+	fake          int
+	importPath    string
+	duration      time.Duration
+	debug         bool
+	mfhost        bool
+	pipe, swap    string
+	logPath       string
+	helper        string
+	in            string
+	out           string
+	width, height int
+	version       bool
+	statusOut     string
+	exportDiag    bool
+	updApply      bool
+	updRoll       bool
+	feed          string
 }
 
 func parseFlags(args []string) *flags {
@@ -75,8 +76,11 @@ func parseFlags(args []string) *flags {
 	fs.StringVar(&f.pipe, "pipe", "", "内部：管道名")
 	fs.StringVar(&f.swap, "swap", "flip", "内部：MF 交换链模式")
 	fs.StringVar(&f.logPath, "log", "", "内部：子进程日志")
-	fs.StringVar(&f.helper, "helper", "", "内部：probe")
+	fs.StringVar(&f.helper, "helper", "", "内部：probe / transcode")
 	fs.StringVar(&f.in, "in", "", "内部：helper 输入文件")
+	fs.StringVar(&f.out, "out", "", "内部：helper 输出文件")
+	fs.IntVar(&f.width, "width", 3840, "内部：转换目标宽度")
+	fs.IntVar(&f.height, "height", 2160, "内部：转换目标高度")
 	fs.BoolVar(&f.version, "version", false, "打印版本")
 	fs.BoolVar(&f.exportDiag, "export-diagnostics", false, "导出诊断包后退出")
 	fs.BoolVar(&f.updApply, "update-apply", false, "检查并安装更新后退出（F-15，命令行/测试用）")
@@ -102,6 +106,11 @@ func main() {
 		}
 		json.NewEncoder(os.Stdout).Encode(info)
 		return
+	case f.helper == "transcode":
+		os.Exit(runTranscodeHelper(f))
+	case f.helper != "":
+		fmt.Fprintln(os.Stderr, "unknown helper operation")
+		os.Exit(2)
 	case f.exportDiag:
 		e, err := setup(f, nil, nil)
 		if err != nil {
@@ -111,7 +120,7 @@ func main() {
 		p, err := e.exportDiag()
 		e.store.State.CleanShutdown = true
 		e.store.State.Starts = nil
-		st := e.store.State
+		st := e.store.State.Clone()
 		e.store.StateSaver.Schedule(func() any { return st })
 		e.store.FlushAll()
 		e.close()
@@ -131,14 +140,15 @@ func main() {
 
 // env 是 UI 与 headless 共用的初始化结果。
 type env struct {
-	paths config.Paths
-	store *config.Store
-	log   *slog.Logger
-	logw  *telemetry.AsyncWriter
-	host  desktop.Host
-	app   *app.App
-	exe   string
-	enc   string // 编码器显示名
+	paths         config.Paths
+	store         *config.Store
+	log           *slog.Logger
+	logw          *telemetry.AsyncWriter
+	host          desktop.Host
+	app           *app.App
+	exe           string
+	enc           string // 编码器显示名
+	initialConfig config.Config
 }
 
 func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error) {
@@ -165,29 +175,46 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 		return nil, err
 	}
 	safe := store.State.EnterSafeMode(time.Now())
-	st := store.State
+	st := store.State.Clone()
 	store.StateSaver.Schedule(func() any { return st })
 	store.StateSaver.Flush()
 	if safe {
 		log.Warn("safe mode: too many unclean starts")
 	}
 	exe, _ := os.Executable()
-	e := &env{paths: paths, store: store, log: log, logw: lw, exe: exe}
+	e := &env{paths: paths, store: store, log: log, logw: lw, exe: exe, initialConfig: store.Config.Clone()}
 	e.host = newHost(f, log)
 	imp := importer.Options{Library: paths.Library, Cache: paths.Cache, GOOS: runtime.GOOS, Lang: store.Config.UI.Lang,
-		Probe: e.probe, Transcode: transcode.System(runtime.GOOS)}
+		Probe: e.probe}
 	imp.Snapshot = e.snapshot
-	enc, ext, encName := transcode.Encoder(runtime.GOOS, store.Config.Render.FFmpegPath)
+	enc, ext, encName := e.encoder(store.Config)
 	e.enc = encName
 	e.app = app.New(app.Deps{Host: e.host, Store: store, Log: log, SafeMode: safe, SetLaunchAtLogin: setLogin,
 		NewRenderer: e.newRenderer, Transcode: enc, TranscodeExt: ext,
-		Import: func(ctx context.Context, src string) (*importer.Result, error) { return importer.Import(ctx, src, imp) }})
+		ResolveEncoder: func(cfg config.Config) (func(context.Context, string, string) error, string) {
+			fn, ext, _ := e.encoder(cfg)
+			return fn, ext
+		},
+		EncoderInfo: e.encoderCapabilities,
+		ProbeMedia:  e.probeContext,
+		Import: func(ctx context.Context, src string) (*importer.Result, error) {
+			opts := imp
+			cfg := e.configSnapshot()
+			opts.Lang = cfg.UI.Lang
+			opts.Transcode, opts.TranscodeExt, _ = e.encoder(cfg)
+			opts.CanTranscodeGIF = e.encoderCapabilities(cfg).GIF
+			return importer.Import(ctx, src, opts)
+		}})
 	return e, nil
 }
 
 // probe 在子进程里解析（02 章：不可信文件的解析与主进程隔离），子进程失败时不回退到进程内。
 func (e *env) probe(path string) (*media.Info, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	return e.probeContext(context.Background(), path)
+}
+
+func (e *env) probeContext(parent context.Context, path string) (*media.Info, error) {
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, e.exe, "-helper", "probe", "-in", path)
 	hideConsole(cmd)
@@ -224,11 +251,22 @@ func (e *env) mpvPath(cfg config.Config) string {
 	return name
 }
 
+// configSnapshot is safe for importer and updater workers. Initial configuration
+// is immutable; after Run publishes, use the app's cloned snapshot, not Store.
+func (e *env) configSnapshot() config.Config {
+	if e.app != nil {
+		if v := e.app.View(); v.Config.SchemaVersion > 0 {
+			return v.Config
+		}
+	}
+	return e.initialConfig.Clone()
+}
+
 func (e *env) snapshot(src, dst string) error {
 	if runtime.GOOS == "darwin" {
 		return macSnapshot(src, dst)
 	}
-	return mpv.FirstFrame(e.mpvPath(e.store.Config), src, dst)
+	return mpv.FirstFrame(e.mpvPath(e.configSnapshot()), src, dst)
 }
 
 func (e *env) newRenderer(kind string, cfg config.Config, d desktop.DisplayID) render.Renderer {

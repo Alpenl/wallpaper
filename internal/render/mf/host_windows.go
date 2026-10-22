@@ -4,7 +4,8 @@ package mf
 
 // Media Foundation 渲染子进程（wallpaperd -mfhost -pipe <名字>）。与 mpv.exe 地位相同：继承 Job Object，
 // 通过 IPC v1 与主进程通信，渲染到主进程创建的子 HWND。
-// 方法：hello / load / setPause{level 0..3} / ping / shutdown；事件：ready / firstFrame{ms} / stats{...} / error{code,msg,fatal}。
+// 方法：hello / load / setPause{level 0..3} / setPlayback / setFPS / ping / shutdown。
+// 事件：ready / firstFrame{ms} / stats{...} / error{code,msg,fatal}。
 
 import (
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"unsafe"
 
 	"wpapp/internal/ipc"
+	"wpapp/internal/render"
 )
 
 var (
@@ -36,7 +38,10 @@ func RunHost(pipeName string, swap string, statsEvery time.Duration) error {
 		return fmt.Errorf("mfhost: connect pipe: %w", err)
 	}
 	pipe := os.NewFile(uintptr(h), pipeName)
-	eng := &mfEngine{swap: swap, statsEvery: statsEvery}
+	if statsEvery <= 0 {
+		statsEvery = 5 * time.Second
+	}
+	eng := &mfEngine{swap: swap, statsEvery: statsEvery, options: render.DefaultPlaybackOptions()}
 	var conn *ipc.Conn
 	var cur struct {
 		wid  uintptr
@@ -44,64 +49,92 @@ func RunHost(pipeName string, swap string, statsEvery time.Duration) error {
 	}
 	var mu sync.Mutex
 	level := 0
+	loaded := false
 	quit := make(chan struct{})
 	var quitOnce sync.Once
 	stopAll := func() { quitOnce.Do(func() { close(quit) }) }
+	initialized := make(chan struct{})
 	conn = ipc.New(pipe, func(m string, p json.RawMessage) (any, *ipc.Error) {
+		<-initialized
 		mu.Lock()
 		defer mu.Unlock()
 		switch m {
 		case "hello":
 			var x struct{ Proto int }
-			_ = json.Unmarshal(p, &x)
-			if x.Proto != 1 {
-				return nil, &ipc.Error{Code: "E_PROTO", Msg: "proto"}
-			}
-			return map[string]any{"pid": os.Getpid(), "caps": []string{"video", "mf"}, "inJob": inJob()}, nil
-		case "load":
-			var x struct {
-				Entry  string
-				Wid    uint64
-				Bounds struct{ W, H int32 }
-				Paused bool
-			}
 			if err := json.Unmarshal(p, &x); err != nil {
 				return nil, &ipc.Error{Code: "E_PROTO", Msg: err.Error()}
 			}
-			eng.path = x.Entry
+			if x.Proto != 1 {
+				return nil, &ipc.Error{Code: "E_PROTO", Msg: "proto"}
+			}
+			return map[string]any{"pid": os.Getpid(), "caps": []string{"video", "mf", "fit", "speed", "audio", "resume", "fps", "live-playback"}, "inJob": inJob()}, nil
+		case "load":
+			x, options, err := decodeLoad(p)
+			if err != nil {
+				return nil, &ipc.Error{Code: "E_PROTO", Msg: err.Error()}
+			}
+			if err := eng.stop(); err != nil {
+				return nil, lifecycleFailure("stop before load", err)
+			}
+			loaded = false
+			eng.path, eng.options, eng.startAt = x.Entry, options, x.Start
 			cur.wid, cur.w, cur.h = uintptr(x.Wid), x.Bounds.W, x.Bounds.H
 			eng.paused.Store(x.Paused)
+			level = 0
 			if x.Paused {
 				level = 1
 			}
 			if err := eng.start(cur.wid, cur.w, cur.h); err != nil {
 				return nil, &ipc.Error{Code: "E_LOAD", Msg: err.Error()}
 			}
-			_ = conn.Emit("ready", map[string]any{})
-			return struct{}{}, nil
+			loaded = true
+			_ = conn.Emit("ready", map[string]any{"pos": eng.currentPosition()})
+			return map[string]any{"pos": eng.currentPosition()}, nil
 		case "setPause":
-			var x struct{ Level int }
-			_ = json.Unmarshal(p, &x)
-			switch {
-			case x.Level >= 3 && level < 3:
-				eng.stop()
-			case x.Level < 3 && level >= 3: // 从 L3 恢复：重新加载（从头播放，Q-V3）
-				eng.paused.Store(x.Level > 0)
-				if err := eng.start(cur.wid, cur.w, cur.h); err != nil {
-					return nil, &ipc.Error{Code: "E_LOAD", Msg: err.Error()}
-				}
-			default:
-				eng.setPause(x.Level > 0)
+			next, err := decodePause(p)
+			if err != nil {
+				return nil, &ipc.Error{Code: "E_PROTO", Msg: err.Error()}
 			}
-			level = x.Level
+			if !loaded {
+				return nil, &ipc.Error{Code: "E_STATE", Msg: "media not loaded"}
+			}
+			switch {
+			case next >= 3 && level < 3:
+				if err := eng.stop(); err != nil {
+					return nil, lifecycleFailure("enter L3", err)
+				}
+				eng.startAt = eng.currentPosition()
+				eng.paused.Store(true)
+			case next < 3 && level >= 3:
+				eng.paused.Store(next > 0)
+				if err := eng.start(cur.wid, cur.w, cur.h); err != nil {
+					return nil, lifecycleFailure("resume from L3", err)
+				}
+			case next < 3:
+				if err := eng.setPause(next > 0); err != nil {
+					return nil, &ipc.Error{Code: "E_STATE", Msg: err.Error()}
+				}
+			}
+			level = next
+			return map[string]any{"pos": eng.currentPosition()}, nil
+		case "setPlayback":
+			options, err := decodePlayback(p)
+			if err != nil {
+				return nil, &ipc.Error{Code: "E_PROTO", Msg: err.Error()}
+			}
+			if !loaded || level >= 3 {
+				return nil, &ipc.Error{Code: "E_STATE", Msg: "media not active"}
+			}
+			if err := eng.updatePlayback(options); err != nil {
+				return nil, &ipc.Error{Code: "E_STATE", Msg: err.Error()}
+			}
 			return struct{}{}, nil
 		case "setFPS":
-			var x struct{ FPS int }
-			_ = json.Unmarshal(p, &x)
-			if x.FPS < 0 || x.FPS > 240 {
-				return nil, &ipc.Error{Code: "E_PROTO", Msg: "fps out of range"}
+			fps, err := decodeFPS(p)
+			if err != nil {
+				return nil, &ipc.Error{Code: "E_PROTO", Msg: err.Error()}
 			}
-			eng.fpsCap.Store(int32(x.FPS))
+			eng.fpsCap.Store(int32(fps))
 			return struct{}{}, nil
 		case "snapshot":
 			return nil, &ipc.Error{Code: "E_STATE", Msg: "snapshot not implemented in mf backend"}
@@ -124,12 +157,15 @@ func RunHost(pipeName string, swap string, statsEvery time.Duration) error {
 		time.Sleep(100 * time.Millisecond)
 		stopAll()
 	}
+	close(initialized)
 	select {
 	case <-quit:
 	case <-conn.Done():
 		logf("mfhost: pipe closed: %v", conn.Err())
 	}
-	eng.stop()
-	conn.Close()
-	return nil
+	conn.Close() // unblock pending writes before waiting for render/stats shutdown
+	mu.Lock()
+	err = eng.stop()
+	mu.Unlock()
+	return err
 }

@@ -1,5 +1,7 @@
 # 03 Windows 桌面集成
 
+> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
+
 ## 3.1 挂载流程（参照 Lively `Core/WinDesktopCore.cs` 约 150–230 行【源码】）
 1. `progman = FindWindow("Progman", NULL)`
 2. `SendMessageTimeout(progman, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, &r)`。这是未公开文档的消息，作用是让 Progman 生成 WorkerW。

@@ -17,7 +17,7 @@ func TestProbeFixtures(t *testing.T) {
 		{"h264_audio.mp4", "mp4", "video", "h264", 64, 36, 30, true},
 		{"hevc.mov", "mov", "video", "hevc", 64, 36, 24, false},
 		{"vp9.webm", "webm", "video", "other", 0, 0, 0, false},
-		{"anim.gif", "gif", "video", "gif", 0, 0, 0, false},
+		{"anim.gif", "gif", "video", "gif", 32, 18, 0, false},
 		{"still.png", "png", "image", "", 0, 0, 0, false},
 	}
 	for _, c := range cases {
@@ -29,7 +29,7 @@ func TestProbeFixtures(t *testing.T) {
 			math.Abs(in.FPS-c.fps) > 0.5 || in.HasAudio != c.audio {
 			t.Errorf("%s: %+v", c.file, in)
 		}
-		if c.kind == "video" && c.w > 0 && math.Abs(in.DurationSec-1) > 0.2 {
+		if c.kind == "video" && c.codec != "gif" && c.w > 0 && math.Abs(in.DurationSec-1) > 0.2 {
 			t.Errorf("%s duration %v", c.file, in.DurationSec)
 		}
 	}
@@ -54,5 +54,18 @@ func TestProbeRejectsGarbage(t *testing.T) {
 	jpg := []byte{0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0}
 	if in, _ := Probe(bytes.NewReader(jpg), 8); in == nil || in.Container != "jpeg" {
 		t.Error("jpeg")
+	}
+}
+
+func TestGIFHeaderDimensionsAndTruncation(t *testing.T) {
+	valid := []byte{'G', 'I', 'F', '8', '9', 'a', 0x40, 0x01, 0xb4, 0x00, 0, 0, 0}
+	in, err := Probe(bytes.NewReader(valid), int64(len(valid)))
+	if err != nil || in.W != 320 || in.H != 180 {
+		t.Fatal(in, err)
+	}
+	for _, bad := range [][]byte{valid[:10], []byte("GIF8notvalid!!"), append([]byte("GIF89a"), make([]byte, 7)...)} {
+		if _, err := Probe(bytes.NewReader(bad), int64(len(bad))); err == nil {
+			t.Fatalf("invalid GIF header accepted: %q", bad)
+		}
 	}
 }

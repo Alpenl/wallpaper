@@ -16,6 +16,10 @@ type Renderer struct {
 // New 创建静态图渲染器。
 func New() *Renderer { return &Renderer{done: make(chan error)} }
 
+// System wallpaper rendering is configured by the desktop host, not by this
+// renderer. Do not advertise video options that have no effect on images.
+func (r *Renderer) Capabilities() render.Capabilities { return render.Capabilities{} }
+
 func (r *Renderer) Load(it render.Item, s desktop.Surface, _ bool) error {
 	r.s = s
 	return s.SetVisible(false) // 画面由系统壁纸（app 在加载前已设置）提供
@@ -28,3 +32,4 @@ func (r *Renderer) Done() <-chan error              { return r.done }
 func (r *Renderer) Close() error                    { return nil }
 
 var _ render.Renderer = (*Renderer)(nil)
+var _ render.CapabilityProvider = (*Renderer)(nil)

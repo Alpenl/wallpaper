@@ -1,28 +1,61 @@
 #!/usr/bin/env bash
-# 一键发布流水线：测试 → 交叉编译 → 下载 mpv → Windows NSIS 安装器 → macOS .app.zip → 签名钩子 → SHA256SUMS → （可选）增量更新源。
-#
-# 环境变量（都可选；没有证书时产物未签名，流程照常完成）：
-#   VERSION                 版本号（默认 0.2.1-mvp）
-#   WPAPP_SIGN_CMD          Windows 签名命令模板，{} 为文件（见 scripts/sign-windows.sh）
-#   WPAPP_CODESIGN_ID       macOS Developer ID（只在 macOS 上生效，见 scripts/sign-macos.sh）
-#   WPAPP_NOTARY_PROFILE    macOS notarytool 钥匙串配置
-#   WPAPP_UPDATE_PUB        更新公钥（编进程序）；WPAPP_UPDATE_KEY 私钥文件路径（生成 dist/feed/）
-#   SKIP_TESTS=1            跳过测试
+# Native release: checks -> five cross-builds -> installers/archives -> verification.
+# VERSION=0.3.0-mvp SKIP_TESTS=1 scripts/release.sh
+# Final, flat upload directory: dist/release/ (not the entire dist/ directory).
+# No mpv/ffmpeg download, signing identity, or production update key is needed.
+# Signed builds require explicit ALLOW_SIGNING=1 plus the existing signing hooks.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export VERSION=${VERSION:-0.2.1-mvp}
-if [ "${SKIP_TESTS:-}" != 1 ]; then CGO_ENABLED=1 go test -race ./...; fi
-scripts/build.sh
-[ -f third_party/mpv/x86_64/mpv.exe ] || scripts/fetch-mpv.sh x86_64
-scripts/package-windows.sh
-scripts/package-macos.sh
-if [ -n "${WPAPP_UPDATE_KEY:-}" ]; then
-  go build -o dist/wpupdate ./cmd/wpupdate
-  for t in windows-amd64 windows-arm64 linux-amd64; do
-    dist/wpupdate manifest -dir "dist/$t" -version "$VERSION" -platform "$t" -key "$WPAPP_UPDATE_KEY" -out dist/feed
-  done
-  for a in arm64 amd64; do
-    dist/wpupdate manifest -dir "dist/macos-$a/Wallpaper.app/Contents" -version "$VERSION" -platform "darwin-$a" -key "$WPAPP_UPDATE_KEY" -out dist/feed
+export VERSION=${VERSION:-0.3.0-mvp}
+export RELEASE_DIR=${RELEASE_DIR:-dist/release}
+source scripts/package-common.sh
+package_validate
+for tool in go python3 makensis; do
+  command -v "$tool" >/dev/null || { echo "missing release tool: $tool" >&2; exit 1; }
+done
+if [ "${ALLOW_SIGNING:-0}" != 1 ]; then
+  for key in WPAPP_SIGN_CMD WPAPP_CODESIGN_ID WPAPP_NOTARY_PROFILE; do
+    [ -z "${!key:-}" ] || { echo "$key requires explicit ALLOW_SIGNING=1" >&2; exit 1; }
   done
 fi
-( cd dist && sha256sum Wallpaper-"$VERSION"-* linux-amd64/wallpaperd > SHA256SUMS && cat SHA256SUMS )
+if [ -n "${WPAPP_CODESIGN_ID:-}${WPAPP_NOTARY_PROFILE:-}" ] && [ "$(uname)" != Darwin ]; then
+  echo 'macOS signing/notarization requires a macOS host; refusing a misleading signed label' >&2
+  exit 1
+fi
+if [ -n "${WPAPP_NOTARY_PROFILE:-}" ] && [ -z "${WPAPP_CODESIGN_ID:-}" ]; then
+  echo 'notarization requires WPAPP_CODESIGN_ID' >&2; exit 1
+fi
+if [ -n "${WPAPP_UPDATE_KEY:-}${WPAPP_UPDATE_PUB:-}" ]; then
+  echo 'This installer/archive release does not configure an update feed. Use the separately reviewed update-publishing process.' >&2
+  exit 1
+fi
+bash scripts/release-self-test.sh
+if [ "${SKIP_TESTS:-0}" != 1 ]; then bash scripts/check.sh; fi
+# Never inherit a partial TARGETS/ARCHES value and label it a complete release.
+TARGETS='windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64' bash scripts/build.sh
+bash scripts/package-metadata.sh
+# Remove only generated files in this dedicated directory; never arbitrary paths.
+python3 - "$RELEASE_DIR" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for p in root.iterdir():
+    if p.is_file() and (p.name.startswith('Wallpaper-') or p.name in {
+        'SHA256SUMS', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt'}):
+        p.unlink()
+PY
+ARCHES='amd64 arm64' bash scripts/package-windows.sh
+ARCHES='amd64 arm64' bash scripts/package-macos.sh
+ARCHES='amd64' bash scripts/package-linux.sh
+cp dist/package-metadata/{RELEASE-NOTES,BUILD-INFO}.txt "$RELEASE_DIR/"
+python3 - "$RELEASE_DIR" <<'PY'
+from pathlib import Path
+import hashlib, sys
+root = Path(sys.argv[1])
+files = sorted(p for p in root.iterdir() if p.is_file() and p.name != 'SHA256SUMS')
+with (root / 'SHA256SUMS').open('w') as out:
+    for path in files:
+        out.write(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n')
+PY
+bash scripts/release-verify.sh
+cat "$RELEASE_DIR/SHA256SUMS"

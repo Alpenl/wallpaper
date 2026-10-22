@@ -5,6 +5,8 @@ package render
 
 import (
 	"errors"
+	"fmt"
+	"math"
 
 	"wpapp/internal/desktop"
 	"wpapp/internal/visibility"
@@ -23,7 +25,7 @@ type Stats struct {
 	Backend string  `json:"backend"`
 	HWDec   string  `json:"hwdec"`
 	Dropped uint64  `json:"dropped"`
-	Pos     float64 `json:"pos"`
+	Pos     float64 `json:"pos"` // last known position; initialized from a requested resume offset until sampled
 	Loops   int64   `json:"loops"`
 	LastErr string  `json:"lastErr,omitempty"`
 }
@@ -41,6 +43,82 @@ type Renderer interface {
 
 // Factory 按壁纸类型和后端名创建渲染器。
 type Factory func(kind, backend string) (Renderer, error)
+
+// PlaybackOptions are applied before Load. Scale is the video-frame resolution
+// multiplier, not the surface size or a guaranteed power saving. A software
+// downscale may require copying hardware-decoded frames into system memory.
+type PlaybackOptions struct {
+	Fit   string  `json:"fit"` // fill | fit | stretch
+	Speed float64 `json:"speed"`
+	Muted bool    `json:"muted"`
+	Scale float64 `json:"scale"`
+}
+
+func DefaultPlaybackOptions() PlaybackOptions {
+	return PlaybackOptions{Fit: "fill", Speed: 1, Muted: true, Scale: 1}
+}
+
+// NormalizePlaybackOptions fills unspecified numeric/string fields and rejects
+// invalid input. Muted is always explicit: false means audio is enabled.
+func NormalizePlaybackOptions(o PlaybackOptions) (PlaybackOptions, error) {
+	if o.Fit == "" {
+		o.Fit = "fill"
+	}
+	if o.Speed == 0 {
+		o.Speed = 1
+	}
+	if o.Scale == 0 {
+		o.Scale = 1
+	}
+	if o.Fit != "fill" && o.Fit != "fit" && o.Fit != "stretch" {
+		return o, fmt.Errorf("render: invalid fit %q", o.Fit)
+	}
+	if math.IsNaN(o.Speed) || math.IsInf(o.Speed, 0) || o.Speed < .25 || o.Speed > 4 {
+		return o, fmt.Errorf("render: speed must be between 0.25 and 4")
+	}
+	if math.IsNaN(o.Scale) || math.IsInf(o.Scale, 0) || o.Scale < .25 || o.Scale > 1 {
+		return o, fmt.Errorf("render: scale must be between 0.25 and 1")
+	}
+	return o, nil
+}
+
+// Configurable is optional. Configure must be called before Load, not while the
+// renderer is active. Callers should reset unsupported fields to their defaults.
+type Configurable interface {
+	Configure(PlaybackOptions) error
+}
+
+// PlaybackUpdater optionally applies supported settings without unloading the
+// current media. ErrUnsupported requests a restart fallback; other errors must
+// be surfaced to the caller rather than being mistaken for unsupported input.
+// Like Configure, UpdatePlayback may block and belongs on the renderer worker.
+type PlaybackUpdater interface {
+	UpdatePlayback(PlaybackOptions) error
+}
+
+// Capabilities describes adjustable properties, not platform availability or
+// hardware verification. A renderer without CapabilityProvider supports none.
+type Capabilities struct {
+	Fit    bool `json:"fit"`
+	Speed  bool `json:"speed"`
+	Audio  bool `json:"audio"`
+	Scale  bool `json:"scale"`
+	Resume bool `json:"resume"` // Load honors Item.Start and Stats exposes current position
+	FPS    bool `json:"fps"`    // SetFPSCap implements an actual frame/presentation cap
+}
+
+type CapabilityProvider interface {
+	Capabilities() Capabilities
+}
+
+// ValidateOptions prevents a backend from silently ignoring an unsupported
+// preference. Defaults remain usable on every backend.
+func (c Capabilities) ValidateOptions(o PlaybackOptions) error {
+	if !c.Fit && o.Fit != "fill" || !c.Speed && o.Speed != 1 || !c.Audio && !o.Muted || !c.Scale && o.Scale != 1 {
+		return fmt.Errorf("%w: playback options", ErrUnsupported)
+	}
+	return nil
+}
 
 // ErrUnsupported 表示该渲染器不支持此操作。
 var ErrUnsupported = errors.New("render: unsupported")

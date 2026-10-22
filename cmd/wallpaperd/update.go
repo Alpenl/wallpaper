@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"wpapp/internal/config"
@@ -36,7 +38,8 @@ func updatePub() ed25519.PublicKey {
 }
 
 func (e *env) updater() *update.Client {
-	return &update.Client{Feed: e.store.Config.Update.FeedURL, Pub: updatePub(), Platform: runtime.GOOS + "-" + runtime.GOARCH,
+	feed := e.configSnapshot().Update.FeedURL
+	return &update.Client{Feed: feed, Pub: updatePub(), Platform: runtime.GOOS + "-" + runtime.GOARCH,
 		Current: version, Dir: installDir(e.exe)}
 }
 
@@ -69,8 +72,13 @@ func waitRelaunch() {
 // updateHooks 把 internal/update 接到设置窗口。
 func (e *env) updateHooks(h *ui.Hooks, quit func()) {
 	var pending *update.Manifest
+	var pendingFeed string
+	var mu sync.Mutex
 	h.CheckUpdate = func() (*ui.UpdateInfo, error) {
 		c := e.updater()
+		mu.Lock()
+		pending, pendingFeed = nil, ""
+		mu.Unlock()
 		if c.Pub == nil {
 			return nil, errors.New("这个构建没有内置更新公钥")
 		}
@@ -86,7 +94,9 @@ func (e *env) updateHooks(h *ui.Hooks, quit func()) {
 		if err != nil {
 			return nil, err
 		}
-		pending = m
+		mu.Lock()
+		pending, pendingFeed = m, c.Feed
+		mu.Unlock()
 		var n int64
 		for _, f := range update.Plan(c.Dir, m) {
 			n += f.Size
@@ -94,24 +104,36 @@ func (e *env) updateHooks(h *ui.Hooks, quit func()) {
 		return &ui.UpdateInfo{Version: m.Version, Notes: m.Notes, Size: n}, nil
 	}
 	h.ApplyUpdate = func(progress func(done, total int64)) error {
-		if pending == nil {
+		mu.Lock()
+		m, feed := pending, pendingFeed
+		mu.Unlock()
+		if m == nil {
 			return errors.New("请先检查更新")
 		}
-		_, err := e.updater().Apply(context.Background(), pending, progress)
+		client := e.updater()
+		if client.Feed != feed {
+			return errors.New("更新源已改变，请重新检查更新")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		_, err := client.Apply(ctx, m, progress)
 		if err == nil {
-			e.log.Info("update applied", "to", pending.Version)
+			e.log.Info("update applied", "to", m.Version)
+			mu.Lock()
+			pending, pendingFeed = nil, ""
+			mu.Unlock()
 		}
 		return err
 	}
 	h.CanRollback = func() (string, bool) { return e.updater().CanRollback() }
 	h.Rollback = func() error { return e.updater().Rollback() }
 	h.Restart = func() {
-		relaunchAfterQuit = true
+		relaunchAfterQuit.Store(true)
 		quit()
 	}
 }
 
-var relaunchAfterQuit bool
+var relaunchAfterQuit atomic.Bool
 
 // runUpdateCLI 是 -update-apply / -update-rollback：不启动壁纸，只做更新（真机测试和脚本用）。
 func runUpdateCLI(f *flags) int {

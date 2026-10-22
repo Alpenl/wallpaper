@@ -1,0 +1,72 @@
+name: Release native v0.3.0-mvp
+
+# Deliberately bounded to this approved checkpoint. Ordinary source pushes do
+# not publish. A later version needs its own reviewed release declaration.
+on:
+  push:
+    branches: [master]
+    paths: ['.github/releases/v0.3.0-mvp.json']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-native-v0.3.0-mvp
+  cancel-in-progress: false
+
+env:
+  VERSION: 0.3.0-mvp
+  GOTOOLCHAIN: local
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  build:
+    if: github.repository == 'Alpenl/wallpaper' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install release and test tools from Ubuntu
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nsis ffmpeg p7zip-full
+      - name: Verify exact native source
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          bash scripts/check.sh
+          bash scripts/e2e-update.sh
+      - name: Build unsigned packages
+        env:
+          SKIP_TESTS: '1'
+        run: |
+          bash scripts/release.sh
+          (cd dist/release && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-v0.3.0-mvp-${{ github.sha }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-v0.3.0-mvp-${{ github.sha }}
+          path: release-assets
+      - name: Verify assets, create exact tag, publish verified prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/publish-release.py --assets release-assets --commit "$GITHUB_SHA"

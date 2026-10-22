@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"math"
 	"runtime"
 	"sort"
 	"strings"
@@ -59,7 +60,9 @@ var (
 	pGetMonitorInfoW           = user32.NewProc("GetMonitorInfoW")
 	pMonitorFromWindow         = user32.NewProc("MonitorFromWindow")
 	pGetForegroundWindow       = user32.NewProc("GetForegroundWindow")
+	pGetWindowThreadProcessID  = user32.NewProc("GetWindowThreadProcessId")
 	pGetWindowRect             = user32.NewProc("GetWindowRect")
+	pGetClientRect             = user32.NewProc("GetClientRect")
 	pGetClassNameW             = user32.NewProc("GetClassNameW")
 	pIsWindow                  = user32.NewProc("IsWindow")
 	pIsWindowVisible           = user32.NewProc("IsWindowVisible")
@@ -77,6 +80,8 @@ var (
 	pGetDpiForMonitor          = syscall.NewLazyDLL("shcore.dll").NewProc("GetDpiForMonitor")
 	pGetModuleHandleW          = kernel32.NewProc("GetModuleHandleW")
 	pGetSystemPowerStatus      = kernel32.NewProc("GetSystemPowerStatus")
+	pOpenProcess               = kernel32.NewProc("OpenProcess")
+	pQueryFullProcessImageName = kernel32.NewProc("QueryFullProcessImageNameW")
 	pDwmGetWindowAttribute     = dwmapi.NewProc("DwmGetWindowAttribute")
 	pSHQueryUserNotifState     = shell32.NewProc("SHQueryUserNotificationState")
 	pWTSRegisterSessionNotif   = wtsapi32.NewProc("WTSRegisterSessionNotification")
@@ -192,6 +197,8 @@ type Host struct {
 	wall                      uintptr // IDesktopWallpaper*
 	covGrids                  []covGrid
 	pollN, pollSumUs, pollMax int64
+	foreground                desktop.ForegroundTracker
+	foregroundSupported       bool
 
 	mu       sync.Mutex
 	displays []desktop.Display
@@ -219,11 +226,13 @@ func New(o Options) *Host {
 		ready: make(chan error, 1), stopped: make(chan struct{}), surfaces: map[uintptr]*surface{}}
 }
 
-func (h *Host) emit(e desktop.Event) {
+func (h *Host) emit(e desktop.Event) bool {
 	select {
 	case h.events <- e:
+		return true
 	default:
 		h.dropped.Add(1)
+		return false
 	}
 }
 
@@ -258,7 +267,7 @@ func (h *Host) call(fn func()) error {
 
 func (h *Host) Events() <-chan desktop.Event { return h.events }
 func (h *Host) Caps() desktop.Caps {
-	return desktop.Caps{Video: true, PerDisplay: true}
+	return desktop.Caps{Video: true, PerDisplay: true, ForegroundApp: h.foregroundSupported, Spanning: !h.o.Standalone}
 }
 
 func (h *Host) Displays() []desktop.Display {
@@ -285,6 +294,8 @@ func (h *Host) Close() error {
 func (h *Host) uiThread() {
 	runtime.LockOSThread()
 	defer close(h.stopped)
+	h.foregroundSupported = pGetForegroundWindow.Find() == nil && pGetWindowThreadProcessID.Find() == nil &&
+		pOpenProcess.Find() == nil && pQueryFullProcessImageName.Find() == nil
 	pSetProcessDpiAwarenessCtx.Call(^uintptr(3)) // PER_MONITOR_AWARE_V2
 	pCoInitializeEx.Call(0, 2 /*COINIT_APARTMENTTHREADED*/)
 	h.hInst, _, _ = pGetModuleHandleW.Call(0)
@@ -585,23 +596,41 @@ func (h *Host) parent() uintptr {
 }
 
 type surface struct {
-	h    *Host
-	hwnd uintptr
-	b    image.Rectangle
+	h          *Host
+	hwnd       uintptr // Physical display viewport; owns visibility and lifetime.
+	canvasHwnd uintptr // Optional full-desktop child, clipped by hwnd.
+	b          image.Rectangle
 }
 
-func (s *surface) Native() uintptr         { return s.hwnd }
+func (s *surface) Native() uintptr {
+	if s.canvasHwnd != 0 {
+		return s.canvasHwnd
+	}
+	return s.hwnd
+}
 func (s *surface) Bounds() image.Rectangle { return s.b }
 func (s *surface) SetVisible(v bool) error {
 	cmd := uintptr(0) // SW_HIDE
 	if v {
 		cmd = 8 // SW_SHOWNA
 	}
-	return s.h.call(func() { pShowWindow.Call(s.hwnd, cmd) })
+	var err error
+	if callErr := s.h.call(func() {
+		if s.h.surfaces[s.hwnd] != s {
+			err = desktop.ErrDetached
+			return
+		}
+		pShowWindow.Call(s.hwnd, cmd)
+	}); callErr != nil {
+		return callErr
+	}
+	return err
 }
 func (s *surface) Close() error {
 	return s.h.call(func() {
-		if _, ok := s.h.surfaces[s.hwnd]; ok {
+		// Explorer can destroy old windows before delayed renderer cleanup runs.
+		// A reused numeric HWND must never identify a newer surface as our own.
+		if s.h.surfaces[s.hwnd] == s {
 			pDestroyWindow.Call(s.hwnd)
 			delete(s.h.surfaces, s.hwnd)
 		}
@@ -619,6 +648,71 @@ func (h *Host) CreateSurface(id desktop.DisplayID) (desktop.Surface, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s, nil
+}
+
+// CreateCanvasSurface gives the renderer a full-desktop child HWND while the
+// existing per-display desktop window remains its clipping and ownership root.
+// Standalone windows have captions and may be reduced to 1280x720, so they do
+// not claim to represent the physical desktop's spanning geometry.
+func (h *Host) CreateCanvasSurface(id desktop.DisplayID, canvas image.Rectangle) (desktop.Surface, error) {
+	if h.o.Standalone {
+		return nil, errors.New("win: spanning is unavailable in standalone mode")
+	}
+	var s *surface
+	var err error
+	if cerr := h.call(func() { s, err = h.createCanvasSurface(id, canvas) }); cerr != nil {
+		return nil, cerr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (h *Host) createCanvasSurface(id desktop.DisplayID, canvas image.Rectangle) (*surface, error) {
+	var viewport image.Rectangle
+	for _, m := range h.mons {
+		if m.d.ID == id {
+			viewport = m.d.Bounds
+			break
+		}
+	}
+	if viewport.Empty() {
+		return nil, fmt.Errorf("win: unknown or empty display %s", id)
+	}
+	// Validate before allocating a visible native window.
+	if _, _, _, _, err := desktop.CanvasFrame(canvas, viewport, float64(viewport.Dx()), float64(viewport.Dy()), true); err != nil {
+		return nil, err
+	}
+	s, err := h.createSurface(id)
+	if err != nil {
+		return nil, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			pDestroyWindow.Call(s.hwnd)
+			delete(h.surfaces, s.hwnd)
+		}
+	}()
+	var client rect
+	if r, _, callErr := pGetClientRect.Call(s.hwnd, uintptr(unsafe.Pointer(&client))); r == 0 {
+		return nil, fmt.Errorf("win: canvas GetClientRect: %v", callErr)
+	}
+	// Use this window's actual native size, not another output's DPI scale.
+	x, y, w, ht, err := desktop.CanvasFrame(canvas, viewport, float64(client.R-client.L), float64(client.B-client.T), true)
+	if err != nil {
+		return nil, err
+	}
+	hw, _, callErr := pCreateWindowExW.Call(wsExNoActivate, up(u16(surfaceClass)), up(u16("wallpaperd-canvas")),
+		wsChild|wsVisible|wsClipChildren, uintptr(int32(math.Round(x))), uintptr(int32(math.Round(y))),
+		uintptr(int32(math.Round(w))), uintptr(int32(math.Round(ht))), s.hwnd, 0, h.hInst, 0)
+	if hw == 0 {
+		return nil, fmt.Errorf("win: CreateWindowEx(canvas): %v", callErr)
+	}
+	s.canvasHwnd, s.b = hw, canvas
+	ok = true
 	return s, nil
 }
 
@@ -688,11 +782,18 @@ func (h *Host) health() error {
 		return nil
 	}
 	want := h.parent()
-	for hw := range h.surfaces {
+	for hw, s := range h.surfaces {
 		ok, _, _ := pIsWindow.Call(hw)
 		p, _, _ := pGetParent.Call(hw)
 		if ok == 0 || p != want {
 			return fmt.Errorf("%w: hwnd=0x%x parent=0x%x want=0x%x", desktop.ErrDetached, hw, p, want)
+		}
+		if s.canvasHwnd != 0 {
+			ok, _, _ = pIsWindow.Call(s.canvasHwnd)
+			p, _, _ = pGetParent.Call(s.canvasHwnd)
+			if ok == 0 || p != hw {
+				return fmt.Errorf("%w: canvas=0x%x parent=0x%x want=0x%x", desktop.ErrDetached, s.canvasHwnd, p, hw)
+			}
 		}
 	}
 	return nil
@@ -718,6 +819,11 @@ func cloaked(hw uintptr) bool {
 func (h *Host) evalVisibility() {
 	t0 := time.Now()
 	fg, _, _ := pGetForegroundWindow.Call()
+	var executable string
+	if h.foregroundSupported {
+		executable = foregroundExecutable(fg)
+	}
+	h.foreground.Update(executable, "win32-process", h.emit)
 	fsOn := make([]bool, len(h.mons))
 	if fg != 0 && !shellClasses[className(fg)] && !cloaked(fg) {
 		m, _, _ := pMonitorFromWindow.Call(fg, monitorDefaultNull)
@@ -947,3 +1053,4 @@ func wndProc(hw, m, w, l uintptr) uintptr {
 }
 
 var _ desktop.Host = (*Host)(nil)
+var _ desktop.CanvasHost = (*Host)(nil)

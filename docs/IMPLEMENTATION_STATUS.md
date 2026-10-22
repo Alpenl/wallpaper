@@ -1,0 +1,105 @@
+# 当前实现与验收矩阵
+
+本文件连接“原来的 F-* 需求 → 七页 UI 计划 → 产品源码 → 自动化/真机验收”。它不是发布合格证明。正式实现基于主分支 `master/2710033ef169852bd7c4a1b5c063d29f3f3e89fd`；UI 分支 `5f00d334` 仅为设计参考，不复制 React 代码。本矩阵描述主分支工作区中的原生实现；历史测试不自动继承，本轮实际结果以 [VALIDATION.md](VALIDATION.md) 为准。标签规则见 [EVIDENCE.md](EVIDENCE.md)。
+
+## 产品界面只使用原生 MyGo
+
+- 唯一正式应用路径：[`cmd/wallpaperd`](../cmd/wallpaperd/) → [`internal/ui`](../internal/ui/) → [`internal/app`](../internal/app/) → 平台宿主/渲染器。导入、设置持久化和桌面控制都在原生产品中实现。
+- [UI 分支的 React 设计稿](https://github.com/Alpenl/wallpaper/tree/5f00d334cd32412291964d228fad4f3b9461cc7b/web) 仅参考七页布局、视觉和信息架构；主分支工作区没有 `web/`，不复制设计稿代码、不嵌入 MyGo、不接 Go 后端。
+- 原生 UI 必须自行完成所有行为验收，不能以 React 原型能点击、能展示页面作为原生功能完成的证据。网页/Shader 壁纸引擎是另一个功能范围，与 React 设置设计稿无关。
+
+## 七页实施计划与验收（UI-*）
+
+原生导航已按七页组织，旧的性能/暂停/电源/外观/启动/诊断入口映射到新页面。以下是对原 Web 规划七页的落地映射。每行包含行为验收，不能只靠截图关闭。具体本轮通过/阻塞见 [验证记录](VALIDATION.md)。
+
+| ID | 页面与原规划映射 | 必须可验收的行为 | F-* / 设计依据 | 主要源码 |
+|---|---|---|---|---|
+| UI-01 | 壁纸库 | 搜索/筛选、网格/列表、详情、导入、应用到选定屏/所有屏、优化、删除确认；空库/取消/导入失败有明确状态 | F-06/07/08/11/13/18；[包格式](design/10-package-format.md) | [`library.go`](../internal/ui/library.go)、[`app.go`](../internal/app/app.go)、[`importer`](../internal/importer/) |
+| UI-02 | 显示器 | 布局选择、稳定 ID 别名、独立壁纸/跟随默认、每屏状态与暂停；Win/mac 原生跨屏空间裁切、切回保留独立分配；不支持宿主明确禁用 | F-03/04/17；[多屏](design/09-multimonitor-dpi-hdr.md) | [`displays.go`](../internal/ui/displays.go)、[`display_test.go`](../internal/app/display_test.go) |
+| UI-03 | 播放与性能 | 档位/FPS、可用后端与路径、支持的缩放/声音/速度；配置写入后实际应用或报错，不支持后端不显示成功 | F-05/06/07/18；[视频管线](design/06-video-pipeline.md) | [`pages.go`](../internal/ui/pages.go)、[`render`](../internal/render/)、[`config`](../internal/config/) |
+| UI-04 | 暂停与电源 | 全屏/遮挡策略、电池 pause/fps15/ignore、低电量阈值、当前原因与恢复；新增应用规则只匹配进程，不采集窗口标题 | F-04/05/19；[状态机](design/07-pause-power-state-machine.md) | [`pages.go`](../internal/ui/pages.go)、[`visibility`](../internal/visibility/)、[`desktop`](../internal/desktop/) |
+| UI-05 | 通用 | 主题/强调色/库视图/导入后动作、启动行为、zh-CN/en 控件翻译；重开后保存；导入内容与原始后端信息不强制翻译；取消/无权限显示错误 | F-09/10/13；[配置](design/16-config-logging-telemetry.md) | [`settings.go`](../internal/ui/settings.go)、[`theme.go`](../internal/ui/theme.go)、[`shell.go`](../internal/ui/shell.go) |
+| UI-06 | 版本管理 | 版本、更新源/自动检查、检查/应用/回滚；未配置公钥或源时解释原因；构建标志不能冒充证书验证；失败/重复点击要有状态 | F-15；[分发](design/11-distribution-licensing.md) | [`pages.go`](../internal/ui/pages.go)、[`update`](../internal/update/)、[`cmd/wpupdate`](../cmd/wpupdate/) |
+| UI-07 | 关于与诊断 | 版本/许可/隐私、导出诊断、打开日志、重置确认；不含路径/窗口标题的脱敏测试；展示未提供能力的边界 | F-16/20；[日志](design/16-config-logging-telemetry.md) | [`pages.go`](../internal/ui/pages.go)、[`telemetry`](../internal/telemetry/) |
+
+共同验收：浅色/深色文字和层级可读；七页切换与关闭重开无错误；确认框取消不执行；快速重复点击不重复破坏数据；失败有可见提示。React 设计稿不承担产品功能验收；文件选择取消、配置损坏恢复等由原生应用测试覆盖。
+
+## F-01…F-26 实现与差距
+
+下表“源码存在”仅是【当前源码】层面的实现状态。完整 AC 与性能门槛仍在 [第 17 章](design/17-features-mvp.md)；列出的测试文件是可追溯的检查点，是否本轮执行必须看验证记录。源码变化后须复核本表。
+
+| ID | 当前实现/边界 | 证据入口 | 尚需验收或决定 |
+|---|---|---|---|
+| F-01 | Windows/macOS/Linux 宿主源码存在；Linux 是有限兼容实现，不是全桌面认证 | [`desktop`](../internal/desktop/)、[`app`](../internal/app/) | W-T1/W-T6、M1；图标层级、Explorer 恢复、睡眠/Space 真机 |
+| F-02 | 监管、退避、失败截图兜底和 Windows 子进程约束源码存在 | [`supervisor`](../internal/supervisor/)、[`app_test.go`](../internal/app/app_test.go) | W-T9、真实 TDR、主进程终止后无残留；模拟器不证明驱动恢复 |
+| F-03 | 独立分配、默认壁纸、稳定 ID/别名/迁移、每屏控制已有；新增 Win/mac 每屏裁切原生宿主的空间跨屏，不是复制模式；保留独立分配和按屏暂停 | [跨屏实现与限制](SPANNING.md)、[`spanning.go`](../internal/app/spanning.go)、[`canvas.go`](../internal/desktop/canvas.go) | 真双/三屏、负坐标/混合 DPI、拔插与同数量拓扑变化、静态兜底接缝；不是单解码器或逐帧同步架构；UI-02 |
+| F-04 | 分级状态机及平台信号已有；本轮补每屏手动暂停、全局/每屏原因保留、开关重放原始信号；Windows 信号较完整，macOS/Linux 有能力差异 | [`visibility`](../internal/visibility/)、[`app/options_test.go`](../internal/app/options_test.go)、[`desktop`](../internal/desktop/) | W-T10/M2/M4、≤500 ms、暂停 CPU/GPU 与恢复延迟；真实按屏/系统事件复测 |
+| F-05 | 生产 mpv/MF/AVF 已有 FPS cap，电池/低电量/省电策略已有；不是“限帧未实现” | [`mpv.go`](../internal/render/mpv/mpv.go)、[`mf`](../internal/render/mf/)、[`avf`](../internal/render/avf/)、`TestFPS15BatteryAndSaverProfile` | 真机验证 MF/AVF 限帧、电源事件与功耗；MF 节流呈现不等于少解码；D-07 |
+| F-06 | mpv、MF、AVFoundation 视频路径已有；硬解/循环质量不能仅由参数证明 | [`render`](../internal/render/) | W-T3/M3、`hwdec-current`、丢帧与逐帧循环；D-04/Q-W10 |
+| F-07 | 手动/自动转码、目标分辨率偏好、隔离任务与严格产物校验已接入；mac 默认原生 AVFoundation helper，无需 ffmpeg；可选 ffmpeg 在 Win/mac 分别要求 h264_mf/h264_videotoolbox，不静默换软件路线 | [转换契约](../internal/transcode/README.md)、[`nativeav`](../internal/transcode/nativeav/)、[`encoder.go`](../cmd/wallpaperd/encoder.go)、[`verify.go`](../internal/transcode/verify.go) | 原生编解码/帧率/IDR/音轨/取消真机验证；当前保比例边界缩放、每素材共享一份，按屏 cover 多版本缓存仍缺；avconvert 有限回退不满足严格 AC |
+| F-08 | 静态系统壁纸/跨屏静态裁切已有；mac 原生 GIF 预检、透明/子矩形/帧延迟/disposal 合成后编码视频，Win/Linux 可用外部转码；mac GIF 导入接入原生路线 | [`nativeav/gif.go`](../internal/transcode/nativeav/gif.go)、[`importer`](../internal/importer/)、[`panorama`](../internal/render/panorama/) | GIF 合成纯 Go 测试与 Linux 真 ffmpeg 不能替代 mac 原生编码/播放；透明复杂 GIF、末帧、资源限额及静态 CPU 需真机；有限 avconvert 不支持 GIF |
+| F-09 | 原生托盘、菜单、窗口按需打开/关闭已有；设置不使用 WebView | [`shell.go`](../internal/ui/shell.go) | 各系统托盘/退出/窗口重建；后台内存与菜单时延 |
+| F-10 | MyGo 自启桥接、默认关闭、首次询问已有 | [`cmd/wallpaperd`](../cmd/wallpaperd/)、[`config`](../internal/config/) | 真机登录后启动、禁用后撤销、失败回滚；不是网页开关 |
+| F-11 | Lively/WE video 导入已有，不支持 web 类型必须明确拒绝 | [`importer`](../internal/importer/)、[`wpk`](../internal/wpk/) | 样例包、非法路径/不支持类型、安全解压；不扩展到 WE scene/app |
+| F-12 | 原规划 v1；未提供产品级网页壁纸宿主/沙箱；React 设置设计稿不是本功能 | [Web 设计](design/08-web-shader.md)、[安全设计](design/10-package-format.md) | WebView2/WKWebView 宿主、隔离、禁网/权限、限帧、B-T2/Q-B2；不能标完成 |
+| F-13 | 本轮补作者/说明/标签/尺寸/时长/大小与预览主色索引；搜索覆盖名称/来源/作者/说明/标签/中英文颜色；网格/列表/缩略图已有 | [`library.go`](../internal/ui/library.go)、[`palette.go`](../internal/importer/palette.go)、[`search_test.go`](../internal/ui/search_test.go) | 16:09 以前的布局检查点，1000 条查询云端微基准约 1.18 ms，通过该检查点基准目标；不是端到端 UI/旧库完整索引或真机时延认证；UI-01 |
+| F-14 | 原规划 v1；未提供产品级 Shader 渲染器 | [Shader 设计](design/08-web-shader.md) | 实际渲染、GPU 帧时间、自适应分辨率与 L1 停止；不能用占位卡验收 |
+| F-15 | 更新清单校验、增量下载/暂存/回滚与打包脚本存在；发行签名/更新服务是独立门槛 | [`update`](../internal/update/)、[`packaging`](../packaging/)、[`scripts`](../scripts/) | D-02、更新源/公钥、实际签名及公证、安装卸载、mac 更新后签名完整性 |
+| F-16 | 本地日志、诊断包脱敏实现和测试已有；不上传遥测 | [`telemetry`](../internal/telemetry/) | 本轮脱敏测试、失败提示、各平台导出路径；日志性能 AC |
+| F-17 | 每屏 L0–L4、暂停原因、当前 UTC 周已确认动态运行时长/暂停时长已持久化；显示器指标键为 SHA-256 截断摘要；不估算能源 | [`app/metrics.go`](../internal/app/metrics.go)、[`config/metrics.go`](../internal/config/metrics.go)、[`ui/metrics_test.go`](../internal/ui/metrics_test.go) | mpv 展示报告的硬解状态；MF/AVF 仍标 unknown/未验证，不能从框架名推断硬解。真实睡眠/时钟/重启与 UI 一致性需平台验收，完整 F-17 未关闭 |
+| F-18 | 每屏 fit/speed、静音/降采样按能力接线；mpv/MF/AVF 支持 fit/speed 原位修改并保持暂停；MF 增加原生播放速率、位置采样/异步 seek 及 L3 恢复 | [`render.go`](../internal/render/render.go)、[`options.go`](../internal/app/options.go)、[`mf/playback.go`](../internal/render/mf/playback.go)、[`mf/engine_windows.go`](../internal/render/mf/engine_windows.go) | MF/AVF 原生运行与 ≤200 ms 时延仍未验；MF 不支持帧降采样，全局/不支持属性仍可重建；Web 属性依赖 F-12，完整 AC 未关闭 |
+| F-19 | 本轮接入可执行文件 basename 规则 pause/saver/ignore，Windows/macOS/X11 前台进程探针；ignore 只豁免全屏/遮挡，不能覆盖安全或手动暂停 | [`foreground.go`](../internal/desktop/foreground.go)、[`options.go`](../internal/app/options.go)、[`options_test.go`](../internal/app/options_test.go) | 前台而非“任意后台运行”语义；实际桌面会话探针/权限/误判验证；不可用时能力提示 |
+| F-20 | 未启用远程遥测；`Normalize` 强制 false，与早期 opt-in 设想不同 | [`config/files.go`](../internal/config/files.go)、D-15 | 若将来启用需独立产品/隐私/服务决策；不在本轮暗中增加 |
+| F-21 | 未提供已认证 MSIX/Store/MAS 发布物 | [分发设计](design/11-distribution-licensing.md) | D-06/D-12、账号/审核/签名、W-T8；不是本地构建能认证 |
+| F-22 | 未提供系统音频回环与 audio-reactive Web 引擎；普通视频音量不等于音频可视化 | [功能规格](design/17-features-mvp.md) | 独立权限/采集/渲染/性能方案，依赖 F-12 |
+| F-23 | 未提供 macOS 锁屏 Aerial 替换；不调用非公开替换流程 | [macOS 设计](design/04-macos-desktop.md)、D-11 | 产品/安全/分发决定与真机实验；不能作为标准支持 |
+| F-24 | Linux X11 产品参考路径及 GNOME/D-Bus 实验代码保留；非全 Wayland/GNOME/KDE 发行支持 | [`desktop/linux`](../internal/desktop/linux/)、[Linux 设计](design/05-ubuntu-compat.md) | D-14、Q-L4/5/7、真实 Shell 会话联调；嵌套实验测试单列 |
+| F-25 | 原规划“以后”；未提供在线画廊、工坊、云同步、创作服务或包签名基础设施 | [包与分发设计](design/10-package-format.md) | 服务端、身份/内容授权、协议、签名/更新信任链及运维；本地示例不是服务 |
+| F-26 | 未提供壁纸鼠标交互；v0 安全范围明确不支持 | [包安全设计](design/10-package-format.md) | 独立输入/权限/安全设计，不暗中开放 |
+
+## 本轮新增控制的实际支持范围
+
+以下是【当前源码】能力，不是各平台运行测试结果。相应渲染器的 `Capabilities` 与 `ValidateOptions` 防止静默忽略不支持的非默认值；编排器回退默认并显示原因。
+
+| 控制 | mpv（Windows/Linux） | MF（Windows） | AVF（macOS） | 静态图 |
+|---|---|---|---|---|
+| fill / fit / stretch | 已接入，可原位调整 | 已接入：源裁切 / MF letterbox / 交换链 stretch，可原位调整 | 已接入，可原位调整 | 单屏自定义不支持；跨屏由图片裁切实现 |
+| 播放速度 | 0.25–4 倍，可原位调整 | 0.25–4 倍，原生 SetPlaybackRate，可原位调整 | 0.25–4 倍，可原位调整 | 不适用 |
+| 静音 / 声音 | 已接入，默认静音 | 已接入，默认静音 | 已接入，默认静音 | 不适用 |
+| 视频帧降采样 | 0.25–1 倍软件滤镜 | 不支持 | 不支持 | 不适用 |
+| FPS cap / 电池 15fps | 已有 fps 滤镜 | 已有 Transfer/Present 节流 | 已有 videoComposition 路径，未真机 | 不需要动态渲染 |
+| 位置记录/恢复 | 按屏+素材持久化检查点；mpv 消费起始位置 | 已接入 Get/SetCurrentTime；等待异步 seek 后播放，L3 保位置；未真机 | 已接入延迟 seek/位置采样路径，真机行为未验 | 不适用 |
+
+重要边界：
+
+- “视频帧降采样”不是缩小桌面窗口，也不是已经证明省电；软件滤镜可能触发硬解帧回读，必须测开销。不宣传为无损零拷贝优化。
+- mpv/MF/AVF 的每屏 fit/speed 优先调用 `UpdatePlayback`，不应自行恢复已暂停播放器；不支持时才重建，其他错误报告给 UI。全局音频/降采样/后端等设置仍可能重建。原 F-18 的整体无重载与 ≤200 ms 真机 AC 仍开放。
+- MF 在渲染线程串行执行原生属性控制，启动等待媒体/seek 就绪，L3 保存位置；实时更改不调用 Play/seek，失败尝试回滚，回滚失败则标记状态不可信并交监管重启；实时控制 IPC 超时/传输结果不确定、停止/恢复收到原生 fatal 错误时也终止旧宿主，由监管恢复，不能假定命令没有执行。素材/系统不支持的速率会报错，0.25–4 倍是请求范围而非对所有编码格式的成功承诺；MF 画布上限为 16384 像素/轴，设备实际限制可能更低。AVF 同样新增位置采样与延迟 seek。两者仍须 Windows/macOS 真机验证，不能将源码接线说成已测得精准续播或无缝循环。
+- 应用规则匹配前台进程 basename，不读取窗口标题；Windows 使用进程映像，macOS 使用 NSWorkspace，X11 使用活动窗口 PID 与本地 `/proc`。Wayland 或无法获得进程的会话不宣称有效。
+- 导入和编码采用有界 FIFO（各 256），编码限制单活跃任务；删除会取消关联的排队/运行工作。相关测试覆盖多选导入不丢项、替换/删除与旧编码结果竞态，最终全套结果仍以验证记录为准。
+- macOS 默认原生 AVFoundation helper 与可选 ffmpeg 是严格路线，要求 H.264、恒定 30fps、无音轨、首同步样本/GOP 和偶数尺寸约束；MP4 样本表验证不是完整码流解码。avconvert 只作明确标注的有限回退，不支持 GIF、固定 30fps、目标尺寸或去音轨。Windows ffmpeg 必须具备 h264_mf；框架/编码器名称不证明实际硬件加速。
+- 目标分辨率 `display` 取主屏当前模式 backing 像素，无主屏时取首个有效屏，最后回退 3840×2160；也可显式选择 1080p/1440p/2160p。任务开始时重新读取拓扑。macOS 逻辑坐标与 backing 像素分离，Windows 不重复乘 DPI；不是固定取面板最大分辨率。输出按边界保比例、不放大、偶数对齐，不是设计中每屏精确 cover 裁切的多份 rendition。
+- 跨屏是每屏独立宿主/渲染器对共同画布的空间裁切，保留按屏暂停；未实现单解码器和跨屏帧时钟，不承诺视频帧同步。静态图与视频首帧使用相同画布映射，详见 [SPANNING.md](SPANNING.md)。
+- 本周暂停时长只累计已确认的动态壁纸 L1–L4，L0 单列；不计静态图、未启动/失败、离线和系统睡眠，正常 30 秒检查点，超过 45 秒的异常间隔整段丢弃。周界为 UTC 周一，时钟回退不重复计时。上限 64 个显示器记录，仅保存摘要键及有限计数，不是实际/估算节电量。
+- 文件夹导入不遍历符号链接/隐藏子目录；包目录作为整体导入，失败项汇总，不把有问题的包拆成媒体“假成功”。
+- 主色索引只读取本地静态预览：最多 16 MiB、16×1024² 像素，最多三组中英文色名；无效/超限/缺少预览时保留导入但不生成颜色索引，不能保证旧条目均有颜色。
+- 存储统计扫描实际库/缓存路径；清理只移除无引用缓存，不清空仍用于首帧/降级的有效预览。见 [`storage.go`](../internal/app/storage.go)。
+
+## 配置与数据迁移
+
+本轮 `config.json`、`library.json`、`assignments.json`、`state.json` 均为 schema 2。新增开关默认静音、启用位置记录、自动转码关闭、普通启动打开设置；转码分辨率默认 `display`。独立/跨屏布局、跨屏素材与选项保存在 assignments；本周指标保存在 state，而不是历史设计中的独立 metrics.json。旧配置迁移保留已有值并生成版本备份；高版本文件保持只读。每屏选项跟随稳定显示器 ID 迁移，指标使用独立的 SHA-256 前 16 字节十六进制键，不把硬件原始标识写入指标集合。
+
+来源：[`config/files.go`](../internal/config/files.go)、[`config/options_test.go`](../internal/config/options_test.go)、[`config/metrics_test.go`](../internal/config/metrics_test.go)。这不是回滚兼容性认证：旧程序读取更高 schema 的行为、迁移备份恢复和真实用户库升级需按 [验证记录](VALIDATION.md) 复核。
+
+## 尚需区分的完成条件
+
+- **已有源码但缺目标平台证据**：Win/mac 宿主、空间跨屏、原生编解码与播放控制、电源/睡眠、性能预算、签名/公证及安装。不能只以云端测试关闭，也不应重新描述为“完全没有实现”。
+- **仍缺架构或产品实现**：F-07 的按屏多 rendition/cover 缓存，F-12 网页壁纸隔离与沙箱，F-14 Shader 引擎，F-25 在线服务/内容授权/信任链，以及其他矩阵明列未提供项。真机测试本身不能补齐这些代码。
+- **后续范围仍需确认**：原规格把 F-12/F-14 定为 v1、F-25 定为以后、F-26 在 v0 明确不支持。本轮补全不能默默改变原分期，也不代表用户已同意从“全部功能”中排除它们；扩展到完整 v1/roadmap 的范围仍待确认。
+
+## 状态更新规则
+
+- 新控件只有在持久化、控制器调用、实际后端行为/错误报告全部接好后，才记“已接线”。
+- 测试通过只能关闭对应覆盖范围，不能从 Linux 单元测试推出 Windows/macOS 合格。
+- 表中未提供项不是“静默完成”；保留缺口及最小闭环条件，交付时明确说明。
+- 不以新的 UI 工作自动批准 D-* 的发布主体、费用、签名证书、遥测、商店账号或线上服务。

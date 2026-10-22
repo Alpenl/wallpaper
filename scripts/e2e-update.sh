@@ -3,7 +3,8 @@
 # 只用 127.0.0.1 的 http（客户端只允许 https 或本机回环）。需要 python3。
 set -euo pipefail
 cd "$(dirname "$0")/.."
-W=$(mktemp -d); trap 'kill $SRV 2>/dev/null || true; rm -rf "$W"' EXIT
+W=$(mktemp -d); SRV=""
+trap 'if [ -n "$SRV" ]; then kill "$SRV" 2>/dev/null || true; fi; rm -rf "$W"' EXIT
 go build -o "$W/wpupdate" ./cmd/wpupdate
 "$W/wpupdate" keygen -o "$W/keys" >/dev/null
 PUB=$(cat "$W/keys/update.pub")

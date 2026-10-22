@@ -22,10 +22,13 @@ import (
 //   - X11：固定 "x11-0"（Linux 只支持单屏）。
 type DisplayID string
 
-// Display 描述一块显示器。Bounds 为物理像素、虚拟屏坐标。
+// Display 描述一块显示器。Bounds 使用宿主的虚拟桌面坐标：Windows/X11 为
+// 物理像素，macOS 为逻辑点。跨屏映射必须使用 Bounds，不能按 Scale 放大原点。
+// Pixels 单独记录当前模式的 backing 像素尺寸，用于静态图和编码输出。
 type Display struct {
 	ID      DisplayID
 	Bounds  image.Rectangle
+	Pixels  image.Point
 	Scale   float64
 	Primary bool
 	// Name 是系统给的友好名（Win：monitorFriendlyDeviceName / 显示器 DeviceString；mac：NSScreen.localizedName）。
@@ -35,6 +38,17 @@ type Display struct {
 	Device string
 	// LegacyIDs 是旧版本用过的 ID（迁移 assignments.json 用）。
 	LegacyIDs []DisplayID
+}
+
+// PixelSize returns the current output raster size, not its desktop coordinates.
+// Hosts whose Bounds already use pixels (Windows/X11) may leave Pixels unset.
+// Scale is intentionally not used: Windows Bounds already include the physical
+// pixels even when its per-monitor DPI/UI scale is greater than one.
+func (d Display) PixelSize() image.Point {
+	if d.Pixels.X > 0 && d.Pixels.Y > 0 {
+		return d.Pixels
+	}
+	return d.Bounds.Size()
 }
 
 // genericNames 是系统在拿不到 EDID 名字时给的泛称，不当作友好名。
@@ -86,7 +100,14 @@ type Surface interface {
 }
 
 // Caps 是平台能力。
-type Caps struct{ Video, Web, Shader, PerDisplay, ExternalSurfaceOnly bool }
+type Caps struct {
+	Video, Web, Shader, PerDisplay, ExternalSurfaceOnly bool
+	// ForegroundApp means the host can report foreground executable identities.
+	// A particular sample can still be unavailable (for example a protected process).
+	ForegroundApp bool
+	// Spanning means CanvasHost can clip a shared virtual canvas per output.
+	Spanning bool
+}
 
 // EventKind 是事件类型。
 type EventKind int
@@ -96,6 +117,7 @@ const (
 	EventShellRestarted                   // Explorer 重启/挂载点失效；所有 Surface 已失效，需重建
 	EventSignal                           // 可见性/电源信号（07 章 7.2 的原因）
 	EventBattery                          // 电池电量（Percent，-1=未知）
+	EventForegroundApp                    // 前台应用变化（Executable；空串表示无前台应用或无法识别）
 )
 
 // Event 是宿主事件。Display 为空表示全局。
@@ -106,6 +128,9 @@ type Event struct {
 	Active  bool
 	Percent int
 	Source  string
+	// Executable is the foreground executable basename, never a window title or
+	// full path. It is used only by EventForegroundApp, which is always global.
+	Executable string
 }
 
 // ErrDetached 表示表面已脱离桌面层级。

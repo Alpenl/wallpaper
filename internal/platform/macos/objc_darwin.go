@@ -35,17 +35,21 @@ var Main func(fn func())
 var (
 	Sel = objc.RegisterName
 
-	CGWindowLevelForKey        func(int32) int32
-	CGWindowListCopyWindowInfo func(uint32, uint32) uintptr
-	CGRectMakeWithDict         func(uintptr, *CGRect) bool
-	CGDisplayBounds            func(uint32) CGRect
-	CGDisplayCreateUUID        func(uint32) uintptr
-	CFUUIDCreateString         func(uintptr, uintptr) uintptr
-	CFArrayGetCount            func(uintptr) int
-	CFArrayGetValueAtIndex     func(uintptr, int) uintptr
-	CFDictionaryGetValue       func(uintptr, uintptr) uintptr
-	CFNumberGetValue           func(uintptr, int, unsafe.Pointer) bool
-	CFRelease                  func(uintptr)
+	CGWindowLevelForKey         func(int32) int32
+	CGWindowListCopyWindowInfo  func(uint32, uint32) uintptr
+	CGRectMakeWithDict          func(uintptr, *CGRect) bool
+	CGDisplayBounds             func(uint32) CGRect
+	CGDisplayCopyDisplayMode    func(uint32) uintptr
+	CGDisplayModeGetPixelWidth  func(uintptr) uint
+	CGDisplayModeGetPixelHeight func(uintptr) uint
+	CGDisplayModeRelease        func(uintptr)
+	CGDisplayCreateUUID         func(uint32) uintptr
+	CFUUIDCreateString          func(uintptr, uintptr) uintptr
+	CFArrayGetCount             func(uintptr) int
+	CFArrayGetValueAtIndex      func(uintptr, int) uintptr
+	CFDictionaryGetValue        func(uintptr, uintptr) uintptr
+	CFNumberGetValue            func(uintptr, int, unsafe.Pointer) bool
+	CFRelease                   func(uintptr)
 
 	MsgInitWindow func(objc.ID, objc.SEL, CGRect, uint, uint, bool, objc.ID) objc.ID
 	MsgSetFrame   func(objc.ID, objc.SEL, CGRect)
@@ -94,6 +98,10 @@ func Load() error {
 		purego.RegisterLibFunc(&CGWindowListCopyWindowInfo, cg, "CGWindowListCopyWindowInfo")
 		purego.RegisterLibFunc(&CGRectMakeWithDict, cg, "CGRectMakeWithDictionaryRepresentation")
 		purego.RegisterLibFunc(&CGDisplayBounds, cg, "CGDisplayBounds")
+		purego.RegisterLibFunc(&CGDisplayCopyDisplayMode, cg, "CGDisplayCopyDisplayMode")
+		purego.RegisterLibFunc(&CGDisplayModeGetPixelWidth, cg, "CGDisplayModeGetPixelWidth")
+		purego.RegisterLibFunc(&CGDisplayModeGetPixelHeight, cg, "CGDisplayModeGetPixelHeight")
+		purego.RegisterLibFunc(&CGDisplayModeRelease, cg, "CGDisplayModeRelease")
 		purego.RegisterLibFunc(&CGDisplayCreateUUID, cg, "CGDisplayCreateUUIDFromDisplayID")
 		purego.RegisterLibFunc(&CFUUIDCreateString, cf, "CFUUIDCreateString")
 		purego.RegisterLibFunc(&CFArrayGetCount, cf, "CFArrayGetCount")

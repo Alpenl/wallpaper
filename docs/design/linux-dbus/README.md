@@ -1,5 +1,7 @@
 # GNOME 扩展 ↔ Go 守护进程 D-Bus 接口（Q-L6，第 13 轮）
 
+> **独立研究实验**：本目录不是 `internal/` 下的生产实现。下文旧实验结果保留其原始范围，不自动计入本轮产品验收；当前状态与模块测试范围见 [验证记录](../../VALIDATION.md)。
+
 - 接口定义：[io.github.wpd.Shell1.xml](io.github.wpd.Shell1.xml)。会话总线，守护进程持有 `io.github.wpd.Daemon`，对象 `/io/github/wpd/Shell1`。
 - 方向：**扩展 → 守护进程用方法**（Hello / ReportMonitors / ReportVisibility / RendererStarted / RendererExited）；**守护进程 → 扩展用信号**（StartRenderer / StopRenderer / ShowSnapshot）。暂停/恢复不经过扩展，由守护进程直接走 mpv IPC。
 - 为什么由扩展拉起渲染器：GNOME Wayland 下只有通过 `Meta.WaylandClient` 启动的客户端，扩展才能可靠识别其窗口并 Clone 到背景层（Hanabi 的做法，见 05 §5.3）【源码，Hanabi】。

@@ -1,5 +1,7 @@
 # 08 网页与 Shader 壁纸
 
+> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
+
 ## 8.1 WebView 选择
 - MyGo 用的是系统 WebView：WebView2、WKWebView、WebKitGTK 4.1【文档】MyGo 架构文档。macOS 上 hello-world 加 WKWebView 子进程约 62 MB【文档】。
 - Lively 同时维护 WebView2 和 CefSharp 两套播放器【源码】`Lively.Player.WebView2`、`Lively.Player.CefSharp`。CEF 设置里有 `mute-audio`、`autoplay-policy=no-user-gesture-required`、`disable-features=HardwareMediaKeyHandling`、`disable-gpu-shader-disk-cache`（`Form1.cs:345-372`）。
