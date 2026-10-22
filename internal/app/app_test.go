@@ -238,10 +238,10 @@ func TestStartsRendererPerDisplayAndSetsSystemWallpaper(t *testing.T) {
 		return a != nil && b != nil && a.isLoaded() && b.isLoaded()
 	})
 	eventually(t, "系统壁纸兜底", func() bool { e.h.mu.Lock(); defer e.h.mu.Unlock(); return len(e.h.wall) == 2 })
-	v := e.a.View()
-	if len(v.Displays) != 2 || v.Displays[0].ItemID != "x" || v.Displays[0].Level != "L0" {
-		t.Fatalf("%+v", v.Displays)
-	}
+	eventually(t, "两块屏的视图已发布", func() bool {
+		v := e.a.View()
+		return len(v.Displays) == 2 && v.Displays[0].ItemID == "x" && v.Displays[0].Level == "L0" && v.Displays[1].ItemID == "x" && v.Displays[1].Level == "L0"
+	})
 }
 
 func TestPerDisplayFullscreenPause(t *testing.T) {
@@ -399,9 +399,10 @@ func TestImportAssignRemove(t *testing.T) {
 	})
 	e.a.Import("good.mp4", "A")
 	eventually(t, "导入并应用到 A 后播放", func() bool { r := e.cur("A"); return r != nil && r.isLoaded() })
-	if v := e.a.View(); len(v.Library) != 1 || v.Displays[0].ItemID != "new" {
-		t.Fatal(v)
-	}
+	eventually(t, "导入并应用的视图已发布", func() bool {
+		v := e.a.View()
+		return len(v.Library) == 1 && byID(v, "A").ItemID == "new"
+	})
 	e.a.Remove("new")
 	eventually(t, "删除后停止", func() bool { r := e.cur("A"); r.mu.Lock(); defer r.mu.Unlock(); return r.closed })
 	e.sync()
@@ -504,9 +505,7 @@ func TestTranscodeFlow(t *testing.T) {
 		}
 	})
 	eventually(t, "启动", func() bool { r := e.cur("A"); return r != nil && r.isLoaded() })
-	if !e.a.View().HasEncoder {
-		t.Fatal("HasEncoder")
-	}
+	eventually(t, "HasEncoder published", func() bool { return e.a.View().HasEncoder })
 	first := e.cur("A")
 	e.a.Transcode("x")
 	eventually(t, "转码完成", func() bool {
