@@ -1,88 +1,234 @@
 package telemetry
 
 import (
-	"wpapp/internal/buildinfo"
-
 	"archive/zip"
-	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"wpapp/internal/buildinfo"
 )
 
-// 绝对路径（Windows 盘符、UNC、Z:\ 之类；Unix 以 / 开头且至少两段）。16.4 规则：诊断包里不出现素材路径。
-var pathRe = regexp.MustCompile(`(?i)([a-z]:[\\/]|\\\\|/(?:home|users|tmp|var|mnt|media|private|volumes|library|opt|root)/)[^\s"',;\]\)]+`)
+const (
+	maxDiagnosticZIP  = 20 << 20
+	maxDiagnosticFile = 2 << 20
+	maxDiagnosticRead = 64 << 20
+	truncationMarker  = "[truncated: older content omitted]\n"
+)
 
-// windowTitleRe 防御性去掉形如 "title":"…" 的字段（壁纸标题可能含个人信息）。
-var titleRe = regexp.MustCompile(`"(title|name|file|path|dir|snapshot|entry)":"(?:[^"\\]|\\.)*"`)
-
-// Redact 按 16.4 规则清洗一行：路径 → <path:hash8>，标题类字段 → <redacted>。
-func Redact(s string) string {
-	s = pathRe.ReplaceAllStringFunc(s, func(p string) string { return "<path:" + HashPath(p) + ">" })
-	s = titleRe.ReplaceAllStringFunc(s, func(m string) string {
-		k := m[1 : strings.Index(m[1:], `"`)+1]
-		return `"` + k + `":"<redacted>"`
-	})
-	return s
+type diagnosticEntry struct {
+	name string
+	data []byte
+}
+type diagnosticSource struct {
+	path, name string
+	json       bool
+	modified   time.Time
+}
+type diagnosticManifest struct {
+	File   string `json:"file"`
+	Status string `json:"status"`
 }
 
-// ExportDiagnostics 把日志目录（清洗后）和指定的配置文件打成 zip（F-16）。
-// mpv 日志只保留警告/错误行。素材库（library.json）不导出。
-func ExportDiagnostics(logsDir string, configFiles []string, dst string, build buildinfo.Info) error {
+// ExportDiagnostics exports sanitized summaries, then newest log tails. Optional
+// snapshots must contain only diagnostic fields, never the material library.
+func ExportDiagnostics(logsDir string, configFiles []string, dst string, build buildinfo.Info, snapshots ...any) error {
+	entries, err := diagnosticEntries(logsDir, configFiles, build, snapshots)
+	if err != nil {
+		return err
+	}
 	f, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	z := zip.NewWriter(f)
-	w, _ := z.Create("README.txt")
-	fmt.Fprintf(w, "wallpaperd %s\nexported %s\n路径已替换为 sha256 前缀，标题类字段已去除（16.4）。\n", build.String(), time.Now().Format(time.RFC3339))
-	ents, _ := os.ReadDir(logsDir)
-	var names []string
-	for _, e := range ents {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".log") {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		if err := addScrubbed(z, filepath.Join(logsDir, n), "logs/"+n, strings.HasPrefix(n, "mpv-") || strings.HasPrefix(n, "mfhost-")); err != nil {
-			return err
-		}
-	}
-	for _, p := range configFiles {
-		if _, err := os.Stat(p); err == nil {
-			if err := addScrubbed(z, p, "config/"+filepath.Base(p), false); err != nil {
-				return err
-			}
-		}
-	}
-	return z.Close()
+	return writeDiagnostics(f, entries)
 }
 
-func addScrubbed(z *zip.Writer, src, name string, onlyWarn bool) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
+// Own the destination so both archive finalization and destination Close errors
+// reach the caller. Keeping this boundary small also permits portable I/O tests.
+func writeDiagnostics(dst io.WriteCloser, entries []diagnosticEntry) error {
+	z := zip.NewWriter(dst)
+	var writeErr error
+	for _, e := range entries {
+		var w io.Writer
+		w, writeErr = z.CreateHeader(&zip.FileHeader{Name: e.name, Method: zip.Store})
+		if writeErr == nil {
+			_, writeErr = w.Write(e.data)
+		}
+		if writeErr != nil {
+			break
+		}
 	}
-	defer in.Close()
-	w, err := z.Create(name)
-	if err != nil {
-		return err
+	return errors.Join(writeErr, z.Close(), dst.Close())
+}
+
+// Store entries have exactly these local header, descriptor and central-directory
+// costs (no timestamps/extras); reserve the end-of-central-directory separately.
+func entrySize(e diagnosticEntry) int { return len(e.data) + 2*len(e.name) + 30 + 16 + 46 }
+
+func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, snapshots []any) ([]diagnosticEntry, error) {
+	entries := []diagnosticEntry{{"README.txt", []byte(Redact(fmt.Sprintf("wallpaperd %s\nexported %s\nPaths and private fields redacted. Logs contain bounded tails. See manifest.json for omissions.\n", build.String(), time.Now().Format(time.RFC3339))))}}
+	for i, snapshot := range snapshots {
+		b, err := json.Marshal(snapshot)
+		if err != nil {
+			return nil, err
+		}
+		b, err = scrubJSON(b)
+		if err != nil {
+			return nil, err
+		}
+		name := "assignments.json"
+		if i > 0 {
+			name = fmt.Sprintf("assignments-%d.json", i)
+		}
+		entries = append(entries, diagnosticEntry{name, b})
 	}
-	sc := bufio.NewScanner(io.LimitReader(in, 16<<20))
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	for sc.Scan() {
-		l := sc.Text()
-		if onlyWarn && !strings.Contains(l, "][w][") && !strings.Contains(l, "][e][") && !strings.Contains(l, "][f][") {
+	var sources []diagnosticSource
+	for _, p := range configs {
+		if filepath.Base(p) == "library.json" {
 			continue
 		}
-		fmt.Fprintln(w, Redact(Scrub(l)))
+		sources = append(sources, diagnosticSource{path: p, name: "config/" + filepath.Base(p), json: true})
 	}
-	return sc.Err()
+	ents, err := os.ReadDir(logsDir)
+	if err != nil {
+		return nil, err
+	}
+	var logs []diagnosticSource
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || !(strings.HasSuffix(n, ".log") || strings.HasSuffix(n, ".log.1")) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			return nil, err
+		}
+		logs = append(logs, diagnosticSource{path: filepath.Join(logsDir, n), name: "logs/" + n, modified: info.ModTime()})
+	}
+	sort.SliceStable(logs, func(i, j int) bool { return logs[i].modified.After(logs[j].modified) })
+	sources = append(sources, logs...)
+	manifest := make([]diagnosticManifest, len(sources))
+	for i, s := range sources {
+		manifest[i] = diagnosticManifest{Redact(s.name), "omitted: size/read budget or unavailable"}
+	}
+	reserve, _ := json.MarshalIndent(manifest, "", "  ")
+	// Reserve ordinary and ZIP64 end records, even for very many tiny files.
+	used := 22 + 76 + entrySize(diagnosticEntry{"manifest.json", reserve})
+	for _, e := range entries {
+		used += entrySize(e)
+	}
+	if used > maxDiagnosticZIP {
+		return nil, fmt.Errorf("diagnostic summaries exceed ZIP budget")
+	}
+	readBudget := int64(maxDiagnosticRead)
+	for i, s := range sources {
+		// Reserve enough for a full bounded file before reading the next source.
+		if readBudget < maxDiagnosticFile {
+			continue
+		}
+		b, truncated, n, err := readDiagnostic(s)
+		readBudget -= n
+		if err != nil {
+			if os.IsNotExist(err) {
+				manifest[i].Status = "omitted: unavailable"
+				continue
+			}
+			// Invalid/oversized JSON must never fall back to exporting private raw text.
+			manifest[i].Status = "omitted: unreadable or invalid JSON"
+			continue
+		}
+		e := diagnosticEntry{Redact(s.name), b}
+		if used+entrySize(e) > maxDiagnosticZIP {
+			continue
+		}
+		used += entrySize(e)
+		entries = append(entries, e)
+		manifest[i].Status = "included"
+		if truncated {
+			manifest[i].Status = "included: truncated tail"
+		}
+	}
+	b, _ := json.MarshalIndent(manifest, "", "  ")
+	entries = append(entries, diagnosticEntry{"manifest.json", b})
+	return entries, nil
+}
+
+func readDiagnostic(s diagnosticSource) ([]byte, bool, int64, error) {
+	f, err := os.Open(s.path)
+	if err != nil {
+		return nil, false, 0, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, false, 0, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, false, 0, fmt.Errorf("not a regular file")
+	}
+	truncated := st.Size() > maxDiagnosticFile
+	if s.json && truncated {
+		return nil, false, 0, fmt.Errorf("JSON exceeds read budget")
+	}
+	if truncated {
+		if _, err = f.Seek(-maxDiagnosticFile, io.SeekEnd); err != nil {
+			return nil, false, 0, err
+		}
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxDiagnosticFile))
+	n := int64(len(b))
+	if err != nil {
+		return nil, truncated, n, err
+	}
+	if s.json {
+		b, err = scrubJSON(b)
+		return b, false, n, err
+	}
+	if truncated {
+		// Drop the partial first record rather than risk leaking a cut-off path.
+		if end := bytes.IndexByte(b, '\n'); end >= 0 {
+			b = b[end+1:]
+		} else {
+			b = nil
+		}
+	}
+	var out bytes.Buffer
+	if truncated {
+		out.WriteString(truncationMarker)
+	}
+	name := filepath.Base(s.path)
+	plain := strings.HasPrefix(name, "crash-") || strings.Contains(name, "-stderr") || strings.HasPrefix(name, "mfhost-")
+	mpv := strings.HasPrefix(name, "mpv-") && !plain
+	for _, line := range bytes.Split(b, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		if mpv && !bytes.Contains(line, []byte("][w][")) && !bytes.Contains(line, []byte("][e][")) && !bytes.Contains(line, []byte("][f][")) {
+			continue
+		}
+		if !plain && !mpv {
+			clean, err := scrubJSON(line)
+			if err != nil {
+				out.WriteString("[omitted: invalid JSON record]\n")
+				continue
+			}
+			var compact bytes.Buffer
+			if err := json.Compact(&compact, clean); err != nil {
+				return nil, truncated, n, err
+			}
+			out.Write(compact.Bytes())
+		} else {
+			out.WriteString(Redact(string(line)))
+		}
+		out.WriteByte('\n')
+	}
+	return out.Bytes(), truncated, n, nil
 }
