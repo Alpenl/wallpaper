@@ -49,7 +49,7 @@ func TestAllPagesRender(t *testing.T) {
 	// 设置子页在顶部“设置”标签下；第一次进入先点“设置”。
 	pages := []struct{ nav, want string }{
 		{"显示器", "布局"}, {"设置", "性能档位"}, {"播放与性能", "性能档位"}, {"暂停与电源", "自动暂停"},
-		{"通用", "颜色模式"}, {"版本管理", "当前版本"}, {"关于与诊断", "诊断包"}, {"壁纸库", "全部 8"},
+		{"通用", "颜色模式"}, {"版本管理", "当前版本"}, {"关于与诊断", "诊断包"}, {"壁纸库", "筛选结果"},
 	}
 	for _, goos := range []string{"windows", "darwin", "linux"} {
 		_, _, tt := newUI(t, goos)
@@ -146,12 +146,20 @@ func TestWallpaperGroupProps(t *testing.T) {
 
 func TestLibrarySearchFilterImport(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
-	click(t, tt, "建议转码 2")
+	click(t, tt, "筛选结果")
+	if err := tt.ChooseMenuItem("建议转码 2"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
 	must(t, tt, "海浪 4K", "雨林晨雾")
 	if tt.HasText("HEVC · 本地文件") {
 		t.Fatal("筛选后不应显示极光之夜")
 	}
-	click(t, tt, "全部 8")
+	click(t, tt, "筛选结果")
+	if err := tt.ChooseMenuItem("全部 32"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
 	s.query = "城市"
 	tt.Frame()
 	must(t, tt, "城市霓虹")
@@ -248,8 +256,11 @@ func TestSettingsChangeConfig(t *testing.T) {
 }
 
 func TestStatusBarPauseAndNext(t *testing.T) {
-	ctl, _, tt := newUI(t, "windows")
-	must(t, tt, "正在播放", "1 块屏播放 · 1 块屏暂停")
+	ctl, s, tt := newUI(t, "windows")
+	ctl.V.LastImport = "" // Playback status is shown when no import feedback is pending.
+	s.Refresh()
+	tt.Frame()
+	must(t, tt, "正在播放", "1 块屏播放 · 1 块屏暂停 · 继续播放 · 屏 2 因其他程序全屏仍暂停")
 	click(t, tt, "暂停全部")
 	if !ctl.View().PausedAll {
 		t.Fatal("暂停全部")
@@ -507,7 +518,7 @@ func TestDiagnosticsExportDoesNotBlockUI(t *testing.T) {
 	click(t, tt, "导出诊断包")
 	<-begin
 	click(t, tt, "壁纸库")
-	must(t, tt, "全部 8")
+	must(t, tt, "筛选结果")
 	close(finish)
 	s.SetPage("about")
 	wait(t, tt, "诊断包已导出。请检查内容后再分享。")
@@ -776,7 +787,7 @@ func TestPageHeaderKeepsSpacingAtMinimumWindowSize(t *testing.T) {
 	}, 900, 600)
 	tt.Frame()
 	header, ok := tt.Find("Header layout check")
-	if !ok || header.Y < 16 {
+	if !ok || header.Y < 12 {
 		t.Fatalf("header collapsed into top padding: %+v", header)
 	}
 	tt.Scroll(500, 400, 0, -600)
@@ -785,4 +796,25 @@ func TestPageHeaderKeepsSpacingAtMinimumWindowSize(t *testing.T) {
 	if !ok || after.Y != header.Y {
 		t.Fatalf("scroll moved page header: before=%+v after=%+v", header, after)
 	}
+}
+
+func TestStatusBarUsesConfirmedResumeState(t *testing.T) {
+	ctl, s, tt := newUI(t, "windows")
+	ctl.V.LastImport = ""
+	ctl.V.PausedAll = false
+	for i := range ctl.V.Displays {
+		ctl.V.Displays[i].Level = "L1"
+		ctl.V.Displays[i].State = "recovering"
+		ctl.V.Displays[i].Reasons = ""
+	}
+	s.Refresh()
+	tt.Frame()
+	must(t, tt, "正在恢复…")
+	for i := range ctl.V.Displays {
+		ctl.V.Displays[i].State = "active"
+		ctl.V.Displays[i].Reasons = "Fullscreen"
+	}
+	s.Refresh()
+	tt.Frame()
+	must(t, tt, "自动暂停中")
 }

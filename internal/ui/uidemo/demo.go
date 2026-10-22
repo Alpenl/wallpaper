@@ -3,6 +3,7 @@
 package uidemo
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
 	"time"
@@ -197,6 +198,13 @@ func New(thumbs map[string]string) *Ctl {
 	lib[7].Entry = "content/main.frag"
 	lib[7].PropertyDefs = []wpk.Prop{{Key: "tint", Type: "color", Default: json.RawMessage(`"#6699cc"`), Label: wpk.I18n{"en": "Tint", "zh": "颜色"}}, {Key: "enabled", Type: "bool", Default: json.RawMessage(`true`), Label: wpk.I18n{"en": "Enabled", "zh": "启用"}}}
 	lib[1].Props = config.ItemProps{Audio: "sound", Volume: 60, Speed: 0.75}
+	for i := 8; i < 32; i++ {
+		item := lib[(i-8)%6]
+		item.ID = fmt.Sprintf("sample-%02d", i)
+		item.Title = fmt.Sprintf("Landscape %02d", i)
+		item.Transcode = "none"
+		lib = append(lib, item)
+	}
 	cfg := config.Defaults()
 	cfg.Startup.Asked = true
 	return &Ctl{V: app.View{

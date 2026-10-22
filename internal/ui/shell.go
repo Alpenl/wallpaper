@@ -142,7 +142,7 @@ func (sh *Shell) Changed() {
 			sh.tray.SetMenu(sh.menu(p))
 			sh.tray.SetToolTip(translate(v.Config.UI.Lang, "动态壁纸"))
 			if w != nil && !w.IsDestroyed() {
-				w.SetTitle(translate(v.Config.UI.Lang, "动态壁纸"))
+				w.SetTitle("")
 			}
 		})
 	}
@@ -164,6 +164,9 @@ func (sh *Shell) Open() {
 			sh.win.Focus()
 			return
 		}
-		sh.win = mygo.NewWindow(mygo.WindowOptions{Title: translate(sh.S.view0().Config.UI.Lang, "动态壁纸"), Width: 1120, Height: 740, MinWidth: 900, MinHeight: 600, Content: ui.View(sh.S.View)})
+		sh.win = mygo.NewWindow(mygo.WindowOptions{Title: "", TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: 38, Width: 1120, Height: 740, MinWidth: 900, MinHeight: 600, Content: ui.View(sh.S.View)})
+		// MyGo substitutes App.Name for an empty creation title; clear it for
+		// desktop backends that fall back to a conventional title bar.
+		sh.win.SetTitle("")
 	})
 }

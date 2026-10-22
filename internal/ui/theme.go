@@ -67,7 +67,8 @@ func (s *Settings) applyTheme(c *ui.Context, u config.UI) {
 		t.AccentText = ui.Hex("#ffffff")
 		t.Focus = a.Alpha(0.6)
 		t.Selection = a.Alpha(0.25)
-		t.Radius = 8
+		t.Radius = 6
+		t.Spacing = 3
 		s.theme, s.themeKey = &t, key
 	}
 	c.SetTheme(s.theme)
@@ -145,7 +146,7 @@ func sectionHeader(c *ui.Context, key, label string, right func()) {
 // accentButton 是主操作：强调色渐变 + 柔和光晕。
 func accentButton(c *ui.Context, label string) ui.Element {
 	t := c.Theme()
-	return primaryButton(c, label).Radius(9).Padding(8, 20).FontWeight(600).
+	return primaryButton(c, label).Radius(9).Height(26).FontSize(13).Padding(4, 12).FontWeight(600).
 		LinearGradient(ui.LinearGradient{From: t.Accent.Mix(ui.Hex("#ffffff"), 0.08), To: t.Accent.Mix(ui.Hex("#7c3aed"), 0.28), Angle: 120}).
 		Shadow(0, 6, 18, -6, t.Accent.Alpha(0.7))
 }
@@ -153,7 +154,7 @@ func accentButton(c *ui.Context, label string) ui.Element {
 // ghostButton 是次要操作：无底色，悬停时出现浅底。
 func ghostButton(c *ui.Context, label string) ui.Element {
 	t := c.Theme()
-	b := button(c, label).Radius(8).Padding(7, 14).Background(ui.Transparent).BorderWidth(0).TextColor(t.TextMuted)
+	b := button(c, label).Radius(8).Height(26).FontSize(13).Padding(4, 8).Background(ui.Transparent).BorderWidth(0).TextColor(t.TextMuted)
 	if b.Hovered() {
 		b.Background(t.SurfaceHover).TextColor(t.Text)
 	}
@@ -163,13 +164,13 @@ func ghostButton(c *ui.Context, label string) ui.Element {
 // softButton 是面板里的普通按钮：卡片底色 + 细描边。
 func softButton(c *ui.Context, label string) ui.Element {
 	t := c.Theme()
-	return button(c, label).Radius(8).Padding(7, 14).Background(t.Surface).Border(1, t.Border)
+	return button(c, label).Radius(8).Height(26).FontSize(13).Padding(4, 8).Background(t.Surface).Border(1, t.Border)
 }
 
 // segment 是分段控件里的一项；容器见 segmentGroup。
 func segment(c *ui.Context, label string, sel bool) ui.Element {
 	t := c.Theme()
-	b := button(c, label).Radius(7).Padding(5, 14).BorderWidth(0).FontSize(13)
+	b := button(c, label).Radius(7).Height(24).Padding(2, 6).BorderWidth(0).FontSize(13)
 	if sel {
 		bg := ui.Hex("#ffffff")
 		if t.Dark {
@@ -189,7 +190,7 @@ func segmentGroup(c *ui.Context, fn func()) ui.Element {
 	if t.Dark {
 		bg = ui.Hex("#171a20")
 	}
-	return ui.Row(c).Gap(2).Padding(3).Radius(10).Background(bg).Border(1, lineColor(t)).AlignItems(ui.Center).Children(fn)
+	return ui.Row(c).Gap(2).Padding(2).Radius(6).Background(bg).Border(1, lineColor(t)).AlignItems(ui.Center).Children(fn)
 }
 
 func cardBg(t *ui.Theme) ui.Color { return panelBg(t) }

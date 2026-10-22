@@ -147,6 +147,7 @@ type Settings struct {
 	language        string
 	appExecutable   string
 	appAction       string
+	dismissedError  string
 	appError        string
 	levelsOpen      bool
 	diagBusy        bool
@@ -269,6 +270,18 @@ func (s *Settings) View(c *ui.Context) {
 
 // frame 是窗口内容：标题与标签、页面、底部操作栏。
 func (s *Settings) frame(c *ui.Context, v app.View) {
+	if s.page == pgLibrary {
+		ui.Row(c.Key("library-window")).Absolute().Left(0).Top(0).Right(0).Bottom(0).AlignItems(ui.Stretch).Children(func() {
+			ui.Column(c.Key("left-column")).Grow(1).Shrink(1).MinWidth(0).MinHeight(0).Children(func() {
+				s.topBar(c, v)
+				s.banners(c, v)
+				s.library(c, v)
+				s.bottomBar(c, v)
+			})
+			s.propertyPanel(c, v)
+		})
+		return
+	}
 	s.topBar(c, v)
 	if isSettingsPage(s.page) {
 		s.settingsTabs(c)
@@ -310,11 +323,14 @@ func (s *Settings) firstRun(c *ui.Context, v app.View) {
 }
 
 func (s *Settings) banners(c *ui.Context, v app.View) {
+	if v.LastError == "" {
+		s.dismissedError = ""
+	}
 	t := c.Theme()
 	if !v.SafeMode && v.LastError == "" && len(v.ReadOnly) == 0 {
 		return
 	}
-	ui.Column(c.Key("banners")).Padding(12, 24, 0, 24).Gap(8).Children(func() {
+	ui.Column(c.Key("banners")).Padding(0, 12).Gap(8).Children(func() {
 		if v.SafeMode {
 			banner(c.Key("safe"), t.Warning, "安全模式", "连续多次异常退出，壁纸没有自动启动。确认问题已解决后再恢复。", func() {
 				if primaryButton(c.Key("exitsafe"), "恢复正常").Clicked() {
@@ -325,19 +341,23 @@ func (s *Settings) banners(c *ui.Context, v app.View) {
 		for _, f := range v.ReadOnly {
 			banner(c.Key("ro"+f), t.Warning, "配置只读", f+" 由更新版本写入，本版本只读取，不会覆盖。", nil)
 		}
-		if v.LastError != "" {
-			banner(c.Key("err"), t.Danger, "出现问题", v.LastError, nil)
+		if v.LastError != "" && v.LastError != s.dismissedError {
+			banner(c.Key("err"), t.Danger, "出现问题", v.LastError, func() {
+				if ghostButton(c, "关闭").Clicked() {
+					s.dismissedError = v.LastError
+				}
+			})
 		}
 	})
 }
 
 func banner(c *ui.Context, col ui.Color, title, msg string, action func()) {
 	t := c.Theme()
-	ui.Row(c).Gap(12).Padding(12, 16).Radius(12).AlignItems(ui.Center).Background(col.Alpha(0.10)).Border(1, col.Alpha(0.28)).Children(func() {
-		ui.Box(c).Size(4, 28).Radius(2).Background(col).Children(func() {})
-		ui.Column(c).Grow(1).Children(func() {
+	ui.Row(c).Gap(8).Height(32).Padding(0, 8).Radius(6).AlignItems(ui.Center).Background(col.Alpha(0.10)).Border(1, col.Alpha(0.28)).Children(func() {
+		ui.Box(c).Size(3, 16).Radius(2).Background(col).Children(func() {})
+		ui.Row(c).Grow(1).Shrink(1).MinWidth(0).Gap(8).AlignItems(ui.Center).Children(func() {
 			text(c, title).Bold().FontSize(13)
-			text(c, msg).FontSize(12).TextColor(t.TextMuted).Wrap()
+			text(c, localizedError(c, msg)).FontSize(12).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Shrink(1)
 		})
 		if action != nil {
 			action()
@@ -353,7 +373,7 @@ const pageWidth = 760
 // page 画页面标题和可滚动的内容区。
 func page(c *ui.Context, title, sub string, actions func(), body func()) {
 	t := c.Theme()
-	ui.Row(c.Key("hdr")).Shrink(0).Padding(20, 32, 12, 32).Justify(ui.Center).Children(func() {
+	ui.Row(c.Key("hdr")).Shrink(0).Padding(12).Justify(ui.Center).Children(func() {
 		ui.Row(c).Grow(1).MaxWidth(pageWidth).Gap(12).AlignItems(ui.End).Children(func() {
 			ui.Column(c).Grow(1).Shrink(1).Gap(4).Children(func() {
 				heading(c, tr(c, title), 24)
@@ -367,7 +387,7 @@ func page(c *ui.Context, title, sub string, actions func(), body func()) {
 		})
 	})
 	ui.Scroll(c.Key("body")).Grow(1).MinHeight(0).Children(func() {
-		ui.Row(c).Padding(0, 32, 28, 32).Justify(ui.Center).Children(func() {
+		ui.Row(c).Padding(0, 12, 12, 12).Justify(ui.Center).Children(func() {
 			ui.Column(c).Grow(1).MaxWidth(pageWidth).Gap(12).Children(body)
 		})
 	})
@@ -392,7 +412,7 @@ func card(c *ui.Context, title, desc string, body func()) {
 // settingRow 是“标题 + 说明 | 控件”一行。
 func settingRow(c *ui.Context, title, desc string, control func()) {
 	t := c.Theme()
-	ui.Row(c).Gap(16).Padding(12, 0).MinHeight(52).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(lineColor(t)).Children(func() {
+	ui.Row(c).Gap(8).Padding(6, 0).MinHeight(32).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(lineColor(t)).Children(func() {
 		ui.Column(c).Grow(1).Shrink(1).MinWidth(160).Gap(2).Children(func() {
 			text(c, title).FontSize(13).FontWeight(500)
 			if desc != "" {

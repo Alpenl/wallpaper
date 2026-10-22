@@ -27,6 +27,7 @@ func main() {
 	height := flag.Int("height", 740, "窗口高度")
 	goos := flag.String("goos", "windows", "模拟的平台（影响平台相关设置）")
 	scale := flag.Float64("scale", 1.5, "像素缩放")
+	caption := flag.Float64("caption-inset", 0, "模拟 Windows 标题按钮高度（0 使用默认标题栏）")
 	flag.Parse()
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		panic(err)
@@ -68,6 +69,7 @@ func main() {
 			}
 			s.Refresh()
 			tt := mui.NewTester(s.View, *width, *height)
+			tt.SetTitleBar(mui.TitleBar{Height: float32(*caption), Right: captionRight(*caption)})
 			tt.SetScale(float32(*scale))
 			tt.SetDark(mode == "dark")
 			tt.SetLocale(*lang)
@@ -88,6 +90,7 @@ func main() {
 	s.Info = ui.Info{Version: "ui-development"}
 	s.PickFiles = func() []string { return nil }
 	tt := mui.NewTester(s.View, *width, *height)
+	tt.SetTitleBar(mui.TitleBar{Height: float32(*caption), Right: captionRight(*caption)})
 	tt.SetScale(float32(*scale))
 	tt.SetLocale(*lang)
 	tt.Frame()
@@ -171,4 +174,11 @@ func scene(kind, w, h int) image.Image {
 		}
 	}
 	return img
+}
+
+func captionRight(height float64) float32 {
+	if height > 0 {
+		return 138
+	}
+	return 0
 }
