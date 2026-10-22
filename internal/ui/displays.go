@@ -143,7 +143,7 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 				text(c, "各屏保留独立解码与暂停，不保证视频逐帧同步。混合缩放按系统桌面坐标拼接。").FontSize(12).TextColor(t.TextMuted).Wrap()
 			} else {
 				settingRow(c, "复制到所有显示器", fmt.Sprintf(tr(c, "把「%s」的壁纸设为默认，并清除所有屏的单独设置"), displayName(c, *d)), func() {
-					if softButton(c.Key("dup"), "复制").Disabled(d.ItemID == "").Clicked() {
+					if softButton(c.Key("dup"), "复制").Label(tr(c, "将此屏壁纸复制到所有显示器")).Disabled(d.ItemID == "").Clicked() {
 						s.ctl.AssignAll(d.ItemID)
 						c.Toast(tr(c, "已复制到所有显示器"))
 					}

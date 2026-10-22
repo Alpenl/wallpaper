@@ -133,14 +133,30 @@ func TestEncoderQueueIsSerialAndRemoveDropsPending(t *testing.T) {
 func TestRemoveCancelsActiveEncoder(t *testing.T) {
 	started := make(chan struct{})
 	cancelled := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
 	e := setupWith(t, 0, true, func(d *Deps) {
-		d.Transcode = func(ctx context.Context, _, _ string) error {
+		src := filepath.Join(d.Store.Paths.Library, "x", "content", "a.mp4")
+		if err := os.WriteFile(src, []byte("source"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		d.Transcode = func(ctx context.Context, src, _ string) error {
+			f, err := os.Open(src)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
 			close(started)
 			<-ctx.Done()
 			close(cancelled)
+			<-release // Cancellation does not mean the encoder has released its handles.
 			return ctx.Err()
 		}
 	})
+	// Unblock before setup's cleanup waits for shutdown, including on Fatal.
+	t.Cleanup(unblock)
 	e.a.Transcode("x")
 	select {
 	case <-started:
@@ -153,12 +169,24 @@ func TestRemoveCancelsActiveEncoder(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("not cancelled")
 	}
+	e.sync()
+	if len(e.a.View().Library) != 1 {
+		t.Fatal("removed before encoder released source")
+	}
+	unblock()
 	eventually(t, "removed status", func() bool { return len(e.a.View().Library) == 0 && len(e.a.View().Transcoding) == 0 })
+	if _, err := os.Stat(filepath.Join(e.store.Paths.Library, "x")); !os.IsNotExist(err) {
+		t.Fatalf("source directory remains: %v; last error: %s", err, e.a.View().LastError)
+	}
 }
 
 func TestReimportAfterRemovalDiscardsOldEncoderOutput(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
+	importRelease := make(chan struct{})
+	var once sync.Once
+	unblockImport := func() { once.Do(func() { close(importRelease) }) }
+	defer unblockImport()
 	e := setupWith(t, 1, true, func(d *Deps) {
 		root := d.Store.Paths.Library
 		d.Transcode = func(_ context.Context, _, dst string) error {
@@ -167,6 +195,7 @@ func TestReimportAfterRemovalDiscardsOldEncoderOutput(t *testing.T) {
 			return os.WriteFile(dst, []byte("old encode"), 0600)
 		}
 		d.Import = func(context.Context, string) (*importer.Result, error) {
+			<-importRelease
 			dir := filepath.Join(root, "x")
 			old, err := tombstone(dir)
 			if err != nil {
@@ -180,6 +209,7 @@ func TestReimportAfterRemovalDiscardsOldEncoderOutput(t *testing.T) {
 			return &importer.Result{Item: config.Item{ID: "x", Title: "Replacement", Type: "video", Dir: dir, Entry: "new.mp4", Transcode: "none"}}, nil
 		}
 	})
+	t.Cleanup(unblockImport)
 	eventually(t, "screen started", func() bool { return e.cur("A") != nil && e.cur("A").isLoaded() })
 
 	e.a.Transcode("x")
@@ -191,8 +221,9 @@ func TestReimportAfterRemovalDiscardsOldEncoderOutput(t *testing.T) {
 	e.a.Import("replacement.wpk", "")
 	eventually(t, "import waits for encoder", func() bool { return e.a.View().ImportQueued == 1 })
 	e.a.Remove("x")
-	eventually(t, "old record removed", func() bool { return len(e.a.View().Library) == 0 })
 	close(release)
+	eventually(t, "old record removed", func() bool { return len(e.a.View().Library) == 0 })
+	unblockImport()
 	eventually(t, "same-ID refreshed", func() bool {
 		v := e.a.View()
 		return len(v.Library) == 1 && v.Library[0].Title == "Replacement"

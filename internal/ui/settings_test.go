@@ -15,6 +15,7 @@ import (
 func newUI(t *testing.T, goos string) (*uidemo.Ctl, *Settings, *ui.Tester) {
 	t.Helper()
 	ctl := uidemo.New(nil)
+	ctl.GOOS = goos
 	s := NewSettings(ctl, goos)
 	s.Info = Info{Version: "0.2.0-test", Platform: goos + "/amd64", EncoderName: "ffmpeg", UpdateKey: true}
 	s.PickFiles = func() []string { return []string{"/tmp/x.mp4"} }
@@ -272,7 +273,7 @@ func TestDisplaysPage(t *testing.T) {
 			t.Fatal("不应显示系统内部名", x)
 		}
 	}
-	click(t, tt, "复制")
+	click(t, tt, "将此屏壁纸复制到所有显示器")
 	if v := ctl.View(); v.Default != "city" || v.Displays[0].ItemID != "city" || v.Displays[0].Custom {
 		t.Fatal("复制到所有显示器", v.Default, v.Displays)
 	}
@@ -578,6 +579,7 @@ func TestQueuedRuleCommandsUseStableIdentity(t *testing.T) {
 func TestRuleCaseSensitivityMatchesPlatform(t *testing.T) {
 	for _, platform := range []string{"windows", "linux", "darwin"} {
 		ctl := uidemo.New(nil)
+		ctl.GOOS = platform
 		s := NewSettings(ctl, platform)
 		s.appExecutable, s.appAction = "Firefox", "暂停"
 		s.addAppRule()

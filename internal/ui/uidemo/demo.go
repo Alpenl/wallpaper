@@ -3,6 +3,7 @@
 package uidemo
 
 import (
+	"runtime"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 // Ctl 实现 ui.Controller。
 type Ctl struct {
+	GOOS               string // Target platform for headless previews and tests; empty uses the host.
 	mu                 sync.Mutex
 	V                  app.View
 	Imported           []string
@@ -151,7 +153,11 @@ func (f *Ctl) UpdateConfig(fn func(*config.Config)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	fn(&f.V.Config)
-	f.V.Config.Normalize()
+	goos := f.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	f.V.Config.NormalizeForOS(goos)
 }
 
 func (f *Ctl) ExitSafeMode() { f.mu.Lock(); f.ExitSafe = true; f.V.SafeMode = false; f.mu.Unlock() }

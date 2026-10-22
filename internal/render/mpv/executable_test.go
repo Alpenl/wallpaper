@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -41,7 +42,7 @@ func TestMissingExecutableLoadProvidesSetupInstructions(t *testing.T) {
 	if err == nil {
 		t.Fatal("missing mpv must not report a successful load")
 	}
-	for _, want := range []string{path, "install mpv separately", "Playback & Performance > mpv path", "mpv.exe", "DLL"} {
+	for _, want := range []string{strconv.Quote(path), "install mpv separately", "Playback & Performance > mpv path", "mpv.exe", "DLL"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("missing actionable detail %q: %v", want, err)
 		}

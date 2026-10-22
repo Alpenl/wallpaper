@@ -23,6 +23,9 @@ func TestClientLivePlaybackAcknowledgment(t *testing.T) {
 		if err != nil {
 			return nil, &ipc.Error{Code: "E_PROTO", Msg: err.Error()}
 		}
+		if o.Volume != 37 {
+			return nil, &ipc.Error{Code: "E_PROTO", Msg: "volume did not round-trip"}
+		}
 		if o.Speed == 4 {
 			return nil, &ipc.Error{Code: "E_STATE", Msg: "native rate refused"}
 		}
@@ -32,7 +35,7 @@ func TestClientLivePlaybackAcknowledgment(t *testing.T) {
 	r.conn = ipc.New(b, nil, nil)
 	defer r.conn.Close()
 	defer server.Close()
-	o := render.PlaybackOptions{Fit: "stretch", Speed: 2, Muted: false, Scale: 1}
+	o := render.PlaybackOptions{Fit: "stretch", Speed: 2, Muted: false, Volume: 37, Scale: 1}
 	if err := r.UpdatePlayback(o); err != nil || r.options != o {
 		t.Fatalf("update: %v, %+v", err, r.options)
 	}

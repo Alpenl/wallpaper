@@ -104,7 +104,10 @@ func Defaults() Config {
 }
 
 // Normalize 修正越界值。
-func (c *Config) Normalize() {
+func (c *Config) Normalize() { c.NormalizeForOS(runtime.GOOS) }
+
+// NormalizeForOS applies the target platform's executable identity rules.
+func (c *Config) NormalizeForOS(goos string) {
 	d := Defaults()
 	switch c.Pause.BatteryPolicy {
 	case "pause", "fps15", "ignore":
@@ -168,7 +171,7 @@ func (c *Config) Normalize() {
 			continue
 		}
 		key := rule.Executable
-		if runtime.GOOS == "windows" {
+		if goos == "windows" {
 			key = strings.ToLower(key)
 		}
 		if seen[key] {

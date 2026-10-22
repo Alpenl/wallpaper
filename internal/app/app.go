@@ -179,6 +179,7 @@ type App struct {
 	transcodeQueue   []string
 	transcodingID    string
 	transcodeCancel  context.CancelFunc
+	transcodeDone    <-chan struct{}
 	cleaning         bool
 	lastImp          string
 	lastErr          string
@@ -1394,6 +1395,11 @@ func (a *App) Remove(itemID string) {
 		generation := a.itemGeneration[itemID]
 		a.removing[itemID] = generation
 		var wait sync.WaitGroup
+		if a.transcodingID == itemID && a.transcodeDone != nil {
+			done := a.transcodeDone
+			wait.Add(1)
+			go func() { <-done; wait.Done() }()
+		}
 		for _, s := range a.screens {
 			if s.item != nil && s.item.ID == itemID {
 				a.closeScreen(s, false)
@@ -1749,6 +1755,8 @@ func (a *App) beginTranscode(itemID string) {
 	a.transcodingID = itemID
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.transcodeCancel = cancel
+	done := make(chan struct{})
+	a.transcodeDone = done
 	ext := a.d.TranscodeExt
 	if ext == "" {
 		ext = ".mp4"
@@ -1781,6 +1789,9 @@ func (a *App) beginTranscode(itemID string) {
 		if err == nil && ctx.Err() != nil {
 			err = ctx.Err()
 		}
+		// The encoder and probe have returned and released their file handles.
+		// Removal must wait for this before renaming the source directory on Windows.
+		close(done)
 		committed := make(chan struct{})
 		a.Do(func() {
 			defer close(committed)
