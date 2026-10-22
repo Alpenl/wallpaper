@@ -11,6 +11,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"wpapp/internal/desktop"
+	"wpapp/internal/render/mpv"
 	"wpapp/internal/ui"
 	"wpapp/internal/visibility"
 )
@@ -53,6 +54,10 @@ func runUI(f *flags) int {
 	settings := ui.NewSettings(e.app, runtime.GOOS)
 	settings.SetLaunchAtLogin = mygo.App.SetOpenAtLogin
 	settings.ExportDiag = e.exportDiag
+	settings.ValidateMpvPath = func(path string) error {
+		_, err := mpv.ResolveExecutable(path)
+		return err
+	}
 	settings.OpenPath = mygo.Shell.OpenPath
 	settings.ShowInFolder = mygo.Shell.ShowItemInFolder
 	e.updateHooks(&settings.Hooks, quit)

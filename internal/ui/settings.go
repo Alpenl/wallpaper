@@ -67,6 +67,7 @@ type Hooks struct {
 	SetLanguage      func(string)
 	SetLaunchAtLogin func(bool) error
 	ExportDiag       func() (string, error) // F-16：返回 zip 路径
+	ValidateMpvPath  func(string) error
 	OpenPath         func(string) error
 	ShowInFolder     func(string)
 	CheckUpdate      func() (*UpdateInfo, error)
