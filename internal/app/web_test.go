@@ -88,9 +88,10 @@ func TestWebLivePropertiesRevokeAndPower(t *testing.T) {
 	if !closed {
 		t.Fatal("old host still running")
 	}
-	if e.a.View().Library[0].NetworkGranted {
-		t.Fatal("library still granted")
-	}
+	eventually(t, "library network revocation published", func() bool {
+		v := e.a.View()
+		return len(v.Library) == 1 && !v.Library[0].NetworkGranted
+	})
 	if err := e.store.LibrarySaver.Flush(); err != nil {
 		t.Fatal(err)
 	}

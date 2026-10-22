@@ -49,9 +49,6 @@ type Renderer interface {
 	Close() error       // 有意结束，不触发 Done
 }
 
-// Factory 按壁纸类型和后端名创建渲染器。
-type Factory func(kind, backend string) (Renderer, error)
-
 // PlaybackOptions are applied before Load. Scale is the video-frame resolution
 // multiplier, not the surface size or a guaranteed power saving. A software
 // downscale may require copying hardware-decoded frames into system memory.

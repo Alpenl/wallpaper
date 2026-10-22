@@ -200,10 +200,6 @@ func SafeUnzip(zipPath, dst string) error {
 	return err
 }
 
-// ExtractReader 同 Extract，输入为已打开的 zip.Reader。
-func ExtractReader(zr *zip.Reader, libraryDir string) (*Result, error) {
-	return extractReader(zr, libraryDir, nil)
-}
 func extractReader(zr *zip.Reader, libraryDir string, beforePublish func(*Manifest) error) (*Result, error) {
 	seen, err := precheck(zr)
 	if err != nil {

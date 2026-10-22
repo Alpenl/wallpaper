@@ -28,14 +28,21 @@ func WriteAtomic(path string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	var backupErr error
 	if old, err := os.ReadFile(path); err == nil && json.Valid(old) {
-		_ = writeSync(path+".bak", old)
+		backupErr = writeSync(path+".bak", old)
 	}
 	tmp := path + ".tmp"
 	if err := writeSync(tmp, b); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if backupErr != nil {
+		return fmt.Errorf("config: save succeeded but backup failed: %w", backupErr)
+	}
+	return nil
 }
 
 func writeSync(path string, b []byte) error {
@@ -86,7 +93,9 @@ func Load(path string, current int, migrations map[int]Migration, v any) error {
 	}
 	newer := ver > current
 	if ver < current {
-		_ = writeSync(fmt.Sprintf("%s.v%d", path, ver), b)
+		if err := writeSync(fmt.Sprintf("%s.v%d", path, ver), b); err != nil {
+			return fmt.Errorf("config: migration backup: %w", err)
+		}
 		for n := ver; n < current; n++ {
 			if m := migrations[n]; m != nil {
 				if err := m(raw); err != nil {
@@ -115,6 +124,7 @@ type Saver struct {
 	ReadOnly bool
 	mu       sync.Mutex
 	writeMu  sync.Mutex
+	lastErr  error
 	pending  func() any
 	t        *time.Timer
 	OnError  func(error)
@@ -141,15 +151,15 @@ func (s *Saver) Schedule(snap func() any) {
 
 // Flush 等待正在进行的写入，然后立即写出待写内容。
 func (s *Saver) Flush() error {
-	err := s.flush()
+	err, attempted := s.flush()
 	// 回调可再次 Schedule/Flush；不在持有写锁时调用。
-	if err != nil && s.OnError != nil {
+	if attempted && err != nil && s.OnError != nil {
 		s.OnError(err)
 	}
 	return err
 }
 
-func (s *Saver) flush() error {
+func (s *Saver) flush() (error, bool) {
 	// 必须先取得写锁，再取出最新快照。否则多个 Flush 可能乱序覆盖文件，
 	// 或同时使用同一个 .tmp；即使 pending 为空，退出刷新也必须等待磁盘写完。
 	s.writeMu.Lock()
@@ -163,11 +173,15 @@ func (s *Saver) flush() error {
 	}
 	s.mu.Unlock()
 	if snap == nil || s.ReadOnly {
-		return nil
+		return s.lastErr, false
 	}
 	write := s.writeAtomic
 	if write == nil {
 		write = WriteAtomic
 	}
-	return write(s.Path, snap())
+	s.lastErr = write(s.Path, snap())
+	if s.lastErr != nil {
+		s.lastErr = fmt.Errorf("config: save %s: %w", filepath.Base(s.Path), s.lastErr)
+	}
+	return s.lastErr, true
 }

@@ -818,3 +818,14 @@ func TestStatusBarUsesConfirmedResumeState(t *testing.T) {
 	tt.Frame()
 	must(t, tt, "自动暂停中")
 }
+
+func TestAboutBuildIdentity(t *testing.T) {
+	_, s, tt := newUI(t, "darwin")
+	s.Info.Version, s.Info.Commit = "1.2.3", "abcdef012345+dirty"
+	s.SetPage("about")
+	tt.Frame()
+	must(t, tt, "版本 1.2.3 · 提交 abcdef012345+dirty · darwin/amd64")
+	tt.SetLocale("en")
+	tt.Frame()
+	must(t, tt, "Version 1.2.3 · Commit abcdef012345+dirty · darwin/amd64")
+}

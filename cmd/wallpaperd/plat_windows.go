@@ -32,7 +32,10 @@ func newHost(f *flags, log *slog.Logger) desktop.Host {
 
 func platformRenderer(e *env, cfg config.Config, d desktop.DisplayID) render.Renderer {
 	if cfg.Render.WindowsBackend == "mf" {
-		return mf.New(e.exe, filepath.Join(e.paths.Logs, "mfhost-"+safeName(string(d))+".log"))
+		r := mf.New(e.exe, filepath.Join(e.paths.Logs, "mfhost-"+safeName(string(d))+".log"))
+		r.Log = e.log.Info
+		r.Display = string(d)
+		return r
 	}
 	return nil
 }

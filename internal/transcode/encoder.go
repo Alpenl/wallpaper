@@ -291,12 +291,6 @@ func isGIF(path string) bool {
 	return n == 6 && (string(b[:]) == "GIF87a" || string(b[:]) == "GIF89a")
 }
 
-// FFmpegArgs is retained for callers/tests using the software encoder. Strict
-// macOS/Windows selection is performed at execution time by EncoderForTarget.
-func FFmpegArgs(src, dst string, maxW int) []string {
-	return ffmpegArgs(src, dst, Target{Width: maxW}.normalized(), "libx264")
-}
-
 func ffmpegArgs(src, dst string, target Target, codec string, cover ...bool) []string {
 	target = target.normalized()
 	// Use display aspect ratio, not only stored width, for anamorphic sources.

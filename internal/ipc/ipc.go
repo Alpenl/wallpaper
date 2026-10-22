@@ -8,9 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// ProtocolMajor is the NDJSON envelope protocol version.
+const ProtocolMajor = 1
 
 // MaxLine 是单条消息上限。
 const MaxLine = 1 << 20
@@ -47,15 +52,16 @@ var ErrLineTooLong = errors.New("E_PROTO: line exceeds 1 MiB")
 
 // Conn 是双向连接：Call 发请求，Emit 发事件。
 type Conn struct {
-	rw      io.ReadWriteCloser
-	wmu     sync.Mutex
-	mu      sync.Mutex
-	nextID  uint32
-	pending map[uint32]chan Msg
-	onReq   Handler
-	onEvt   EventHandler
-	done    chan struct{}
-	err     error
+	lifecycleLog func(string, ...any)
+	rw           io.ReadWriteCloser
+	wmu          sync.Mutex
+	mu           sync.Mutex
+	nextID       uint32
+	pending      map[uint32]chan Msg
+	onReq        Handler
+	onEvt        EventHandler
+	done         chan struct{}
+	err          error
 }
 
 // New 建立连接并开始读。
@@ -78,8 +84,10 @@ func (c *Conn) Err() error {
 // Close 关闭底层传输。
 func (c *Conn) Close() error { return c.rw.Close() }
 
-func (c *Conn) write(m Msg) error {
-	m.V = 1
+func (c *Conn) write(m Msg) error { return c.writeTimed(m, 0) }
+
+func (c *Conn) writeTimed(m Msg, timeout time.Duration) error {
+	m.V = ProtocolMajor
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -89,8 +97,39 @@ func (c *Conn) write(m Msg) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	var timedOut atomic.Bool
+	var clear func()
+	if timeout > 0 {
+		if w, ok := c.rw.(interface{ SetWriteDeadline(time.Time) error }); ok {
+			if w.SetWriteDeadline(time.Now().Add(timeout)) == nil {
+				clear = func() { _ = w.SetWriteDeadline(time.Time{}) }
+			}
+		}
+		if clear == nil {
+			done := make(chan struct{})
+			timer := time.AfterFunc(timeout, func() { timedOut.Store(true); _ = c.rw.Close(); close(done) })
+			clear = func() {
+				if !timer.Stop() {
+					<-done
+				}
+			}
+		}
+	}
 	_, err = c.rw.Write(append(b, '\n'))
+	if clear != nil {
+		clear()
+	}
+	if timedOut.Load() || errors.Is(err, os.ErrDeadlineExceeded) {
+		return fmt.Errorf("E_TIMEOUT: write: %w", os.ErrDeadlineExceeded)
+	}
 	return err
+}
+
+// SetLifecycleLogger installs a narrow sink; only control calls are logged.
+func (c *Conn) SetLifecycleLogger(log func(string, ...any)) {
+	c.mu.Lock()
+	c.lifecycleLog = log
+	c.mu.Unlock()
 }
 
 func (c *Conn) readLoop() {
@@ -106,7 +145,7 @@ func (c *Conn) readLoop() {
 		if json.Unmarshal(line, &m) != nil {
 			continue // 坏行忽略
 		}
-		if m.V != 1 {
+		if m.V != ProtocolMajor {
 			c.fail(fmt.Errorf("E_PROTO: version %d", m.V))
 			return
 		}
@@ -182,22 +221,47 @@ func (c *Conn) Call(method string, params any, timeout time.Duration, out any) e
 		c.mu.Unlock()
 		return fmt.Errorf("E_PROTO: connection closed (%v)", err)
 	}
+	log := c.lifecycleLog
 	c.nextID++
 	id := c.nextID
 	ch := make(chan Msg, 1)
 	c.pending[id] = ch
 	c.mu.Unlock()
-	p, _ := json.Marshal(params)
-	if err := c.write(Msg{T: "req", ID: id, M: method, P: p}); err != nil {
+	p, marshalErr := json.Marshal(params)
+	lifecycle := method == "setPause" || method == "seek" || method == "shutdown"
+	stage := func(name string, fields ...any) {
+		if lifecycle && log != nil {
+			log(name, append([]any{"request_id", id, "op", method}, fields...)...)
+		}
+	}
+	begin := time.Now()
+	stage("write_begin")
+	writeTimeout := time.Duration(0)
+	if lifecycle {
+		writeTimeout = timeout
+	}
+	err := marshalErr
+	if err == nil {
+		err = c.writeTimed(Msg{T: "req", ID: id, M: method, P: p}, writeTimeout)
+	}
+	stage("write_end", "elapsed_ms", time.Since(begin).Milliseconds(), "err", err)
+	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			stage("timeout", "phase", "write")
+		} else {
+			stage("response", "phase", "write", "err", err)
+		}
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
 		return err
 	}
+	begin = time.Now()
 	t := time.NewTimer(timeout)
 	defer t.Stop()
 	select {
 	case m, ok := <-ch:
+		stage("response", "elapsed_ms", time.Since(begin).Milliseconds(), "err", m.Err, "closed", !ok)
 		if !ok {
 			return fmt.Errorf("E_PROTO: connection closed (%v)", c.Err())
 		}
@@ -212,6 +276,7 @@ func (c *Conn) Call(method string, params any, timeout time.Duration, out any) e
 		}
 		return nil
 	case <-t.C:
+		stage("timeout", "phase", "response", "elapsed_ms", time.Since(begin).Milliseconds())
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()

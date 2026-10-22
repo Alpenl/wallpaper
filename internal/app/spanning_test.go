@@ -233,13 +233,10 @@ func TestSpanningStaticWallpaperUsesDistinctCachedCrops(t *testing.T) {
 			t.Fatalf("%s crop geometry: %+v", id, cfg)
 		}
 	}
-	v := e.a.View()
-	if v.Displays[1].W != 200 || v.Displays[1].H != 140 || v.Displays[1].PixelW != 400 || v.Displays[1].PixelH != 280 {
-		t.Fatal("logical topology and backing size were conflated", v.Displays[1])
-	}
-	if !v.Displays[0].Playback.Fit {
-		t.Fatal("image panorama fit should be exposed")
-	}
+	eventually(t, "static panorama geometry and fit published", func() bool {
+		v := e.a.View()
+		return len(v.Displays) == 2 && v.Displays[1].W == 200 && v.Displays[1].H == 140 && v.Displays[1].PixelW == 400 && v.Displays[1].PixelH == 280 && v.Displays[0].Playback.Fit
+	})
 }
 func TestCanceledCanvasWorkerDoesNotChangeSystemWallpaper(t *testing.T) {
 	host := newHost(1)

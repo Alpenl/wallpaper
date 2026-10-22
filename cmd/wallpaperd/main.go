@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"wpapp/internal/app"
+	"wpapp/internal/buildinfo"
 	"wpapp/internal/config"
 	"wpapp/internal/desktop"
 	"wpapp/internal/importer"
@@ -37,7 +38,9 @@ import (
 	"wpapp/internal/transcode"
 )
 
-var version = "0.3.0-mvp"
+var version = "dev"
+
+var build = buildinfo.Read(version)
 
 // updatePubKey 是 F-15 更新清单的 Ed25519 公钥（base64），构建时注入：-ldflags "-X main.updatePubKey=…"。
 // 为空时不能在线更新（界面会说明）。signedBuild 由签名流水线注入 "1"。
@@ -101,10 +104,28 @@ func parseFlags(args []string) *flags {
 
 func main() {
 	f := parseFlags(os.Args[1:])
-	switch {
-	case f.version:
-		fmt.Println("wallpaperd", version, runtime.GOOS+"/"+runtime.GOARCH)
+	if f.version {
+		fmt.Println("wallpaperd", build.String())
 		return
+	}
+	render.HelperBuild = build
+	role := "wallpaperd"
+	switch {
+	case f.mfhost:
+		role = "mfhost"
+	case f.webhost:
+		role = "web"
+	case f.shaderhost:
+		role = "shader"
+	case f.helper != "":
+		role = safeName(f.helper)
+	}
+	if paths, err := config.DefaultPaths(); err != nil {
+		fmt.Fprintln(os.Stderr, "crash output:", err)
+	} else if err := telemetry.InstallCrashOutput(paths.Logs, role); err != nil {
+		fmt.Fprintln(os.Stderr, "crash output:", err)
+	}
+	switch {
 	case f.shaderhost:
 		os.Exit(shader.HostMain())
 	case f.webhost:
@@ -141,7 +162,9 @@ func main() {
 		e.store.State.Starts = nil
 		st := e.store.State.Clone()
 		e.store.StateSaver.Schedule(func() any { return st })
-		e.store.FlushAll()
+		if flushErr := e.store.FlushAll(); flushErr != nil {
+			fmt.Fprintln(os.Stderr, "config shutdown:", flushErr)
+		}
 		e.close()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -186,17 +209,18 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 	if extraLog != nil {
 		w = io.MultiWriter(lw, extraLog)
 	}
-	log := telemetry.NewLogger(w, f.debug)
-	log.Info("start", "version", version, "os", runtime.GOOS, "arch", runtime.GOARCH, "headless", f.headless)
+	log := telemetry.NewLogger(w, f.debug).With("session", fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()))
+	log.Info("start", "version", build.Version, "commit", build.Revision(), "commit_time", build.CommitTime, "go", build.GoVersion, "pid", os.Getpid(), "os", runtime.GOOS, "arch", runtime.GOARCH, "headless", f.headless)
 	platInit(log)
 	store, err := config.Open(paths)
 	if err != nil {
+		if closeErr := lw.Close(); closeErr != nil {
+			fmt.Fprintln(os.Stderr, "logger:", closeErr)
+		}
 		return nil, err
 	}
 	safe := store.State.EnterSafeMode(time.Now())
 	st := store.State.Clone()
-	store.StateSaver.Schedule(func() any { return st })
-	store.StateSaver.Flush()
 	if safe {
 		log.Warn("safe mode: too many unclean starts")
 	}
@@ -237,6 +261,9 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 			opts.CanTranscodeGIF = e.encoderCapabilities(cfg).GIF
 			return importer.Import(ctx, src, opts)
 		}})
+	store.SetOnError(e.app.ReportPersistenceError)
+	store.StateSaver.Schedule(func() any { return st })
+	_ = store.StateSaver.Flush()
 	return e, nil
 }
 
@@ -303,10 +330,18 @@ func (e *env) snapshot(src, dst string) error {
 
 func (e *env) newRenderer(kind string, cfg config.Config, d desktop.DisplayID) render.Renderer {
 	if kind == "shader" {
-		return shader.New(e.exe)
+		r := shader.New(e.exe)
+		r.Log = e.log.Info
+		r.Display = string(d)
+		r.StderrPath = filepath.Join(e.paths.Logs, "shader-"+safeName(string(d))+"-stderr.log")
+		return r
 	}
 	if kind == "web" {
-		return webwall.New(e.exe)
+		r := webwall.New(e.exe)
+		r.Log = e.log.Info
+		r.Display = string(d)
+		r.StderrPath = filepath.Join(e.paths.Logs, "web-"+safeName(string(d))+"-stderr.log")
+		return r
 	}
 	if kind == "image" {
 		return imgr.New()
@@ -314,7 +349,7 @@ func (e *env) newRenderer(kind string, cfg config.Config, d desktop.DisplayID) r
 	if r := platformRenderer(e, cfg, d); r != nil {
 		return r
 	}
-	return mpv.New(mpv.Options{Path: e.mpvPath(cfg), Hwdec: cfg.Render.Hwdec, Display: string(d),
+	return mpv.New(mpv.Options{Log: e.log.Info, Path: e.mpvPath(cfg), Hwdec: cfg.Render.Hwdec, Display: string(d),
 		LogFile: filepath.Join(e.paths.Logs, "mpv-"+safeName(string(d))+".log")})
 }
 
@@ -332,12 +367,49 @@ func (e *env) exportDiag() (string, error) {
 	e.logw.Sync()
 	dst := filepath.Join(filepath.Dir(e.paths.Logs), "diagnostics-"+time.Now().Format("20060102-150405")+".zip")
 	cfgs := []string{filepath.Join(e.paths.Config, "config.json"), filepath.Join(e.paths.Config, "state.json")}
-	return dst, telemetry.ExportDiagnostics(e.paths.Logs, cfgs, dst, version)
+	// A separate file keeps logger health available even when its own writer fails.
+	status := struct {
+		Error   string `json:"error"`
+		Dropped uint64 `json:"dropped"`
+	}{Dropped: e.logw.Dropped()}
+	if err := e.logw.Err(); err != nil {
+		status.Error = err.Error()
+	}
+	statusPath := filepath.Join(e.paths.Logs, "logger-status.json")
+	if err := config.WriteAtomic(statusPath, status); err != nil {
+		return dst, err
+	}
+	cfgs = append(cfgs, statusPath)
+	// View is a synchronized snapshot; do not read the mutable store here.
+	assignments := make([]map[string]any, 0)
+	if e.app != nil {
+		view := e.app.View()
+		types := make(map[string]string, len(view.Library))
+		for _, item := range view.Library {
+			types[item.ID] = item.Type
+		}
+		for _, display := range view.Displays {
+			kind, backend := types[display.ItemID], display.Backend
+			if kind == "" {
+				kind = "unknown"
+			}
+			if backend == "" {
+				backend = "unknown"
+			}
+			assignments = append(assignments, map[string]any{
+				"display": display.ID, "type": kind, "backend": backend,
+				"options": display.Options, "effectiveOptions": display.Effective,
+			})
+		}
+	}
+	return dst, telemetry.ExportDiagnostics(e.paths.Logs, cfgs, dst, build, assignments)
 }
 
 func (e *env) close() {
-	e.logw.Sync()
-	e.logw.Close()
+	err := e.logw.Close()
+	if dropped := e.logw.Dropped(); err != nil || dropped > 0 {
+		fmt.Fprintf(os.Stderr, "logger: error=%v dropped=%d\n", err, dropped)
+	}
 }
 
 func runHeadless(f *flags) int {

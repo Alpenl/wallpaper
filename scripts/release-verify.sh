@@ -110,7 +110,7 @@ with tarfile.open(root / (base + '-linux-amd64.tar.gz'), 'r:gz') as archive:
         assert archive.extractfile(prefix + name).read() == (Path('dist/package-metadata') / name).read_bytes(), 'Linux metadata differs: ' + name
 if sys.platform == 'linux':
     native_version = subprocess.check_output([str(Path('dist/linux-amd64/wallpaperd').resolve()), '-version'], text=True).strip()
-    assert native_version == 'wallpaperd ' + version + ' linux/amd64', 'Linux runtime version mismatch: ' + native_version
+    assert re.fullmatch(r'wallpaperd ' + re.escape(version) + r' commit=\S+ commit_time=\S+ go=\S+ linux/amd64', native_version), 'Linux runtime version mismatch: ' + native_version
 print('PASS: exact asset set and checksum coverage, commit/version provenance, five payloads, architecture/permissions, metadata/notices, NSIS extraction; no bundled mpv.')
 print('Not tested: installation or Windows/macOS runtime behavior; Developer ID/notarization are not established by this check.')
 PY

@@ -701,7 +701,7 @@ func (s *Settings) about(c *ui.Context, v app.View) {
 		ui.Row(c.Key("hero")).Gap(16).Padding(20).Radius(12).Background(panelBg(t)).Border(1, t.Border).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Gap(4).Grow(1).Children(func() {
 				text(c, "动态壁纸").Bold().FontSize(20)
-				textf(c, "版本 %s · %s", s.Info.Version, s.Info.Platform).FontSize(13).TextColor(t.TextMuted)
+				textf(c, "版本 %s · 提交 %s · %s", s.Info.Version, s.Info.Commit, s.Info.Platform).FontSize(13).TextColor(t.TextMuted)
 				text(c, "性能优先的跨平台动态壁纸。纯 Go 编写（CGO_ENABLED=0），原生窗口渲染，不用 WebView。").FontSize(12).TextColor(t.TextMuted).Wrap()
 			})
 		})

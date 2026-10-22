@@ -26,9 +26,11 @@
   "perf": {"profile": "balanced", "fpsCap": 30, "renderScale": 0.75},
   "pause": {"batteryPolicy": "pause", "lowBatteryPct": 20, "resumeDebounceMs": 300},
   "startup": {"launchAtLogin": true},
-  "privacy": {"telemetry": false, "crashReports": "ask"},
+  "privacy": {"telemetry": false},
   "ui": {"lang": "zh-CN"} }
 ```
+
+`privacy.crashReports` 未实现，已从默认值和支持的输出中移除；加载旧 JSON 时仍容忍此字段。
 
 ## 16.3 一致性与迁移
 - **原子写**：先写 `x.json.tmp`，`fsync`，再 `os.Rename` 覆盖原文件。Go 的 `os.Rename` 在 Windows 上用 `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` 实现，可以覆盖已有文件【源码】Go 1.27.3 `internal/syscall/windows/syscall_windows.go:366` `Rename → MoveFileEx(from, to, MOVEFILE_REPLACE_EXISTING)`。保留一份 `x.json.bak`（上一个能正常解析的版本），主文件解析失败时回退到它。

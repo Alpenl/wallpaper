@@ -31,7 +31,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -83,6 +82,9 @@ func Verify(pub ed25519.PublicKey, manifest []byte, sig string) (*Manifest, erro
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		return nil, err
 	}
+	if err := validateManifest(&m); err != nil {
+		return nil, err
+	}
 	for _, f := range m.Files {
 		if !safeRel(f.Path) {
 			return nil, fmt.Errorf("update: unsafe path %q", f.Path)
@@ -102,41 +104,6 @@ func safeRel(p string) bool {
 	}
 	c := path.Clean(p)
 	return c == p && c != ".." && !strings.HasPrefix(c, "../")
-}
-
-// Newer 比较形如 1.2.3 或 0.1.0-mvp 的版本：a 比 b 新返回 true。预发布后缀按字符串比较，有后缀的比没有后缀的旧。
-func Newer(a, b string) bool { return cmpVer(a, b) > 0 }
-
-func cmpVer(a, b string) int {
-	ma, pa, _ := strings.Cut(strings.TrimPrefix(a, "v"), "-")
-	mb, pb, _ := strings.Cut(strings.TrimPrefix(b, "v"), "-")
-	xa, xb := strings.Split(ma, "."), strings.Split(mb, ".")
-	for i := 0; i < max(len(xa), len(xb)); i++ {
-		var na, nb int
-		if i < len(xa) {
-			na, _ = strconv.Atoi(xa[i])
-		}
-		if i < len(xb) {
-			nb, _ = strconv.Atoi(xb[i])
-		}
-		if na != nb {
-			if na > nb {
-				return 1
-			}
-			return -1
-		}
-	}
-	switch {
-	case pa == pb:
-		return 0
-	case pa == "":
-		return 1
-	case pb == "":
-		return -1
-	case pa > pb:
-		return 1
-	}
-	return -1
 }
 
 // Client 是更新客户端。
@@ -190,6 +157,12 @@ func (c *Client) get(ctx context.Context, u string, limit int64) ([]byte, error)
 
 // Check 返回比当前新的已验签清单；没有更新时返回 ErrNoUpdate。
 func (c *Client) Check(ctx context.Context) (*Manifest, error) {
+	if c.Current == "dev" {
+		return nil, ErrNoUpdate
+	}
+	if _, err := parseVersion(c.Current); err != nil {
+		return nil, err
+	}
 	if c.Feed == "" {
 		return nil, errors.New("update: no feed configured")
 	}
@@ -255,6 +228,18 @@ func (c *Client) sd(parts ...string) string {
 
 // Apply 增量下载并替换。progress 可为 nil。返回下载的字节数。
 func (c *Client) Apply(ctx context.Context, m *Manifest, progress func(done, total int64)) (int64, error) {
+	if err := validateManifest(m); err != nil {
+		return 0, err
+	}
+	if c.Current == "dev" {
+		return 0, ErrNoUpdate
+	}
+	if _, err := parseVersion(c.Current); err != nil {
+		return 0, err
+	}
+	if !Newer(m.Version, c.Current) {
+		return 0, ErrNoUpdate
+	}
 	todo := Plan(c.Dir, m)
 	var total, done int64
 	for _, f := range todo {
@@ -451,6 +436,9 @@ func moveFile(src, dst string) error {
 
 // BuildManifest 扫描 dir 生成清单（发布端使用）。
 func BuildManifest(dir, version, platform, notes string) (*Manifest, error) {
+	if _, err := parseVersion(version); err != nil {
+		return nil, err
+	}
 	m := &Manifest{Schema: 1, Version: version, Platform: platform, Notes: notes, Date: time.Now().UTC().Truncate(time.Second)}
 	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {

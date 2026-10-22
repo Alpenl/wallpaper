@@ -78,6 +78,7 @@ type Hooks struct {
 
 // Info 是关于页和诊断页的静态信息。
 type Info struct {
+	Commit      string
 	Version     string
 	Platform    string // windows/amd64 …
 	EncoderName string // 转码编码器显示名；空 = 没有

@@ -312,24 +312,30 @@ func TestItemPropsApplyAndDisplayOverridesWin(t *testing.T) {
 		defer r.lock.Unlock()
 		return r.options
 	}
-	eventually(t, "started", func() bool { return current() != nil && current().isLoaded() })
+	// Load is acknowledged on the worker before the app publishes its view.
+	// Wait for the item identity as well; an empty ID makes SetItemProps a no-op.
+	eventually(t, "started and item published", func() bool {
+		return current() != nil && current().isLoaded() && byID(e.a.View(), "A").ItemID != ""
+	})
 	item := byID(e.a.View(), "A").ItemID
 	e.a.SetItemProps(item, config.ItemProps{Fit: "stretch", Speed: 1.5, Volume: 40, Audio: "sound"})
 	eventually(t, "group props applied", func() bool {
 		o := options()
 		return o.Fit == "stretch" && o.Speed == 1.5 && o.Volume == 40 && !o.Muted
 	})
-	if p := e.a.View().Library[0].Props; p.Volume != 40 || p.Audio != "sound" {
-		t.Fatal("props not stored on the item", p)
-	}
+	eventually(t, "item props published", func() bool {
+		p := e.a.View().Library[0].Props
+		return p.Volume == 40 && p.Audio == "sound"
+	})
 	e.a.SetDisplayOptions("A", config.DisplayOptions{Fit: "fit", Audio: "mute"})
 	eventually(t, "override wins", func() bool {
 		o := options()
 		return o.Fit == "fit" && o.Speed == 1.5 && o.Muted
 	})
-	if eff := byID(e.a.View(), "A").Effective; eff.Fit != "fit" || eff.Speed != 1.5 || !eff.Muted || eff.Volume != 40 {
-		t.Fatal("view effective playback", eff)
-	}
+	eventually(t, "effective playback published", func() bool {
+		eff := byID(e.a.View(), "A").Effective
+		return eff.Fit == "fit" && eff.Speed == 1.5 && eff.Muted && eff.Volume == 40
+	})
 	e.a.SetDisplayOptions("A", config.DisplayOptions{})
 	eventually(t, "cleared override follows group", func() bool {
 		o := options()

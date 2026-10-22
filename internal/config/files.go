@@ -65,10 +65,9 @@ type Startup struct {
 }
 
 type Privacy struct {
-	AudioReactive bool   `json:"audioReactive"`
-	MouseInput    bool   `json:"mouseInput"`
-	Telemetry     bool   `json:"telemetry"` // D-15：不做遥测，恒为 false
-	CrashReports  string `json:"crashReports"`
+	AudioReactive bool `json:"audioReactive"`
+	MouseInput    bool `json:"mouseInput"`
+	Telemetry     bool `json:"telemetry"` // D-15：不做遥测，恒为 false
 }
 
 // Render 选择渲染后端（D-04：Windows 默认 mpv，可选 mf）。
@@ -100,7 +99,7 @@ func Defaults() Config {
 		Perf:    Perf{Profile: "balanced", FPSCap: 30, RenderScale: 1},
 		Pause:   Pause{BatteryPolicy: "pause", LowBatteryPct: 20, ResumeDebounceMs: 300, OnFullscreen: true, OnCovered: true},
 		Startup: Startup{LaunchAtLogin: false, OpenSettings: true},
-		Privacy: Privacy{Telemetry: false, CrashReports: "never"},
+		Privacy: Privacy{Telemetry: false},
 		Render:  Render{TranscodeResolution: "display", WindowsBackend: "mpv", Muted: true, ResumePosition: true},
 		UI:      UI{Lang: "zh-CN", Theme: "system", Accent: "blue", LibraryView: "grid", ImportApply: "none"},
 		Update:  Update{AutoCheck: true}}
@@ -622,8 +621,17 @@ func Open(p Paths) (*Store, error) {
 }
 
 // FlushAll 立刻写出所有待写内容。
-func (s *Store) FlushAll() {
+func (s *Store) FlushAll() error {
+	var errs []error
 	for _, sv := range []*Saver{s.ConfigSaver, s.LibrarySaver, s.AssignSaver, s.StateSaver} {
-		_ = sv.Flush()
+		errs = append(errs, sv.Flush())
+	}
+	return errors.Join(errs...)
+}
+
+// SetOnError connects persistence reporting before scheduling any writes.
+func (s *Store) SetOnError(fn func(error)) {
+	for _, sv := range []*Saver{s.ConfigSaver, s.LibrarySaver, s.AssignSaver, s.StateSaver} {
+		sv.OnError = fn
 	}
 }
