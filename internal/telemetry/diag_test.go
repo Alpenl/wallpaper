@@ -143,11 +143,17 @@ func TestDiagnosticsFormatsAndRecursivePrivacy(t *testing.T) {
 }
 
 func TestDiagnosticsTailAndTotalBudget(t *testing.T) {
+	oldZIP, oldFile, oldRead := maxDiagnosticZIP, maxDiagnosticFile, maxDiagnosticRead
+	t.Cleanup(func() {
+		maxDiagnosticZIP, maxDiagnosticFile, maxDiagnosticRead = oldZIP, oldFile, oldRead
+	})
+	maxDiagnosticZIP, maxDiagnosticFile, maxDiagnosticRead = 128<<10, 16<<10, 512<<10
+
 	d := t.TempDir()
-	// More than 20 MiB of log data, generated only in the temporary fixture.
+	// Exceed both the per-file tail limit and the total ZIP budget.
 	line := strings.Repeat("x", 1000) + "\n"
 	for i := 0; i < 13; i++ {
-		p := putDiagnostic(t, d, fmt.Sprintf("crash-%02d.log", i), "OLD HEAD\n"+strings.Repeat(line, 2200)+fmt.Sprintf("LATEST TAIL %02d\n", i))
+		p := putDiagnostic(t, d, fmt.Sprintf("crash-%02d.log", i), "OLD HEAD\n"+strings.Repeat(line, int(maxDiagnosticFile)/len(line)+2)+fmt.Sprintf("LATEST TAIL %02d\n", i))
 		stamp := time.Unix(int64(i), 0)
 		if err := os.Chtimes(p, stamp, stamp); err != nil {
 			t.Fatal(err)
@@ -162,7 +168,7 @@ func TestDiagnosticsTailAndTotalBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Size() > 20<<20 {
+	if st.Size() > int64(maxDiagnosticZIP) {
 		t.Fatalf("ZIP size %d", st.Size())
 	}
 	files := unzipDiagnostic(t, out)

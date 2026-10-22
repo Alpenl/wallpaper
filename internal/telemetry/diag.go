@@ -16,12 +16,13 @@ import (
 	"wpapp/internal/buildinfo"
 )
 
-const (
-	maxDiagnosticZIP  = 20 << 20
-	maxDiagnosticFile = 2 << 20
-	maxDiagnosticRead = 64 << 20
-	truncationMarker  = "[truncated: older content omitted]\n"
+var (
+	maxDiagnosticZIP        = 20 << 20
+	maxDiagnosticFile int64 = 2 << 20
+	maxDiagnosticRead       = 64 << 20
 )
+
+const truncationMarker = "[truncated: older content omitted]\n"
 
 type diagnosticEntry struct {
 	name string
