@@ -17,14 +17,15 @@ import (
 )
 
 // Encode writes a new video-only H.264 MP4 at rational 30 fps. width/height are
-// aspect-preserving, even-pixel bounds, never an upscale request. It refuses an
+// aspect-preserving even-pixel bounds by default; optional cover requests an
+// exact center-cropped raster (and permits enlargement). It refuses an
 // existing destination. Callers must atomically publish and verify the result.
 //
 // Run this in a killable helper process, never the application's UI process.
 // AVAssetImageGenerator's sequential frame-accurate seeks prioritize correctness
 // over throughput; synchronous native decode/metadata calls cannot be forcibly
 // interrupted by a Go context. The process owner must enforce its deadline.
-func Encode(ctx context.Context, src, dst string, width, height int) (err error) {
+func Encode(ctx context.Context, src, dst string, width, height int, cover ...bool) (err error) {
 	if err = ctx.Err(); err != nil {
 		return err
 	}
@@ -73,12 +74,12 @@ func Encode(ctx context.Context, src, dst string, width, height int) (err error)
 	// Never remove a destination rejected above. After writer creation begins,
 	// AVFoundation owns this fresh path and failures may remove only this output.
 	if info.Container == "gif" {
-		return encodeGIF(ctx, src, dst, width, height)
+		return encodeGIF(ctx, src, dst, width, height, len(cover) > 0 && cover[0])
 	}
-	return encodeVideo(ctx, src, dst, width, height)
+	return encodeVideo(ctx, src, dst, width, height, len(cover) > 0 && cover[0])
 }
 
-func encodeGIF(ctx context.Context, src, dst string, bw, bh int) error {
+func encodeGIF(ctx context.Context, src, dst string, bw, bh int, cover bool) error {
 	g, err := loadGIF(ctx, src)
 	if err != nil {
 		return err
@@ -87,7 +88,7 @@ func encodeGIF(ctx context.Context, src, dst string, bw, bh int) error {
 	if err != nil {
 		return err
 	}
-	width, height, err := outputSize(g.Config.Width, g.Config.Height, bw, bh)
+	width, height, err := renditionSize(g.Config.Width, g.Config.Height, bw, bh, cover)
 	if err != nil {
 		return err
 	}
@@ -100,6 +101,7 @@ func encodeGIF(ctx context.Context, src, dst string, bw, bh int) error {
 		return err
 	}
 	defer w.close()
+	w.cover = cover
 	for i := 0; i < count; i++ {
 		im, e := frames.at(ctx, i)
 		if e != nil {
@@ -112,7 +114,7 @@ func encodeGIF(ctx context.Context, src, dst string, bw, bh int) error {
 	return w.finish(ctx, count)
 }
 
-func encodeVideo(ctx context.Context, src, dst string, bw, bh int) error {
+func encodeVideo(ctx context.Context, src, dst string, bw, bh int, cover bool) error {
 	url := class("NSURL").Send(sel("fileURLWithPath:"), ns(src))
 	asset := class("AVURLAsset").Send(sel("alloc")).Send(sel("initWithURL:options:"), url, objc.ID(0))
 	if asset == 0 {
@@ -161,6 +163,10 @@ func encodeVideo(ctx context.Context, src, dst string, bw, bh int) error {
 	if math.IsNaN(displayW) || math.IsInf(displayW, 0) || math.IsNaN(displayH) || math.IsInf(displayH, 0) || displayW < 2 || displayH < 2 || displayW > 32768 || displayH > 32768 {
 		return errors.New("nativeav: invalid oriented track dimensions")
 	}
+	if cover {
+		scale := min(1.0, max(float64(bw)/displayW, float64(bh)/displayH))
+		mw, mh = int(math.Ceil(displayW*scale)), int(math.Ceil(displayH*scale))
+	}
 	mw = min(max(mw, 2), maxDimension, int(displayW))
 	mh = min(max(mh, 2), maxDimension, int(displayH))
 	if int64(mw)*int64(mh) > maxCanvasPixels {
@@ -183,7 +189,7 @@ func encodeVideo(ctx context.Context, src, dst string, bw, bh int) error {
 	if fw > 32768 || fh > 32768 {
 		return errors.New("nativeav: decoded frame exceeds source bounds")
 	}
-	width, height, err := outputSize(int(fw), int(fh), mw, mh)
+	width, height, err := renditionSize(int(fw), int(fh), bw, bh, cover)
 	if err != nil {
 		return err
 	}
@@ -195,6 +201,7 @@ func encodeVideo(ctx context.Context, src, dst string, bw, bh int) error {
 		return err
 	}
 	defer w.close()
+	w.cover = cover
 	if err = w.appendImage(ctx, first, 0); err != nil {
 		return err
 	}

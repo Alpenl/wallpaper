@@ -46,7 +46,8 @@ type Deps struct {
 	// Transcode 是 F-07 的系统/用户编码器（transcode.Encoder）；nil 表示本机没有可用编码器。
 	Transcode func(ctx context.Context, src, dst string) error
 	// TranscodeExt 是转码产物扩展名（mac avconvert 输出 .mov，其余 .mp4）。
-	TranscodeExt string
+	TranscodeExt    string
+	EncodeRendition func(context.Context, string, string, transcode.Target) error
 	// ResolveEncoder resolves user-selected encoders again when FFmpegPath changes.
 	ResolveEncoder func(config.Config) (func(context.Context, string, string) error, string)
 	EncoderInfo    func(config.Config) transcode.Capabilities
@@ -94,6 +95,7 @@ type Power struct {
 
 // View 是 UI 用的整体快照。
 type View struct {
+	Renditions []RenditionView
 	Layout     string // effective independent | span
 	LayoutNote string // unsupported saved preference/topology
 
@@ -119,7 +121,8 @@ type View struct {
 }
 
 type screen struct {
-	canvas image.Rectangle // empty = independent native surface
+	mediaPath string
+	canvas    image.Rectangle // empty = independent native surface
 
 	n            int // 状态机里的编号（单调递增，不复用）
 	d            desktop.Display
@@ -170,6 +173,9 @@ type App struct {
 	importCancel     context.CancelFunc
 	importCancelled  bool
 	importQueue      []importRequest
+	renditionQueue   []*renditionJob
+	renditionJobs    map[string]*renditionJob
+	activeRendition  *renditionJob
 	transcodeQueue   []string
 	transcodingID    string
 	transcodeCancel  context.CancelFunc
@@ -319,7 +325,7 @@ func (a *App) syncDisplays() {
 	newOwner := topologyOwner(want)
 	ownerChanged := !canvas.Empty() && a.spanOwner != newOwner
 	for id, s := range a.screens {
-		if d, ok := want[id]; !ok || d.Bounds != s.d.Bounds || d.Scale != s.d.Scale || d.PixelSize() != s.d.PixelSize() || canvas != s.canvas || ownerChanged || (!canvas.Empty() && d.Primary != s.d.Primary) {
+		if d, ok := want[id]; !ok || d.Bounds != s.d.Bounds || d.Scale != s.d.Scale || (!canvas.Empty() && d.PixelSize() != s.d.PixelSize()) || canvas != s.canvas || ownerChanged || (!canvas.Empty() && d.Primary != s.d.Primary) {
 			a.log.Info("display removed/changed", "display", id)
 			a.closeScreen(s, true)
 			a.ctl.RemoveDisplay(a.now(), s.n)
@@ -329,7 +335,13 @@ func (a *App) syncDisplays() {
 	a.spanOwner = newOwner
 	for id, d := range want {
 		if s := a.screens[id]; s != nil {
-			s.d = d // 名字、主屏标记可能变了（几何没变）
+			pixelsChanged := s.d.PixelSize() != d.PixelSize()
+			s.d = d // Geometry is unchanged; backing raster may change independently.
+			if pixelsChanged && s.item != nil {
+				if !a.updateScreenPlayback(s) {
+					a.restartPlayback(s)
+				}
+			}
 		}
 	}
 	// Register the complete topology before starting any renderer. Spanning audio
@@ -558,7 +570,7 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 	}
 	s.watchStop = make(chan struct{})
 	s.r, s.started, s.metricsReady = r, false, false
-	it := render.Item{ID: s.item.ID, Kind: s.item.Type, Path: filepath.Join(s.item.Dir, filepath.FromSlash(s.item.Entry)),
+	it := render.Item{ID: s.item.ID, Kind: s.item.Type, Path: a.renditionPath(s, true),
 		Start: a.d.Store.State.Positions[a.positionKey(s)]}
 	if !a.d.Store.Config.Render.ResumePosition {
 		it.Start = 0
@@ -566,6 +578,7 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 	if cp, ok := r.(render.CapabilityProvider); ok && !cp.Capabilities().Resume {
 		it.Start = 0
 	}
+	s.mediaPath = it.Path
 	options, note := a.playbackOptions(s, r)
 	s.note = note
 	surf := s.surf
@@ -1032,6 +1045,7 @@ func (a *App) publish() {
 	case a.power[visibility.ThermalSerious]:
 		v.Power.Thermal = "ThermalSerious"
 	}
+	v.Renditions = a.renditionViews()
 	for k, x := range a.transc {
 		v.Transcoding[k] = x
 	}
@@ -1424,6 +1438,14 @@ func (a *App) removeItemNow(itemID string, generation uint64) {
 			}
 		}
 	}
+	cacheDir := filepath.Join(a.d.Store.Paths.Cache, itemID)
+	if managedChild(a.d.Store.Paths.Cache, cacheDir) {
+		if moved, err := tombstone(cacheDir); err == nil && moved != "" {
+			tombstones = append(tombstones, moved)
+		} else if err != nil {
+			a.lastErr = err.Error()
+		}
+	}
 	a.d.Store.Library.Remove(itemID)
 	a.saveLibrary()
 	if a.d.Store.Assign.SpanItem == itemID {
@@ -1493,6 +1515,11 @@ func (a *App) refreshItemScreens(itemID string) {
 
 // Invalidate queued/running work before replacing or removing a library identity.
 func (a *App) invalidateItemWork(itemID string) {
+	for _, j := range a.renditionJobs {
+		if j.item == itemID {
+			j.state = "已取消"
+		}
+	}
 	delete(a.removing, itemID)
 	a.itemGeneration[itemID]++
 	if a.transcodingID == itemID && a.transcodeCancel != nil {
@@ -1705,6 +1732,7 @@ func (a *App) startNextTranscode() {
 			return
 		}
 	}
+	a.startNextRendition()
 }
 
 func (a *App) beginTranscode(itemID string) {

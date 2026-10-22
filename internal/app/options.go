@@ -101,6 +101,9 @@ func (a *App) restartPlayback(s *screen) {
 // Updates are serialized with renderer loads/pauses. Unsupported backends retain
 // the explicit restart fallback, while other errors are surfaced without a loop.
 func (a *App) updateScreenPlayback(s *screen) bool {
+	if s.item != nil && !a.updateRendition(s) {
+		return false
+	}
 	updater, ok := s.r.(interface {
 		UpdatePlayback(render.PlaybackOptions) error
 	})
@@ -227,6 +230,7 @@ func (a *App) checkpointPositions() {
 
 func cloneView(v View) View {
 	v.Config = v.Config.Clone()
+	v.Renditions = append([]RenditionView(nil), v.Renditions...)
 	v.Displays = append([]DisplayView(nil), v.Displays...)
 	v.Library = append([]config.Item(nil), v.Library...)
 	for i := range v.Library {

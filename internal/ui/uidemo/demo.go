@@ -254,3 +254,6 @@ func (f *Ctl) CancelImports() {
 	f.V.Importing, f.V.ImportQueued = false, 0
 	f.V.LastImport = "导入已取消；已完成的项目保留在壁纸库"
 }
+
+func (f *Ctl) OptimizeDisplays(id string) {}
+func (f *Ctl) CancelRenditions(id string) {}

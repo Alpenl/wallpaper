@@ -521,3 +521,32 @@ var _ render.Configurable = (*Renderer)(nil)
 var _ render.PlaybackUpdater = (*Renderer)(nil)
 var _ render.CapabilityProvider = (*Renderer)(nil)
 var _ io.Closer = (*client)(nil)
+
+// UpdateSource keeps the mpv process/surface and restores the sampled position,
+// effective options, cap and pause policy. L3 changes only the deferred source.
+func (r *Renderer) UpdateSource(it render.Item, level visibility.Level) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.c == nil {
+		return render.ErrUnsupported
+	}
+	if level >= visibility.L3 {
+		r.item = it
+		r.pos = it.Start
+		return nil
+	}
+	if pos, err := r.c.getFloat("time-pos"); err == nil {
+		it.Start = pos
+	}
+	options := resumeOptions(r.o, it.Start, int(r.cap.Load()))
+	options["pause"] = yesno(level > visibility.L0)
+	if _, err := r.c.cmd("loadfile", it.Path, "replace", -1, options); err != nil {
+		return err
+	}
+	if err := r.c.setPause(level > visibility.L0); err != nil {
+		return err
+	}
+	r.item = it
+	r.pos = it.Start
+	return nil
+}

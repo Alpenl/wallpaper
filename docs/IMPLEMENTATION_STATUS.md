@@ -36,7 +36,7 @@
 | F-04 | 分级状态机及平台信号已有；本轮补每屏手动暂停、全局/每屏原因保留、开关重放原始信号；Windows 信号较完整，macOS/Linux 有能力差异 | [`visibility`](../internal/visibility/)、[`app/options_test.go`](../internal/app/options_test.go)、[`desktop`](../internal/desktop/) | W-T10/M2/M4、≤500 ms、暂停 CPU/GPU 与恢复延迟；真实按屏/系统事件复测 |
 | F-05 | 生产 mpv/MF/AVF 已有 FPS cap，电池/低电量/省电策略已有；不是“限帧未实现” | [`mpv.go`](../internal/render/mpv/mpv.go)、[`mf`](../internal/render/mf/)、[`avf`](../internal/render/avf/)、`TestFPS15BatteryAndSaverProfile` | 真机验证 MF/AVF 限帧、电源事件与功耗；MF 节流呈现不等于少解码；D-07 |
 | F-06 | mpv、MF、AVFoundation 视频路径已有；硬解/循环质量不能仅由参数证明 | [`render`](../internal/render/) | W-T3/M3、`hwdec-current`、丢帧与逐帧循环；D-04/Q-W10 |
-| F-07 | 手动/自动转码、目标分辨率偏好、隔离任务与严格产物校验已接入；mac 默认原生 AVFoundation helper，无需 ffmpeg；可选 ffmpeg 在 Win/mac 分别要求 h264_mf/h264_videotoolbox，不静默换软件路线 | [转换契约](../internal/transcode/README.md)、[`nativeav`](../internal/transcode/nativeav/)、[`encoder.go`](../cmd/wallpaperd/encoder.go)、[`verify.go`](../internal/transcode/verify.go) | 原生编解码/帧率/IDR/音轨/取消真机验证；当前保比例边界缩放、每素材共享一份，按屏 cover 多版本缓存仍缺；avconvert 有限回退不满足严格 AC |
+| F-07 | 手动/自动转码、目标分辨率偏好、隔离任务与严格产物校验已接入；mac 默认原生 AVFoundation helper，无需 ffmpeg；可选 ffmpeg 在 Win/mac 分别要求 h264_mf/h264_videotoolbox，不静默换软件路线 | [转换契约](../internal/transcode/README.md)、[`nativeav`](../internal/transcode/nativeav/)、[`encoder.go`](../cmd/wallpaperd/encoder.go)、[`verify.go`](../internal/transcode/verify.go) | 原生编解码/帧率/IDR/音轨/取消真机验证；已接入按屏 backing 像素 center-cover 缓存、manifest、懒编码与单活跃队列、取消/选择/清理；mpv 保进程换源；MF/AVF 换源重建，跨屏/有声音/非 fill 回退共享版本；avconvert 有限回退不满足严格 AC |
 | F-08 | 静态系统壁纸/跨屏静态裁切已有；mac 原生 GIF 预检、透明/子矩形/帧延迟/disposal 合成后编码视频，Win/Linux 可用外部转码；mac GIF 导入接入原生路线 | [`nativeav/gif.go`](../internal/transcode/nativeav/gif.go)、[`importer`](../internal/importer/)、[`panorama`](../internal/render/panorama/) | GIF 合成纯 Go 测试与 Linux 真 ffmpeg 不能替代 mac 原生编码/播放；透明复杂 GIF、末帧、资源限额及静态 CPU 需真机；有限 avconvert 不支持 GIF |
 | F-09 | 原生托盘、菜单、窗口按需打开/关闭已有；设置不使用 WebView | [`shell.go`](../internal/ui/shell.go) | 各系统托盘/退出/窗口重建；后台内存与菜单时延 |
 | F-10 | MyGo 自启桥接、默认关闭、首次询问已有 | [`cmd/wallpaperd`](../cmd/wallpaperd/)、[`config`](../internal/config/) | 真机登录后启动、禁用后撤销、失败回滚；不是网页开关 |
@@ -44,7 +44,7 @@
 | F-12 | 原规划 v1；未提供产品级网页壁纸宿主/沙箱；React 设置设计稿不是本功能 | [Web 设计](design/08-web-shader.md)、[安全设计](design/10-package-format.md) | WebView2/WKWebView 宿主、隔离、禁网/权限、限帧、B-T2/Q-B2；不能标完成 |
 | F-13 | 本轮补作者/说明/标签/尺寸/时长/大小与预览主色索引；搜索覆盖名称/来源/作者/说明/标签/中英文颜色；网格/列表/缩略图已有 | [`library.go`](../internal/ui/library.go)、[`palette.go`](../internal/importer/palette.go)、[`search_test.go`](../internal/ui/search_test.go) | 16:09 以前的布局检查点，1000 条查询云端微基准约 1.18 ms，通过该检查点基准目标；不是端到端 UI/旧库完整索引或真机时延认证；UI-01 |
 | F-14 | 原规划 v1；未提供产品级 Shader 渲染器 | [Shader 设计](design/08-web-shader.md) | 实际渲染、GPU 帧时间、自适应分辨率与 L1 停止；不能用占位卡验收 |
-| F-15 | 更新清单校验、增量下载/暂存/回滚与打包脚本存在；发行签名/更新服务是独立门槛 | [`update`](../internal/update/)、[`packaging`](../packaging/)、[`scripts`](../scripts/) | D-02、更新源/公钥、实际签名及公证、安装卸载、mac 更新后签名完整性 |
+| F-15 | 更新清单校验、增量下载/暂存/回滚与打包脚本存在；[标签 CI/CD](releases/README.md) 已接入三系统验证、五目标打包、可选签名与幂等发布；真实签名/更新服务仍待验证 | [`update`](../internal/update/)、[`packaging`](../packaging/)、[`scripts`](../scripts/) | D-02、更新源/公钥、实际签名及公证、安装卸载、mac 更新后签名完整性 |
 | F-16 | 本地日志、诊断包脱敏实现和测试已有；不上传遥测 | [`telemetry`](../internal/telemetry/) | 本轮脱敏测试、失败提示、各平台导出路径；日志性能 AC |
 | F-17 | 每屏 L0–L4、暂停原因、当前 UTC 周已确认动态运行时长/暂停时长已持久化；显示器指标键为 SHA-256 截断摘要；不估算能源 | [`app/metrics.go`](../internal/app/metrics.go)、[`config/metrics.go`](../internal/config/metrics.go)、[`ui/metrics_test.go`](../internal/ui/metrics_test.go) | mpv 展示报告的硬解状态；MF/AVF 仍标 unknown/未验证，不能从框架名推断硬解。真实睡眠/时钟/重启与 UI 一致性需平台验收，完整 F-17 未关闭 |
 | F-18 | 每屏 fit/speed、静音/降采样按能力接线；mpv/MF/AVF 支持 fit/speed 原位修改并保持暂停；MF 增加原生播放速率、位置采样/异步 seek 及 L3 恢复 | [`render.go`](../internal/render/render.go)、[`options.go`](../internal/app/options.go)、[`mf/playback.go`](../internal/render/mf/playback.go)、[`mf/engine_windows.go`](../internal/render/mf/engine_windows.go) | MF/AVF 原生运行与 ≤200 ms 时延仍未验；MF 不支持帧降采样，全局/不支持属性仍可重建；Web 属性依赖 F-12，完整 AC 未关闭 |
@@ -64,6 +64,7 @@
 | 控制 | mpv（Windows/Linux） | MF（Windows） | AVF（macOS） | 静态图 |
 |---|---|---|---|---|
 | fill / fit / stretch | 已接入，可原位调整 | 已接入：源裁切 / MF letterbox / 交换链 stretch，可原位调整 | 已接入，可原位调整 | 单屏自定义不支持；跨屏由图片裁切实现 |
+| 每屏 cover rendition | 相同 key 复用；换源保留进程、位置、暂停与 cap | 选择缓存；换源按现有恢复路径重建 | 选择缓存；原生 helper 支持 cover；换源重建 | 不适用 |
 | 播放速度 | 0.25–4 倍，可原位调整 | 0.25–4 倍，原生 SetPlaybackRate，可原位调整 | 0.25–4 倍，可原位调整 | 不适用 |
 | 静音 / 声音 | 已接入，默认静音 | 已接入，默认静音 | 已接入，默认静音 | 不适用 |
 | 视频帧降采样 | 0.25–1 倍软件滤镜 | 不支持 | 不支持 | 不适用 |
@@ -78,12 +79,18 @@
 - 应用规则匹配前台进程 basename，不读取窗口标题；Windows 使用进程映像，macOS 使用 NSWorkspace，X11 使用活动窗口 PID 与本地 `/proc`。Wayland 或无法获得进程的会话不宣称有效。
 - 导入和编码采用有界 FIFO（各 256），编码限制单活跃任务；删除会取消关联的排队/运行工作。相关测试覆盖多选导入不丢项、替换/删除与旧编码结果竞态，最终全套结果仍以验证记录为准。
 - macOS 默认原生 AVFoundation helper 与可选 ffmpeg 是严格路线，要求 H.264、恒定 30fps、无音轨、首同步样本/GOP 和偶数尺寸约束；MP4 样本表验证不是完整码流解码。avconvert 只作明确标注的有限回退，不支持 GIF、固定 30fps、目标尺寸或去音轨。Windows ffmpeg 必须具备 h264_mf；框架/编码器名称不证明实际硬件加速。
-- 目标分辨率 `display` 取主屏当前模式 backing 像素，无主屏时取首个有效屏，最后回退 3840×2160；也可显式选择 1080p/1440p/2160p。任务开始时重新读取拓扑。macOS 逻辑坐标与 backing 像素分离，Windows 不重复乘 DPI；不是固定取面板最大分辨率。输出按边界保比例、不放大、偶数对齐，不是设计中每屏精确 cover 裁切的多份 rendition。
+- 目标分辨率 `display` 取主屏当前模式 backing 像素，无主屏时取首个有效屏，最后回退 3840×2160；也可显式选择 1080p/1440p/2160p。任务开始时重新读取拓扑。macOS 逻辑坐标与 backing 像素分离，Windows 不重复乘 DPI；不是固定取面板最大分辨率。共享回退输出仍按边界保比例、不放大、偶数对齐。独立显示器在有效 fill 且静音时，按自身 backing 像素（偶数对齐、每轴最大 8192）懒生成 center-cover H.264/30fps/无音轨版本，允许放大；相同素材修订/尺寸/裁切 key 共用 `cache/<id>/renditions/<key>/video.mp4` 与 manifest。严格探测通过后发布；无缓存回退当前共享入口或原文件。缓存纳入空间统计，清理保留当前目标、已加载和队列中的 key，删除素材移除全部缓存。原生 helper 仍受 canvas 像素预算约束，失败保留回退。多屏裁切质量、混合 DPI/热插拔、暂停换源和原生 UI 仍待真机验收；进度为排队/执行中/完成状态，不提供编码百分比。
 - 跨屏是每屏独立宿主/渲染器对共同画布的空间裁切，保留按屏暂停；未实现单解码器和跨屏帧时钟，不承诺视频帧同步。静态图与视频首帧使用相同画布映射，详见 [SPANNING.md](SPANNING.md)。
 - 本周暂停时长只累计已确认的动态壁纸 L1–L4，L0 单列；不计静态图、未启动/失败、离线和系统睡眠，正常 30 秒检查点，超过 45 秒的异常间隔整段丢弃。周界为 UTC 周一，时钟回退不重复计时。上限 64 个显示器记录，仅保存摘要键及有限计数，不是实际/估算节电量。
 - 文件夹导入不遍历符号链接/隐藏子目录；包目录作为整体导入，失败项汇总，不把有问题的包拆成媒体“假成功”。
 - 主色索引只读取本地静态预览：最多 16 MiB、16×1024² 像素，最多三组中英文色名；无效/超限/缺少预览时保留导入但不生成颜色索引，不能保证旧条目均有颜色。
 - 存储统计扫描实际库/缓存路径；清理只移除无引用缓存，不清空仍用于首帧/降级的有效预览。见 [`storage.go`](../internal/app/storage.go)。
+
+## 发布支持
+
+| 范围 | 已实现 | 仍需验证 |
+|---|---|---|
+| 标签发布 | 分支/PR CI；master 可达的 SemVer 标签触发；五目标包与 SHA256SUMS；凭据缺失时明确标记未签名预发布；保留原始构建并续传 draft | GitHub hosted 三系统实际运行；真实 Windows/Apple 证书、公证与安装卸载；更新源部署及 macOS 更新后签名完整性。见 [发布说明](releases/README.md) |
 
 ## 配置与数据迁移
 
@@ -94,7 +101,7 @@
 ## 尚需区分的完成条件
 
 - **已有源码但缺目标平台证据**：Win/mac 宿主、空间跨屏、原生编解码与播放控制、电源/睡眠、性能预算、签名/公证及安装。不能只以云端测试关闭，也不应重新描述为“完全没有实现”。
-- **仍缺架构或产品实现**：F-07 的按屏多 rendition/cover 缓存，F-12 网页壁纸隔离与沙箱，F-14 Shader 引擎，F-25 在线服务/内容授权/信任链，以及其他矩阵明列未提供项。真机测试本身不能补齐这些代码。
+- **仍缺架构或产品实现**：F-12 网页壁纸隔离与沙箱，F-14 Shader 引擎，F-25 在线服务/内容授权/信任链，以及其他矩阵明列未提供项。真机测试本身不能补齐这些代码。
 - **后续范围仍需确认**：原规格把 F-12/F-14 定为 v1、F-25 定为以后、F-26 在 v0 明确不支持。本轮补全不能默默改变原分期，也不代表用户已同意从“全部功能”中排除它们；扩展到完整 v1/roadmap 的范围仍待确认。
 
 ## 状态更新规则

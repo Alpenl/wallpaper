@@ -12,6 +12,15 @@ import (
 // English UI catalog. User-authored titles, paths, and backend error details
 // are deliberately not rewritten when they have no exact catalog entry.
 var english = map[string]string{
+	"已取消":       "Cancelled",
+	"为每块屏优化":    "Optimize for each display",
+	"正在优化屏幕版本…": "Optimizing display renditions…",
+	"取消屏幕优化":    "Cancel display optimization",
+	"优化屏幕版本":    "Optimize display renditions",
+	"使用共享版本":    "Using shared rendition",
+	"尚未优化":      "Not optimized",
+	"优化失败":      "Optimization failed",
+
 	"当前暂停原因":             "Current pause reasons",
 	"继续后仍会遵循自动暂停规则":      "Automatic pause policies still apply after resuming.",
 	"导入已取消；已完成的项目保留在壁纸库": "Import cancelled; completed items remain in the library",

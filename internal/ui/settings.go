@@ -43,6 +43,8 @@ type Controller interface {
 	ExitSafeMode()
 	Next()
 	Transcode(itemID string)
+	OptimizeDisplays(itemID string)
+	CancelRenditions(itemID string)
 	RefreshStorage()
 	ClearCache()
 }

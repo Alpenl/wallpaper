@@ -19,7 +19,7 @@ func runTranscodeHelper(f *flags) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
-	if err := nativeav.Encode(ctx, f.in, f.out, f.width, f.height); err != nil {
+	if err := nativeav.Encode(ctx, f.in, f.out, f.width, f.height, f.cover); err != nil {
 		fmt.Fprintln(os.Stderr, "transcode helper:", err)
 		return 3
 	}

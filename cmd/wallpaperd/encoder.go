@@ -12,7 +12,7 @@ import (
 )
 
 // encodingTarget uses physical display pixels, never logical UI points. A
-// single rendition is shared; this does not claim per-display rendition sets.
+// shared fallback keeps aspect ratio; cover renditions use each display separately.
 func encodingTarget(cfg config.Config, displays []app.DisplayView) transcode.Target {
 	switch cfg.Render.TranscodeResolution {
 	case "1080p":

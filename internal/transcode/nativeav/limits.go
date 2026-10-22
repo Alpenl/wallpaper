@@ -66,3 +66,14 @@ func gifDelay(cs int) int {
 	}
 	return cs
 }
+
+// renditionSize separates exact cover targets from aspect-preserving bounds.
+func renditionSize(w, h, bw, bh int, cover bool) (int, int, error) {
+	if !cover {
+		return outputSize(w, h, bw, bh)
+	}
+	if w < 2 || h < 2 || w > 32768 || h > 32768 || bw < 2 || bh < 2 || bw > maxDimension || bh > maxDimension || int64(bw)*int64(bh) > maxCanvasPixels {
+		return 0, 0, errors.New("nativeav: cover dimensions exceed source or canvas bounds")
+	}
+	return bw / 2 * 2, bh / 2 * 2, nil
+}

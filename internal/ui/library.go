@@ -478,10 +478,39 @@ func (s *Settings) groupProps(c *ui.Context, v app.View, it config.Item) {
 func (s *Settings) transcodeCard(c *ui.Context, v app.View, it config.Item) {
 	t := c.Theme()
 	st := v.Transcoding[it.ID]
-	if it.Transcode != "recommended" && st == "" {
+	if it.Type != "video" && it.Transcode != "recommended" && st == "" {
 		return
 	}
 	ui.Column(c.Key("tc")).Gap(6).Padding(14).Radius(12).Background(t.Warning.Alpha(0.08)).Border(1, t.Warning.Alpha(0.28)).Children(func() {
+		text(c, "为每块屏优化").FontSize(13).FontWeight(600).TextColor(t.Warning)
+		busy := false
+		for _, rv := range v.Renditions {
+			if rv.ItemID != it.ID {
+				continue
+			}
+			name := rv.DisplayID
+			for _, d := range v.Displays {
+				if d.ID == rv.DisplayID {
+					name = d.Name
+				}
+			}
+			label := name
+			if rv.Width > 0 {
+				label += fmt.Sprintf(" · %d × %d", rv.Width, rv.Height)
+			}
+			propRow(c, "rendition-"+rv.DisplayID, label, "", false, func() { text(c, rv.Status).FontSize(12).TextColor(t.TextMuted) })
+			if rv.Status == "等待转码…" || rv.Status == "正在转码…" {
+				busy = true
+			}
+		}
+		if busy {
+			ui.Row(c).Gap(6).Children(func() { ui.Spinner(c).Size(14, 14); text(c, "正在优化屏幕版本…").FontSize(12) })
+			if softButton(c.Key("covercancel"), "取消屏幕优化").Clicked() {
+				s.ctl.CancelRenditions(it.ID)
+			}
+		} else if softButton(c.Key("covergo"), "优化屏幕版本").Clicked() {
+			s.ctl.OptimizeDisplays(it.ID)
+		}
 		text(c, "建议优化转码").FontSize(13).FontWeight(600).TextColor(t.Warning)
 		note := mediaNote(c.Locale(), it.Note)
 		if note == "" {

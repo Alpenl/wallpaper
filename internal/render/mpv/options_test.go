@@ -310,3 +310,42 @@ func TestLivePlaybackValidationAndStoppedPlayer(t *testing.T) {
 		}
 	}
 }
+
+func TestSourceSwapPreservesPausePositionAndCap(t *testing.T) {
+	r := New(Options{})
+	r.level.Store(int32(visibility.L1))
+	r.cap.Store(15)
+	commands := make(chan []json.RawMessage, 16)
+	r.c = fakeIPC(t, func(c []json.RawMessage) (any, string) {
+		commands <- c
+		if string(c[0]) == `"get_property_string"` {
+			return "12.5", ""
+		}
+		return nil, ""
+	})
+	if err := r.UpdateSource(render.Item{Path: "cover.mp4"}, visibility.L1); err != nil {
+		t.Fatal(err)
+	}
+	<-commands
+	load := <-commands
+	if string(load[0]) != `"loadfile"` || string(load[1]) != `"cover.mp4"` {
+		t.Fatal(load)
+	}
+	var opts map[string]string
+	if err := json.Unmarshal(load[4], &opts); err != nil {
+		t.Fatal(err)
+	}
+	if opts["start"] != "12.500" || opts["pause"] != "yes" || !strings.Contains(opts["vf"], "fps=15") {
+		t.Fatal(opts)
+	}
+	pause := <-commands
+	if string(pause[1]) != `"pause"` || string(pause[2]) != "true" {
+		t.Fatal(pause)
+	}
+	if err := r.UpdateSource(render.Item{Path: "later.mp4", Start: 12.5}, visibility.L3); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 0 || r.item.Path != "later.mp4" {
+		t.Fatal("L3 should defer load")
+	}
+}

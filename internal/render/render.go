@@ -130,3 +130,8 @@ func (c Capabilities) ValidateOptions(o PlaybackOptions) error {
 
 // ErrUnsupported 表示该渲染器不支持此操作。
 var ErrUnsupported = errors.New("render: unsupported")
+
+// SourceUpdater preserves the playback timeline and policy during a media swap.
+type SourceUpdater interface {
+	UpdateSource(Item, visibility.Level) error
+}

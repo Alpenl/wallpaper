@@ -32,6 +32,7 @@ import (
 	"wpapp/internal/render/mf"
 	"wpapp/internal/render/mpv"
 	"wpapp/internal/telemetry"
+	"wpapp/internal/transcode"
 )
 
 var version = "0.3.0-mvp"
@@ -54,6 +55,7 @@ type flags struct {
 	in            string
 	out           string
 	width, height int
+	cover         bool
 	version       bool
 	statusOut     string
 	exportDiag    bool
@@ -79,6 +81,7 @@ func parseFlags(args []string) *flags {
 	fs.StringVar(&f.helper, "helper", "", "内部：probe / transcode")
 	fs.StringVar(&f.in, "in", "", "内部：helper 输入文件")
 	fs.StringVar(&f.out, "out", "", "内部：helper 输出文件")
+	fs.BoolVar(&f.cover, "cover", false, "内部：居中裁切")
 	fs.IntVar(&f.width, "width", 3840, "内部：转换目标宽度")
 	fs.IntVar(&f.height, "height", 2160, "内部：转换目标高度")
 	fs.BoolVar(&f.version, "version", false, "打印版本")
@@ -194,6 +197,14 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 		ResolveEncoder: func(cfg config.Config) (func(context.Context, string, string) error, string) {
 			fn, ext, _ := e.encoder(cfg)
 			return fn, ext
+		},
+		EncodeRendition: func(ctx context.Context, src, dst string, target transcode.Target) error {
+			cfg := e.configSnapshot()
+			fn, _, _ := transcode.CoverEncoder(runtime.GOOS, cfg.Render.FFmpegPath, e.nativeEncoderHelper(), target)
+			if fn == nil {
+				return transcode.ErrNoEncoder
+			}
+			return fn(ctx, src, dst)
 		},
 		EncoderInfo: e.encoderCapabilities,
 		ProbeMedia:  e.probeContext,

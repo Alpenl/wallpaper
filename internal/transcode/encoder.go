@@ -151,12 +151,24 @@ func EncoderForTarget(goos, ffmpegPath string, target Target) (func(context.Cont
 // macOS unless the user explicitly selects ffmpeg. A helper dispatch must call
 // nativeav.Encode directly, never this function, to avoid recursive spawning.
 func EncoderForTargetWithHelper(goos, ffmpegPath, helperExecutable string, target Target) (func(context.Context, string, string) error, string, string) {
+	return encoderForTarget(goos, ffmpegPath, helperExecutable, target, false)
+}
+
+// CoverEncoder requires a strict route and produces an exact center-cover raster.
+func CoverEncoder(goos, path, helper string, target Target) (func(context.Context, string, string) error, string, string) {
+	return encoderForTarget(goos, path, helper, target, true)
+}
+
+func encoderForTarget(goos, ffmpegPath, helperExecutable string, target Target, cover bool) (func(context.Context, string, string) error, string, string) {
 	p, kind := resolveWithHelper(goos, ffmpegPath, helperExecutable)
 	caps := CapabilitiesForWithHelper(goos, ffmpegPath, helperExecutable)
 	switch kind {
 	case "nativeav":
-		return nativeHelperEncoder(p, target.normalized()), ".mp4", caps.Name
+		return nativeHelperEncoder(p, target.normalized(), cover), ".mp4", caps.Name
 	case "avconvert":
+		if cover {
+			return nil, "", ""
+		}
 		return avconvertEncoder(p), ".mov", caps.Name
 	case "ffmpeg":
 		target = target.normalized()
@@ -168,10 +180,10 @@ func EncoderForTargetWithHelper(goos, ffmpegPath, helperExecutable string, targe
 				if err != nil {
 					return err
 				}
-				if err := run(ctx, p, ffmpegArgs(src, tmp, target, codec)...); err != nil {
+				if err := run(ctx, p, ffmpegArgs(src, tmp, target, codec, cover)...); err != nil {
 					return fmt.Errorf("ffmpeg (%s): %w", codec, err)
 				}
-				if _, err := VerifyOutput(tmp, target); err != nil {
+				if err := verifyEncoded(tmp, target, cover); err != nil {
 					return err
 				}
 				return nil
@@ -181,7 +193,7 @@ func EncoderForTargetWithHelper(goos, ffmpegPath, helperExecutable string, targe
 	return nil, "", ""
 }
 
-func nativeHelperEncoder(executable string, target Target) func(context.Context, string, string) error {
+func nativeHelperEncoder(executable string, target Target, cover bool) func(context.Context, string, string) error {
 	return serialEncoder(func(ctx context.Context, src, dst string) error {
 		ctx, cancel := context.WithTimeout(ctx, time.Hour)
 		defer cancel()
@@ -192,11 +204,10 @@ func nativeHelperEncoder(executable string, target Target) func(context.Context,
 				return err
 			}
 			if err := run(ctx, executable, "-helper", "transcode", "-in", src, "-out", tmp,
-				"-width", strconv.Itoa(target.Width), "-height", strconv.Itoa(target.Height)); err != nil {
+				"-width", strconv.Itoa(target.Width), "-height", strconv.Itoa(target.Height), "-cover="+strconv.FormatBool(cover)); err != nil {
 				return fmt.Errorf("native AVFoundation helper: %w", err)
 			}
-			_, err := VerifyOutput(tmp, target)
-			return err
+			return verifyEncoded(tmp, target, cover)
 		})
 	})
 }
@@ -286,10 +297,13 @@ func FFmpegArgs(src, dst string, maxW int) []string {
 	return ffmpegArgs(src, dst, Target{Width: maxW}.normalized(), "libx264")
 }
 
-func ffmpegArgs(src, dst string, target Target, codec string) []string {
+func ffmpegArgs(src, dst string, target Target, codec string, cover ...bool) []string {
 	target = target.normalized()
 	// Use display aspect ratio, not only stored width, for anamorphic sources.
 	filter := fmt.Sprintf("fps=30,scale=w='max(2,trunc(min(min(%d,iw*sar),%d*dar)/2)*2)':h='max(2,trunc(min(min(%d,ih),%d/dar)/2)*2)':flags=bicubic,setsar=1", target.Width, target.Height, target.Height, target.Width)
+	if len(cover) > 0 && cover[0] {
+		filter = fmt.Sprintf("fps=30,scale=w='max(2,trunc(iw*sar/2)*2)':h=ih,setsar=1,scale=%d:%d:force_original_aspect_ratio=increase:force_divisible_by=2,crop=%d:%d,setsar=1", target.Width, target.Height, target.Width, target.Height)
+	}
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-max_alloc", "268435456", "-threads", "2", "-filter_threads", "1", "-protocol_whitelist", "file,pipe"}
 	if isGIF(src) {
 		args = append(args, "-ignore_loop", "1")
@@ -396,4 +410,15 @@ func tail(b []byte, n int) string {
 		b = b[len(b)-n:]
 	}
 	return string(b)
+}
+
+func verifyEncoded(path string, target Target, cover bool) error {
+	info, err := VerifyOutput(path, target)
+	if err != nil {
+		return err
+	}
+	if cover {
+		return VerifyCover(info, target)
+	}
+	return nil
 }

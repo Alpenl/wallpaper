@@ -24,6 +24,7 @@ const (
 )
 
 type writer struct {
+	cover                       bool
 	object, input, adaptor, aux objc.ID
 	pool, colorSpace            uintptr
 	width, height               int
@@ -199,7 +200,14 @@ func (w *writer) appendImage(ctx context.Context, im uintptr, n int) error {
 		return errors.New("nativeav: cannot create pixel buffer drawing context")
 	}
 	cgContextSetInterpolationQuality(cg, 3) // kCGInterpolationHigh
-	cgContextDrawImage(cg, cgRect{Size: cgSize{float64(w.width), float64(w.height)}}, im)
+	rect := cgRect{Size: cgSize{float64(w.width), float64(w.height)}}
+	if w.cover {
+		sw, sh := float64(cgImageGetWidth(im)), float64(cgImageGetHeight(im))
+		scale := max(float64(w.width)/sw, float64(w.height)/sh)
+		rect.Size = cgSize{sw * scale, sh * scale}
+		rect.Origin = cgPoint{(float64(w.width) - rect.Size.Width) / 2, (float64(w.height) - rect.Size.Height) / 2}
+	}
+	cgContextDrawImage(cg, rect, im)
 	cgContextRelease(cg)
 	if status := cvPixelBufferUnlockBaseAddress(p, 0); status != 0 {
 		return fmt.Errorf("nativeav: cannot unlock pixel buffer (%d)", status)
@@ -209,6 +217,20 @@ func (w *writer) appendImage(ctx context.Context, im uintptr, n int) error {
 func (w *writer) appendRGBA(ctx context.Context, im *image.RGBA, n int) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if w.cover {
+		b := im.Bounds()
+		sw, sh := b.Dx(), b.Dy()
+		if sw*w.height > sh*w.width {
+			cw := max(1, sh*w.width/w.height)
+			b.Min.X += (sw - cw) / 2
+			b.Max.X = b.Min.X + cw
+		} else {
+			ch := max(1, sw*w.height/w.width)
+			b.Min.Y += (sh - ch) / 2
+			b.Max.Y = b.Min.Y + ch
+		}
+		im = im.SubImage(b).(*image.RGBA)
 	}
 	src := im
 	if im.Bounds().Dx() != w.width || im.Bounds().Dy() != w.height {
