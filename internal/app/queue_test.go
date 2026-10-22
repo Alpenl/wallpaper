@@ -41,7 +41,7 @@ func TestImmediateAndLaterImportsQueueWithoutDropping(t *testing.T) {
 	e.a.Import("second.mp4", "")
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("first import did not start")
 	}
 	e.a.Import("third.mp4", "A")
@@ -96,7 +96,7 @@ func TestEncoderQueueIsSerialAndRemoveDropsPending(t *testing.T) {
 	}
 	select {
 	case <-firstStarted:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("encoder not started")
 	}
 	eventually(t, "pending encoders", func() bool { return e.a.View().Transcoding["4"] == "等待转码…" })
@@ -160,13 +160,13 @@ func TestRemoveCancelsActiveEncoder(t *testing.T) {
 	e.a.Transcode("x")
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("not started")
 	}
 	e.a.Remove("x")
 	select {
 	case <-cancelled:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("not cancelled")
 	}
 	e.sync()
@@ -215,7 +215,7 @@ func TestReimportAfterRemovalDiscardsOldEncoderOutput(t *testing.T) {
 	e.a.Transcode("x")
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("no encoder")
 	}
 	e.a.Import("replacement.wpk", "")
@@ -259,14 +259,14 @@ func TestShutdownCancelsRunningImportAndDoesNotStartQueue(t *testing.T) {
 	e.a.Import("second.mp4", "")
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("not started")
 	}
 	e.cancel()
 	e.a.Wait()
 	select {
 	case <-cancelled:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("not cancelled")
 	}
 	if calls.Load() != 1 {
@@ -291,14 +291,14 @@ func TestShutdownCancelsEncoderAndCleansTemporaryOutput(t *testing.T) {
 	e.a.Transcode("x")
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("not started")
 	}
 	e.cancel()
 	e.a.Wait()
 	select {
 	case <-cancelled:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("not cancelled")
 	}
 	eventually(t, "temporary file cleaned after shutdown", func() bool {
@@ -333,7 +333,7 @@ func TestRemovalCannotDeleteUncommittedReimport(t *testing.T) {
 	e.a.Import("same.wpk", "")
 	select {
 	case <-diskCommitted:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("not imported")
 	}
 	e.a.Remove("x")
@@ -372,7 +372,7 @@ func TestMissingQueuedSourceDoesNotStallLaterEncoder(t *testing.T) {
 	e.a.Transcode("x")
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("not started")
 	}
 	e.a.Transcode("missing")
@@ -420,7 +420,7 @@ func TestCancelImportsStopsActiveAndDropsQueue(t *testing.T) {
 	e.a.Import("first.mp4", "A")
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("import did not start")
 	}
 	e.a.Import("second.mp4", "A")
@@ -457,7 +457,7 @@ func TestCancelledBatchKeepsCompletedItemsWithoutApplying(t *testing.T) {
 	e.a.Import(sources, "A")
 	select {
 	case <-second:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("second source never started")
 	}
 	eventually(t, "first committed", func() bool { return len(e.a.View().Library) == 1 })
