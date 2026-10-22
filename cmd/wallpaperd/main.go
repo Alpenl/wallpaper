@@ -144,7 +144,9 @@ func main() {
 		e.store.State.Starts = nil
 		st := e.store.State.Clone()
 		e.store.StateSaver.Schedule(func() any { return st })
-		e.store.FlushAll()
+		if flushErr := e.store.FlushAll(); flushErr != nil {
+			fmt.Fprintln(os.Stderr, "config shutdown:", flushErr)
+		}
 		e.close()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -194,12 +196,13 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 	platInit(log)
 	store, err := config.Open(paths)
 	if err != nil {
+		if closeErr := lw.Close(); closeErr != nil {
+			fmt.Fprintln(os.Stderr, "logger:", closeErr)
+		}
 		return nil, err
 	}
 	safe := store.State.EnterSafeMode(time.Now())
 	st := store.State.Clone()
-	store.StateSaver.Schedule(func() any { return st })
-	store.StateSaver.Flush()
 	if safe {
 		log.Warn("safe mode: too many unclean starts")
 	}
@@ -240,6 +243,9 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 			opts.CanTranscodeGIF = e.encoderCapabilities(cfg).GIF
 			return importer.Import(ctx, src, opts)
 		}})
+	store.SetOnError(e.app.ReportPersistenceError)
+	store.StateSaver.Schedule(func() any { return st })
+	_ = store.StateSaver.Flush()
 	return e, nil
 }
 
@@ -335,12 +341,27 @@ func (e *env) exportDiag() (string, error) {
 	e.logw.Sync()
 	dst := filepath.Join(filepath.Dir(e.paths.Logs), "diagnostics-"+time.Now().Format("20060102-150405")+".zip")
 	cfgs := []string{filepath.Join(e.paths.Config, "config.json"), filepath.Join(e.paths.Config, "state.json")}
+	// A separate file keeps logger health available even when its own writer fails.
+	status := struct {
+		Error   string `json:"error"`
+		Dropped uint64 `json:"dropped"`
+	}{Dropped: e.logw.Dropped()}
+	if err := e.logw.Err(); err != nil {
+		status.Error = err.Error()
+	}
+	statusPath := filepath.Join(e.paths.Logs, "logger-status.json")
+	if err := config.WriteAtomic(statusPath, status); err != nil {
+		return dst, err
+	}
+	cfgs = append(cfgs, statusPath)
 	return dst, telemetry.ExportDiagnostics(e.paths.Logs, cfgs, dst, build)
 }
 
 func (e *env) close() {
-	e.logw.Sync()
-	e.logw.Close()
+	err := e.logw.Close()
+	if dropped := e.logw.Dropped(); err != nil || dropped > 0 {
+		fmt.Fprintf(os.Stderr, "logger: error=%v dropped=%d\n", err, dropped)
+	}
 }
 
 func runHeadless(f *flags) int {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -218,5 +219,122 @@ func TestConfigAndAssignmentsFutureSchemaUnchanged(t *testing.T) {
 				t.Fatal("future schema file changed")
 			}
 		})
+	}
+}
+func TestLegacyCrashReportsFixture(t *testing.T) {
+	b, err := os.ReadFile("testdata/legacy-crash-reports.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err = os.WriteFile(path, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := Defaults()
+	if err = Load(path, ConfigVersion, nil, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.UI.Lang != "en" {
+		t.Fatal(c.UI)
+	}
+	if err = WriteAtomic(path, c); err != nil {
+		t.Fatal(err)
+	}
+	b, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "crashReports") {
+		t.Fatal(string(b))
+	}
+}
+func TestBackupFailures(t *testing.T) {
+	for _, suffix := range []string{".bak", ".v0"} {
+		t.Run(suffix, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			original := []byte(`{"schemaVersion":0,"value":"original"}`)
+			if err := os.WriteFile(path, original, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path+suffix, 0700); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			called := false
+			if suffix == ".bak" {
+				s := &Saver{Path: path, Delay: time.Hour}
+				var reported error
+				s.OnError = func(err error) { reported = err }
+				s.Schedule(func() any { return Defaults() })
+				err = s.Flush()
+				if err == nil || reported != err || !strings.Contains(err.Error(), "save succeeded but backup failed") {
+					t.Fatalf("err=%v reported=%v", err, reported)
+				}
+			} else {
+				var result Config
+				err = Load(path, 1, map[int]Migration{0: func(map[string]any) error { called = true; return nil }}, &result)
+			}
+			if err == nil || called {
+				t.Fatalf("err=%v migration called=%v", err, called)
+			}
+			got, readErr := os.ReadFile(path)
+			expected := original
+			if suffix == ".bak" {
+				expected, _ = json.MarshalIndent(Defaults(), "", "  ")
+			}
+			if readErr != nil || string(got) != string(expected) {
+				t.Fatalf("source changed: %s %v", got, readErr)
+			}
+		})
+	}
+}
+func TestStoreReportsTimerAndShutdownFailures(t *testing.T) {
+	s, err := Open(under(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	timerErr := errors.New("timer writer failed")
+	shutdownErr := errors.New("shutdown writer failed")
+	reported := make(chan error, 8)
+	s.SetOnError(func(err error) { reported <- err })
+	s.ConfigSaver.Delay = time.Nanosecond
+	s.ConfigSaver.writeAtomic = func(string, any) error { return timerErr }
+	s.ConfigSaver.Schedule(func() any { return Defaults() })
+	if err := awaitSaverResult(t, reported); !errors.Is(err, timerErr) {
+		t.Fatal(err)
+	}
+	s.StateSaver.writeAtomic = func(string, any) error { return shutdownErr }
+	s.StateSaver.Schedule(func() any { return State{} })
+	err = s.FlushAll()
+	if !errors.Is(err, timerErr) || !errors.Is(err, shutdownErr) {
+		t.Fatal(err)
+	}
+	// A successful replacement clears the outstanding persistence failure.
+	s.ConfigSaver.writeAtomic = func(string, any) error { return nil }
+	s.ConfigSaver.Schedule(func() any { return Defaults() })
+	if err = s.ConfigSaver.Flush(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestErrorCallbackFlushWithoutPendingDoesNotRecurse(t *testing.T) {
+	want := errors.New("write failed")
+	s := &Saver{Delay: time.Hour, writeAtomic: func(string, any) error { return want }}
+	calls := 0
+	s.OnError = func(err error) {
+		calls++
+		if calls > 1 {
+			t.Fatal("callback recursed")
+		}
+		if err := s.Flush(); !errors.Is(err, want) {
+			t.Fatal(err)
+		}
+	}
+	s.Schedule(func() any { return 1 })
+	if err := s.Flush(); !errors.Is(err, want) {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatal(calls)
 	}
 }
