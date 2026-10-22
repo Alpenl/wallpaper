@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	"wpapp/internal/ipc"
+	"wpapp/internal/wpk"
 )
 
 var ole = syscall.NewLazyDLL("ole32.dll")
@@ -198,51 +199,89 @@ func (w *winView) Load(x loadRequest) error {
 	if e != nil {
 		return e
 	}
+	// Keep temporary COM references until Load returns, in the original LIFO order.
+	l := &winLoadState{}
+	defer l.close()
+	if e = w.createEnvironment(l); e != nil {
+		return e
+	}
+	if e = w.createController(l, x.Native); e != nil {
+		return e
+	}
+	if e = w.configureSecurity(l, x, m); e != nil {
+		return e
+	}
+	if e = w.configureRequests(l); e != nil {
+		return e
+	}
+	if e = w.configureNavigation(l, m.Web.Transparent); e != nil {
+		return e
+	}
+	return w.navigateInitial(l, x, m)
+}
+
+// winLoadState retains async callback state and temporary COM references for Load.
+type winLoadState struct {
+	done     bool
+	asyncErr error
+	refs     []uintptr
+}
+
+func (l *winLoadState) close() {
+	for i := len(l.refs) - 1; i >= 0; i-- {
+		release(l.refs[i])
+	}
+}
+
+func (w *winView) createEnvironment(l *winLoadState) error {
 	create, e := runtimeCreate()
 	if e != nil {
 		return e
 	}
-	done := false
-	var asyncErr error
 	h := handler(func(result, env uintptr) uintptr {
-		asyncErr = hr(result)
-		if asyncErr == nil {
+		l.asyncErr = hr(result)
+		if l.asyncErr == nil {
 			w.env = env
 			com(env, 1)
 		}
-		done = true
+		l.done = true
 		return 0
 	})
-	defer release(h)
+	l.refs = append(l.refs, h)
 	v := create(w.dir, h)
 	if e = hr(v); e != nil {
 		return e
 	}
-	if e = await(&done); e != nil {
+	if e = await(&l.done); e != nil {
 		return e
 	}
-	if asyncErr != nil {
-		return asyncErr
+	if l.asyncErr != nil {
+		return l.asyncErr
 	}
-	done = false
-	h = handler(func(result, ctl uintptr) uintptr {
-		asyncErr = hr(result)
-		if asyncErr == nil {
+	return nil
+}
+
+func (w *winView) createController(l *winLoadState, parent uintptr) error {
+	var e error
+	l.done = false
+	h := handler(func(result, ctl uintptr) uintptr {
+		l.asyncErr = hr(result)
+		if l.asyncErr == nil {
 			w.ctl = ctl
 			com(ctl, 1)
 		}
-		done = true
+		l.done = true
 		return 0
 	})
-	defer release(h)
-	if e = hr(com(w.env, 3, x.Native, h)); e != nil {
+	l.refs = append(l.refs, h)
+	if e = hr(com(w.env, 3, parent, h)); e != nil {
 		return e
 	}
-	if e = await(&done); e != nil {
+	if e = await(&l.done); e != nil {
 		return e
 	}
-	if asyncErr != nil {
-		return asyncErr
+	if l.asyncErr != nil {
+		return l.asyncErr
 	}
 	if e = hr(com(w.ctl, 25, ptr(&w.wv))); e != nil {
 		return e
@@ -255,12 +294,17 @@ func (w *winView) Load(x loadRequest) error {
 	if e != nil {
 		return e
 	}
+	return nil
+}
+
+func (w *winView) configureSecurity(l *winLoadState, x loadRequest, m *wpk.Manifest) error {
+	var e error
 	// Security configuration is fail-closed: every required COM call is checked.
 	var settings uintptr
 	if e = hr(com(w.wv, 3, ptr(&settings))); e != nil {
 		return e
 	}
-	defer release(settings)
+	l.refs = append(l.refs, settings)
 	for _, index := range []int{6, 8, 10, 12, 14, 16, 18} {
 		if e = hr(com(settings, index, 0)); e != nil {
 			return e
@@ -270,13 +314,7 @@ func (w *winView) Load(x loadRequest) error {
 	if e = hr(com(w.wv3, 71, wide(m.ID+".wpk.invalid"), wide(contentDir(x, m)), 2)); e != nil {
 		return e
 	}
-	add := func(obj uintptr, index int, fn func(uintptr, uintptr) uintptr) error {
-		var token int64
-		h := handler(fn)
-		defer release(h)
-		return hr(com(obj, index, h, ptr(&token)))
-	}
-	if e = add(w.wv, 7, func(_, args uintptr) uintptr {
+	if e = addWebHandler(w.wv, 7, func(_, args uintptr) uintptr {
 		if !AllowNavigation(w.origin, comString(args, 3), false) {
 			return com(args, 8, 1)
 		}
@@ -284,7 +322,7 @@ func (w *winView) Load(x loadRequest) error {
 	}); e != nil {
 		return e
 	}
-	if e = add(w.wv, 11, func(_, args uintptr) uintptr {
+	if e = addWebHandler(w.wv, 11, func(_, args uintptr) uintptr {
 		if !AllowNavigation(w.origin, comString(args, 3), false) {
 			return com(args, 8, 1)
 		}
@@ -292,24 +330,35 @@ func (w *winView) Load(x loadRequest) error {
 	}); e != nil {
 		return e
 	}
-	if e = add(w.wv, 44, func(_, args uintptr) uintptr { return com(args, 6, 1) }); e != nil {
+	if e = addWebHandler(w.wv, 44, func(_, args uintptr) uintptr { return com(args, 6, 1) }); e != nil {
 		return e
 	}
-	if e = add(w.wv, 23, func(_, args uintptr) uintptr { return com(args, 7, 2) }); e != nil {
+	if e = addWebHandler(w.wv, 23, func(_, args uintptr) uintptr { return com(args, 7, 2) }); e != nil {
 		return e
 	}
-	if e = add(w.wv4, 75, func(_, args uintptr) uintptr { return com(args, 5, 1) }); e != nil {
+	if e = addWebHandler(w.wv4, 75, func(_, args uintptr) uintptr { return com(args, 5, 1) }); e != nil {
 		return e
 	}
+	return nil
+}
+
+func addWebHandler(obj uintptr, index int, fn func(uintptr, uintptr) uintptr) error {
+	var token int64
+	h := handler(fn)
+	defer release(h)
+	return hr(com(obj, index, h, ptr(&token)))
+}
+
+func (w *winView) configureRequests(l *winLoadState) error {
 	filter, e := query(w.wv, "{DB75DFC7-A857-4632-A398-6969DDE26C0A}")
 	if e != nil {
 		return fmt.Errorf("WebView2 Runtime is too old for worker request isolation: %w", e)
 	}
-	defer release(filter)
+	l.refs = append(l.refs, filter)
 	if e = hr(com(filter, 123, wide("*"), 0, 0xffffffff)); e != nil {
 		return e
 	}
-	if e = add(w.wv, 55, func(_, args uintptr) uintptr {
+	if e = addWebHandler(w.wv, 55, func(_, args uintptr) uintptr {
 		var req uintptr
 		if hr(com(args, 3, ptr(&req))) != nil {
 			return 0x80004005
@@ -328,7 +377,12 @@ func (w *winView) Load(x loadRequest) error {
 	}); e != nil {
 		return e
 	}
-	if e = add(w.wv, 15, func(_, args uintptr) uintptr {
+	return nil
+}
+
+func (w *winView) configureNavigation(l *winLoadState, transparent bool) error {
+	var e error
+	if e = addWebHandler(w.wv, 15, func(_, args uintptr) uintptr {
 		var success int32
 		if hr(com(args, 3, ptr(&success))) != nil || success == 0 {
 			w.navigationErr = fmt.Errorf("WebView2 navigation failed")
@@ -346,11 +400,11 @@ func (w *winView) Load(x loadRequest) error {
 	if e != nil {
 		return e
 	}
-	defer release(audio)
+	l.refs = append(l.refs, audio)
 	if e = hr(com(audio, 84, 1)); e != nil {
 		return e
 	}
-	if m.Web.Transparent {
+	if transparent {
 		ctl2, e := query(w.ctl, "{C979903E-D4CA-4228-92EB-47EE3FA96EAB}")
 		if e != nil {
 			return e
@@ -361,18 +415,23 @@ func (w *winView) Load(x loadRequest) error {
 			return e
 		}
 	}
-	done = false
-	asyncErr = nil
-	h = handler(func(result, _ uintptr) uintptr { asyncErr = hr(result); done = true; return 0 })
-	defer release(h)
+	return nil
+}
+
+func (w *winView) navigateInitial(l *winLoadState, x loadRequest, m *wpk.Manifest) error {
+	var e error
+	l.done = false
+	l.asyncErr = nil
+	h := handler(func(result, _ uintptr) uintptr { l.asyncErr = hr(result); l.done = true; return 0 })
+	l.refs = append(l.refs, h)
 	if e = hr(com(w.wv, 27, wide(bootstrapScript(w.token, w.fps)), h)); e != nil {
 		return e
 	}
-	if e = await(&done); e != nil {
+	if e = await(&l.done); e != nil {
 		return e
 	}
-	if asyncErr != nil {
-		return asyncErr
+	if l.asyncErr != nil {
+		return l.asyncErr
 	}
 	bounds := struct{ L, T, R, B int32 }{0, 0, int32(x.Bounds.Dx()), int32(x.Bounds.Dy())}
 	if e = hr(com(w.ctl, 6, ptr(&bounds))); e != nil {
@@ -389,6 +448,7 @@ func (w *winView) Load(x loadRequest) error {
 	}
 	return w.Pause(x.Paused)
 }
+
 func (w *winView) Script(s string) error { return hr(com(w.wv, 29, wide(s), 0)) }
 func (w *winView) Pause(paused bool) error {
 	if w.paused == paused {
