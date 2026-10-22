@@ -31,6 +31,7 @@ var english = map[string]string{
 	"速度":        "Speed",
 	"详细信息":      "Details",
 	"目标显示器":     "Target display",
+	"开始使用":      "Get started",
 	"选择显示器":     "Select display",
 	"导入文件夹":     "Import folder",
 	"排序":        "Sort",

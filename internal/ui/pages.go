@@ -16,7 +16,7 @@ func (s *Settings) set(fn func(*config.Config)) { s.ctl.UpdateConfig(fn) }
 func (s *Settings) switchRow(c *ui.Context, key, title, desc string, on bool, set func(*config.Config, bool)) {
 	settingRow(c, title, desc, func() {
 		b := on
-		if ui.Checkbox(c.Key(key), &b, "").Label(tr(c, title+" 开关")).Changed() {
+		if ui.Switch(c.Key(key), &b).Label(tr(c, title+" 开关")).Changed() {
 			s.set(func(x *config.Config) { set(x, b) })
 		}
 	})
@@ -39,7 +39,7 @@ func (s *Settings) perf(c *ui.Context, v app.View) {
 				for _, p := range profiles {
 					p := p
 					sel := cfg.Perf.Profile == p.id
-					b := ui.Column(c.Key("p"+p.id)).Grow(1).Basis(0).Padding(14).Gap(4).Radius(2).Background(t.Surface).Border(1, t.Border).Cursor(ui.CursorPointer).Children(func() {
+					b := ui.Column(c.Key("p"+p.id)).Grow(1).Basis(0).Padding(16).Gap(4).Radius(12).Background(raisedBg(t)).Border(1, t.Border).Cursor(ui.CursorPointer).Children(func() {
 						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 							text(c, p.name).Bold().FontSize(14).Grow(1)
 						})
@@ -216,7 +216,7 @@ func (s *Settings) pause(c *ui.Context, v app.View) {
 		card(c.Key("auto"), "自动暂停", "", func() {
 			settingRow(c, "暂停全部壁纸", "手动暂停，和托盘菜单里的“暂停全部”相同", func() {
 				b := v.PausedAll
-				if ui.Checkbox(c.Key("all"), &b, "").Label(tr(c, "暂停全部壁纸")).Changed() {
+				if ui.Switch(c.Key("all"), &b).Label(tr(c, "暂停全部壁纸")).Changed() {
 					s.ctl.SetPausedAll(b)
 				}
 			})
@@ -228,7 +228,7 @@ func (s *Settings) pause(c *ui.Context, v app.View) {
 			} {
 				settingRow(c, r.title, r.desc, func() {
 					b := true
-					ui.Checkbox(c.Key(r.k), &b, "").Label(tr(c, r.title)).Disabled(true)
+					ui.Switch(c.Key(r.k), &b).Label(tr(c, r.title)).Disabled(true)
 				})
 			}
 		})
@@ -265,7 +265,7 @@ func (s *Settings) powerSections(c *ui.Context, v app.View) {
 	cfg := v.Config
 	ui.Row(c.Key("now")).Gap(12).Children(func() {
 		stat := func(k, label, val string, col ui.Color) {
-			ui.Column(c.Key(k)).Grow(1).Basis(0).Padding(14, 16).Gap(4).Radius(3).Background(cardBg(t)).Border(1, t.Border).Children(func() {
+			ui.Column(c.Key(k)).Grow(1).Basis(0).Padding(14, 16).Gap(4).Radius(12).Background(raisedBg(t)).Border(1, t.Border).Children(func() {
 				text(c, label).FontSize(12).TextColor(t.TextMuted)
 				text(c, val).Bold().FontSize(16).TextColor(col)
 			})
@@ -328,7 +328,7 @@ func (s *Settings) powerSections(c *ui.Context, v app.View) {
 		} {
 			settingRow(c, r.title, tr(c, r.desc)+" · "+tr(c, "始终启用"), func() {
 				b := true
-				ui.Checkbox(c.Key(r.k), &b, "").Label(tr(c, r.title)).Disabled(true)
+				ui.Switch(c.Key(r.k), &b).Label(tr(c, r.title)).Disabled(true)
 			})
 		}
 	})
@@ -352,7 +352,7 @@ func (s *Settings) look(c *ui.Context, v app.View) {
 				ui.Row(c.Key("acc")).Gap(8).Children(func() {
 					for _, a := range accents {
 						a := a
-						sw := ui.Box(c.Key("a"+a.id)).Size(24, 24).Radius(2).Background(ui.Hex(a.hex)).Cursor(ui.CursorPointer).Label(tr(c, a.name)).Tooltip(tr(c, a.name))
+						sw := ui.Box(c.Key("a"+a.id)).Size(24, 24).Radius(12).Background(ui.Hex(a.hex)).Cursor(ui.CursorPointer).Label(tr(c, a.name)).Tooltip(tr(c, a.name))
 						if cfg.UI.Accent == a.id {
 							sw.Border(3, t.Text.Alpha(0.6))
 						}
@@ -402,7 +402,7 @@ func (s *Settings) look(c *ui.Context, v app.View) {
 		card(c.Key("boot"), "启动", "", func() {
 			settingRow(c, "开机自动启动", "Windows：当前用户的 Run 项；macOS：登录项。默认关闭（F-10）", func() {
 				b := cfg.Startup.LaunchAtLogin
-				if ui.Checkbox(c.Key("login"), &b, "").Label(tr(c, "开机自动启动 开关")).Disabled(s.SetLaunchAtLogin == nil).Changed() {
+				if ui.Switch(c.Key("login"), &b).Label(tr(c, "开机自动启动 开关")).Disabled(s.SetLaunchAtLogin == nil).Changed() {
 					s.set(func(x *config.Config) { x.Startup.LaunchAtLogin = b; x.Startup.Asked = true })
 				}
 			})
@@ -676,7 +676,7 @@ func (s *Settings) diagSections(c *ui.Context, v app.View) {
 func (s *Settings) about(c *ui.Context, v app.View) {
 	t := c.Theme()
 	page(c, "关于与诊断", "版本信息、运行状态与本地诊断", nil, func() {
-		ui.Row(c.Key("hero")).Gap(16).Padding(20).Radius(3).Background(panelBg(t)).Border(1, t.Border).AlignItems(ui.Center).Children(func() {
+		ui.Row(c.Key("hero")).Gap(16).Padding(20).Radius(14).Background(panelBg(t)).Border(1, t.Border).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Gap(4).Grow(1).Children(func() {
 				text(c, "动态壁纸").Bold().FontSize(20)
 				textf(c, "版本 %s · %s", s.Info.Version, s.Info.Platform).FontSize(13).TextColor(t.TextMuted)

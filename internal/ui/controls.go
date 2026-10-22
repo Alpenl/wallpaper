@@ -13,7 +13,7 @@ import (
 func (s *Settings) switchRowDisabled(c *ui.Context, key, title, desc string, on, disabled bool, set func(*config.Config, bool)) {
 	settingRow(c, title, desc, func() {
 		b := on
-		if ui.Checkbox(c.Key(key), &b, "").Label(tr(c, title+" 开关")).Disabled(disabled).Changed() {
+		if ui.Switch(c.Key(key), &b).Label(tr(c, title+" 开关")).Disabled(disabled).Changed() {
 			s.set(func(x *config.Config) { set(x, b) })
 		}
 	})

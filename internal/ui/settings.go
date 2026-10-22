@@ -122,6 +122,7 @@ type Settings struct {
 	renameBuf       string
 	diagMsg         string
 	thumbs          map[string]thumb
+	ambients        map[string]ambientBitmap
 	themeKey        string
 	theme           *ui.Theme
 	resetAsk        bool
@@ -319,7 +320,7 @@ func (s *Settings) banners(c *ui.Context, v app.View) {
 
 func banner(c *ui.Context, col ui.Color, title, msg string, action func()) {
 	t := c.Theme()
-	ui.Row(c).Gap(12).Padding(10, 14).Radius(3).AlignItems(ui.Center).Background(col.Alpha(0.12)).Border(1, col.Alpha(0.30)).Children(func() {
+	ui.Row(c).Gap(12).Padding(12, 16).Radius(12).AlignItems(ui.Center).Background(col.Alpha(0.10)).Border(1, col.Alpha(0.28)).Children(func() {
 		ui.Box(c).Size(4, 28).Radius(2).Background(col).Children(func() {})
 		ui.Column(c).Grow(1).Children(func() {
 			text(c, title).Bold().FontSize(13)
@@ -342,7 +343,7 @@ func page(c *ui.Context, title, sub string, actions func(), body func()) {
 	ui.Row(c.Key("hdr")).Shrink(0).Padding(20, 32, 12, 32).Justify(ui.Center).Children(func() {
 		ui.Row(c).Grow(1).MaxWidth(pageWidth).Gap(12).AlignItems(ui.End).Children(func() {
 			ui.Column(c).Grow(1).Shrink(1).Gap(4).Children(func() {
-				heading(c, tr(c, title), 22)
+				heading(c, tr(c, title), 24)
 				if sub != "" {
 					text(c, sub).FontSize(13).TextColor(t.TextMuted).Wrap()
 				}
@@ -362,25 +363,25 @@ func page(c *ui.Context, title, sub string, actions func(), body func()) {
 // card 是设置分组卡片。
 func card(c *ui.Context, title, desc string, body func()) {
 	t := c.Theme()
-	ui.Column(c).Radius(3).Background(panelBg(t)).Border(1, lineColor(t)).Children(func() {
+	ui.Column(c).Radius(14).Background(panelBg(t)).Border(1, lineColor(t)).Children(func() {
 		if title != "" {
-			ui.Column(c).Padding(14, 18, 4, 18).Gap(2).Children(func() {
-				text(c, title).FontSize(15).FontWeight(500)
+			ui.Column(c).Padding(16, 20, 4, 20).Gap(3).Children(func() {
+				text(c, title).FontSize(15).FontWeight(600)
 				if desc != "" {
 					text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap()
 				}
 			})
 		}
-		ui.Column(c).Padding(2, 18, 10, 18).Children(body)
+		ui.Column(c).Padding(2, 20, 8, 20).Children(body)
 	})
 }
 
 // settingRow 是“标题 + 说明 | 控件”一行。
 func settingRow(c *ui.Context, title, desc string, control func()) {
 	t := c.Theme()
-	ui.Row(c).Gap(16).Padding(10, 0).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(lineColor(t)).Children(func() {
-		ui.Column(c).Grow(1).Shrink(1).Children(func() {
-			text(c, title).FontSize(13)
+	ui.Row(c).Gap(16).Padding(12, 0).MinHeight(52).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(lineColor(t)).Children(func() {
+		ui.Column(c).Grow(1).Shrink(1).Gap(2).Children(func() {
+			text(c, title).FontSize(13).FontWeight(500)
 			if desc != "" {
 				text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap()
 			}
@@ -391,7 +392,7 @@ func settingRow(c *ui.Context, title, desc string, control func()) {
 
 // chip 是小标签。
 func chip(c *ui.Context, label string, col ui.Color) ui.Element {
-	return text(c, label).FontSize(11).Padding(2, 7).Radius(2).Background(col.Alpha(0.16)).TextColor(col).SingleLine()
+	return text(c, label).FontSize(11).FontWeight(600).Padding(2, 8).Radius(6).Background(col.Alpha(0.14)).TextColor(col).SingleLine()
 }
 
 func itoa(n int) string {
