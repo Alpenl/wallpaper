@@ -22,7 +22,6 @@ var (
 	pSetInformationJobObject  = kernel32.NewProc("SetInformationJobObject")
 	pAssignProcessToJobObject = kernel32.NewProc("AssignProcessToJobObject")
 	pGetCurrentProcess        = kernel32.NewProc("GetCurrentProcess")
-	pIsProcessInJob           = kernel32.NewProc("IsProcessInJob")
 	pCreateNamedPipeW         = kernel32.NewProc("CreateNamedPipeW")
 	pConnectNamedPipe         = kernel32.NewProc("ConnectNamedPipe")
 	pCreateEventW             = kernel32.NewProc("CreateEventW")
@@ -60,13 +59,6 @@ func SetupJob() error {
 		return fmt.Errorf("AssignProcessToJobObject: %v", err)
 	}
 	return nil // 作业句柄有意不关闭：关闭即结束全部进程
-}
-
-// InJob 报告本进程是否在作业里。
-func InJob() bool {
-	var r int32
-	pIsProcessInJob.Call(^uintptr(0), 0, uintptr(unsafe.Pointer(&r)))
-	return r != 0
 }
 
 // RegisterRestart 调用 RegisterApplicationRestart（2.5 第 3 条，交给 WER 在崩溃/无响应后重启）。

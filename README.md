@@ -34,7 +34,7 @@ go run ./cmd/wallpaperd
 - Windows 默认视频后端需要 mpv，可选系统 Media Foundation；Linux 视频后端使用 mpv；macOS 播放使用系统 AVFoundation。
 - mpv 查找顺序：`config.render.mpvPath` → 可执行目录下 `mpv/mpv(.exe)` → 同目录 `mpv(.exe)` → `PATH`。
 - 转码：macOS 默认使用应用自身的隔离 AVFoundation helper，无需安装 ffmpeg；用户可显式选择带 `h264_videotoolbox` 的 ffmpeg。Windows 的可选转码功能使用用户安装且带 `h264_mf` 的 ffmpeg，不回退到软件编码器；Linux 保留外部 ffmpeg 软件兼容路线。不暗中下载或捆绑编码器。
-- 转码目标可选主屏当前模式像素尺寸或 1080p/1440p/2160p；严格路线输出偶数尺寸、保比例、不放大小图、H.264 30fps 无音轨，并验证产物后才发布。当前每素材一份共享产物，不等于设计中的按屏多版本缓存。`avconvert` 仅为能力不足的有限回退，不保证固定帧率、目标尺寸或去音轨，不支持 GIF。详见 [转码路线与限制](internal/transcode/README.md)。
+- 转码目标可选主屏当前模式像素尺寸或 1080p/1440p/2160p；严格路线输出偶数尺寸、保比例、不放大小图、H.264 30fps 无音轨，并验证产物后才发布。共享转码产物之外，独立显示器在有效 fill 且静音时，按自身 backing 像素懒生成 center-cover rendition；素材修订、目标尺寸、裁切与变换版本相同则复用同一 key，缓存位于 `cache/<id>/renditions/<key>/`，含 `video.mp4` 与校验后发布的 manifest。无可用缓存时保留共享入口或原文件回退；混合 DPI、热插拔与暂停换源仍需真机验收。`avconvert` 仅为能力不足的有限回退，不保证固定帧率、目标尺寸或去音轨，不支持 GIF。详见 [转码路线与限制](internal/transcode/README.md)。
 - `WPAPP_HOME=dir` 将配置、库、缓存和日志重定向到该目录，适合便携运行/隔离测试。一般导入默认只加入库，不自动覆盖桌面；“导入后动作”可配置。
 - 正常启动是托盘+设置窗口，有单实例处理。`-headless` 用于测试，不等于平台支持全部桌面行为，macOS 的 AppKit 路径需要正常主线程循环。
 - `-export-diagnostics` 导出本地诊断；`-update-apply` / `-update-rollback` 是更新/回滚入口；`-helper`、`-mfhost` 属于内部子进程参数。

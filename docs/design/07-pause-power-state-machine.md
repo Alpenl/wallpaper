@@ -80,7 +80,7 @@
 - 探针空闲时必须是事件驱动；兜底轮询每次 < 1 ms CPU（Windows 网格计算，窗口数量 < 200）。目标是探针总开销 < 0.002 核【推断，目标】，由 TEST_PLAN 的 baseline 对比验证。
 - macOS 的 CGWindowList 每次调用的开销还**没有实测数据**（Q-M6）。所以只有在可能发生变化的事件之后（Space 切换、应用激活或停用、窗口移动结束），才按 500 ms 节奏采样 3 次，平时不轮询【推断】。
 
-## 7.7 测试向量（实现时写成单元测试，`visibility/machine_test.go`）
+## 7.7 测试向量（历史规格；当前生产测试见 [internal/visibility](../../internal/visibility/)）
 1. Covered 抖动：0→1→0→1，间隔 100 ms → 进入 L1（快停）；最后一次 0 之后 300 ms 内不恢复。
    **v1.1 澄清**：Covered 有 150 ms 进入去抖，间隔 100 ms 的抖动不会进入暂停；最后一次变 1 并稳定 150 ms 后进入 L1。之后变 0：299 ms 时仍为 L1，满 300 ms 恢复。
 2. Locked 时间超过 t23 → 直接 L3；解锁后 300 ms 回到 L0，并且 seek 到保存的位置。
@@ -90,7 +90,7 @@
 5. LowBattery → L4；接上电源 → L0。
 
 ## 7.8 v1.1 修订（第 18 轮：把规格写成 `visibility/` Go 包时发现的漏洞）
-实现：`visibility/machine.go`（纯逻辑、时间由调用方注入），测试：`visibility/machine_test.go`，28 个测试全部通过，语句覆盖率 98.2%，`-race` 通过【实测，box】。
+历史实验的 `visibility/machine.go` / `visibility/machine_test.go` 曾记录 28 个测试全部通过、语句覆盖率 98.2%、`-race` 通过【历史实测，box】。副本已删除，当前 checkout 不能重跑这些旧结果；源码与恢复方法见[历史索引](visibility/README.md)及 Git 历史。当前生产实现与测试位于 [`internal/visibility`](../../internal/visibility/)，须独立验证，不继承上述覆盖率。
 | # | 漏洞 | v1.1 规则 | 对应测试 |
 |---|---|---|---|
 | 1 | 向量 1 与 `coverEnterDebounce=150ms` 冲突：100 ms 抖动下“快停”无法成立 | 进入去抖按原因计算；抖动期间不暂停，稳定后进入 | `TestVector1*` |

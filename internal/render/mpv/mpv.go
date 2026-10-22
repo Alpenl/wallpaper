@@ -467,13 +467,6 @@ func (r *Renderer) Snapshot(path string) error {
 func (r *Renderer) Stats() render.Stats { return r.stats.Load().(render.Stats) }
 func (r *Renderer) Done() <-chan error  { return r.done }
 
-// Position 返回最近一次已知的播放位置（续播用）。
-func (r *Renderer) Position() float64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.pos
-}
-
 // WaitFirstFrame 等待第一次 playback-restart（测试与诊断用）。
 func (r *Renderer) WaitFirstFrame(d time.Duration) bool {
 	r.mu.Lock()

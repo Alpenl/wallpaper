@@ -1989,6 +1989,3 @@ func (a *App) beginTranscode(itemID string) {
 
 // Wait 等待事件循环结束。
 func (a *App) Wait() { <-a.stopped }
-
-// ErrNoDisplays 在宿主没有显示器时返回。
-var ErrNoDisplays = errors.New("app: no displays")
