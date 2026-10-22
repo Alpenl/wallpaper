@@ -33,6 +33,7 @@ assert 'commit=' + subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=Tr
 assert 'production_update_feed=not-configured' in metadata.splitlines()
 if os.environ.get('GITHUB_SHA'):
     assert 'dirty=false' in metadata.splitlines(), 'Dirty CI release provenance'
+assert Path('dist/package-metadata/LICENSE').read_bytes() == Path('LICENSE').read_bytes(), 'App license differs'
 notices = Path('dist/package-metadata/THIRD-PARTY-NOTICES.txt').read_bytes()
 assert notices and b'THIRD-PARTY NOTICES' in notices
 
@@ -72,7 +73,7 @@ for arch, machine in [('amd64', 0x8664), ('arm64', 0xaa64)]:
         pe(data, machine, unsigned)
         same_payload(data, 'windows-' + arch)
         assert not list(extracted.rglob('mpv.exe')), 'Unexpected bundled mpv'
-        for name in ['RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
+        for name in ['LICENSE', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
             matches = list(extracted.rglob(name))
             assert len(matches) == 1 and matches[0].read_bytes() == (Path('dist/package-metadata') / name).read_bytes(), 'NSIS metadata differs: ' + name
 for arch, cpu in [('amd64', 0x1000007), ('arm64', 0x100000c)]:
@@ -92,12 +93,12 @@ for arch, cpu in [('amd64', 0x1000007), ('arm64', 0x100000c)]:
         assert plist['CFBundleShortVersionString'] == version.split('-')[0]
         assert plist['CFBundleVersion'] == version.split('-')[0]
         assert plist['LSUIElement'] is True
-        for name in ['RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
+        for name in ['LICENSE', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
             assert archive.read('Wallpaper.app/Contents/Resources/' + name) == (Path('dist/package-metadata') / name).read_bytes(), 'App metadata differs: ' + name
 with tarfile.open(root / (base + '-linux-amd64.tar.gz'), 'r:gz') as archive:
     prefix = base + '-linux-amd64/'
     names = [m.name for m in archive.getmembers()]
-    assert set(names) == {prefix + n for n in ['wallpaperd', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']}
+    assert set(names) == {prefix + n for n in ['wallpaperd', 'LICENSE', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']}
     assert len(names) == len(set(names))
     for member in archive.getmembers():
         assert member.isfile() and '..' not in PurePosixPath(member.name).parts, 'Unsafe tar member'
@@ -106,7 +107,7 @@ with tarfile.open(root / (base + '-linux-amd64.tar.gz'), 'r:gz') as archive:
     data = archive.extractfile(member).read()
     assert data[:4] == b'\x7fELF' and data[4:6] == bytes([2, 1]) and struct.unpack_from('<H', data, 18)[0] == 62, 'Wrong Linux architecture'
     same_payload(data, 'linux-amd64')
-    for name in ['RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
+    for name in ['LICENSE', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
         assert archive.extractfile(prefix + name).read() == (Path('dist/package-metadata') / name).read_bytes(), 'Linux metadata differs: ' + name
 if sys.platform == 'linux':
     native_version = subprocess.check_output([str(Path('dist/linux-amd64/wallpaperd').resolve()), '-version'], text=True).strip()

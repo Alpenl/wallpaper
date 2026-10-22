@@ -26,6 +26,7 @@ SetCompressor /SOLID lzma
 !define MUI_WELCOMEPAGE_TITLE "Wallpaper ${VERSION} (${ARCH})"
 !define MUI_WELCOMEPAGE_TEXT "Native ${ARCH} application. Use the installer matching your Windows architecture.$\r$\n$\r$\nThis developer release does not bundle mpv. Default video playback requires a separately installed mpv; set its executable path in Playback & Performance, under Decode & render.$\r$\n$\r$\nRead RELEASE-NOTES.txt in the install folder for signing, runtime and validation limits."
 !insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_LICENSE "${SRC}/LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN "$INSTDIR\wallpaperd.exe"
@@ -43,6 +44,7 @@ Section "Install"
   File "${SRC}/RELEASE-NOTES.txt"
   File "${SRC}/BUILD-INFO.txt"
   File "${SRC}/THIRD-PARTY-NOTICES.txt"
+  File "${SRC}/LICENSE"
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\uninstall.exe"
   CreateShortCut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\wallpaperd.exe"
@@ -65,6 +67,7 @@ Section "Uninstall"
   Delete "$INSTDIR\RELEASE-NOTES.txt"
   Delete "$INSTDIR\BUILD-INFO.txt"
   Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"
+  Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "${UNINSTKEY}"

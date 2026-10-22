@@ -296,6 +296,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	} else {
 		r.level.Store(0)
 	}
+	// Renderer 拥有统计循环；stop 关闭或 IPC 失败后退出。
 	go r.statsLoop(c, stop, cmd)
 	go func() {
 		defer close(exited)

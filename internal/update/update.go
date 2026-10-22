@@ -7,12 +7,13 @@
 //  1. Check 下载清单和签名，用编译进程序的公钥验签，版本比当前新才返回。
 //  2. Plan 对比本地文件的 SHA-256，只列出变化或新增的文件（增量）。
 //  3. Apply 把这些文件下载到 <dir>/.update/staging 并逐个校验哈希，全部通过才开始替换：
-//     旧文件移到 <dir>/.update/rollback/，新文件移到原位置，写 pending.json。替换中途出错立即回滚。
+//     先持久化 applying 计划，再逐个备份和替换；中断由 Recover 回滚。
 //  4. 新版本启动时调 Boot：pending 存在就累计启动次数，超过 MaxBoots（说明新版本起不来或反复崩溃）自动 Rollback。
-//     稳定运行后调 MarkGood 清掉 pending。用户也可以在设置里手动 Rollback（rollback 目录保留到下一次更新）。
+//     稳定运行后调 MarkGood 标记 good。用户也可以在设置里手动 Rollback（rollback 目录保留到下一次更新）。
 //
 // Windows 上正在运行的 exe 可以改名但不能覆盖，所以替换一律用“先移走旧文件再移入新文件”。
 // macOS .app 的 dir 是 Contents 目录；逐文件替换后签名封印是否仍然有效需要真机验证【推断】。
+// 主程序两次 rename 之间若断电，可能没有可启动的程序；用户必须重新运行安装器。
 package update
 
 import (
@@ -31,6 +32,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -108,12 +111,14 @@ func safeRel(p string) bool {
 
 // Client 是更新客户端。
 type Client struct {
-	Feed     string // 清单所在目录的 URL：<Feed>/<platform>/manifest.json
-	Pub      ed25519.PublicKey
-	Platform string
-	Current  string
-	Dir      string // 安装目录
-	HTTP     *http.Client
+	Feed       string // 清单所在目录的 URL：<Feed>/<platform>/manifest.json
+	Pub        ed25519.PublicKey
+	Platform   string
+	Current    string
+	Dir        string // 安装目录
+	HTTP       *http.Client
+	rename     func(string, string) error
+	writeState func(*Pending) error
 }
 
 func (c *Client) http() *http.Client {
@@ -211,15 +216,23 @@ func Plan(dir string, m *Manifest) []File {
 	return out
 }
 
-// Pending 是 pending.json：一次已替换、还没确认的更新。
+// PlanEntry records whether a path existed before any replacement.
+type PlanEntry struct {
+	Path    string `json:"path"`
+	Existed bool   `json:"existed"`
+}
+
+// Pending is the durable update intent and stable-boot state.
 type Pending struct {
-	From    string   `json:"from"`
-	To      string   `json:"to"`
-	Boots   int      `json:"boots"`
-	Changed []string `json:"changed"` // 替换或新增的文件
-	Added   []string `json:"added"`   // 之前不存在（回滚时删除）
-	Removed []string `json:"removed"` // 按 Remove 移走的文件
-	Good    bool     `json:"good"`
+	State   string      `json:"state"`
+	Plan    []PlanEntry `json:"plan"`
+	From    string      `json:"from"`
+	To      string      `json:"to"`
+	Boots   int         `json:"boots"`
+	Changed []string    `json:"changed"` // 替换或新增的文件
+	Added   []string    `json:"added"`   // 之前不存在（回滚时删除）
+	Removed []string    `json:"removed"` // 按 Remove 移走的文件
+	Good    bool        `json:"good"`
 }
 
 func (c *Client) sd(parts ...string) string {
@@ -240,13 +253,33 @@ func (c *Client) Apply(ctx context.Context, m *Manifest, progress func(done, tot
 	if !Newer(m.Version, c.Current) {
 		return 0, ErrNoUpdate
 	}
+	previous, err := c.ReadPending()
+	if err != nil {
+		return 0, fmt.Errorf("update: refusing update: %w", err)
+	}
+	if previous != nil && previous.State != "good" {
+		return 0, fmt.Errorf("update: unfinished transaction (%s)", previous.State)
+	}
+	seen := map[string]bool{}
+	pathsToValidate := append([]string{}, m.Remove...)
+	for _, f := range m.Files {
+		pathsToValidate = append(pathsToValidate, f.Path)
+	}
+	for _, rel := range pathsToValidate {
+		if !safeRel(rel) || seen[rel] {
+			return 0, fmt.Errorf("update: invalid or duplicate path %q", rel)
+		}
+		seen[rel] = true
+	}
 	todo := Plan(c.Dir, m)
 	var total, done int64
 	for _, f := range todo {
 		total += f.Size
 	}
 	staging := c.sd("staging")
-	_ = os.RemoveAll(staging)
+	if err := os.RemoveAll(staging); err != nil {
+		return done, err
+	}
 	for _, f := range todo {
 		u := f.URL
 		if u == "" {
@@ -264,7 +297,7 @@ func (c *Client) Apply(ctx context.Context, m *Manifest, progress func(done, tot
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return done, err
 		}
-		if err := os.WriteFile(dst, b, 0o755); err != nil {
+		if err := writeSynced(dst, b, 0o755); err != nil {
 			return done, err
 		}
 		done += f.Size
@@ -272,166 +305,328 @@ func (c *Client) Apply(ctx context.Context, m *Manifest, progress func(done, tot
 			progress(done, total)
 		}
 	}
-	// 替换（rollback 目录只保留上一版本）
-	rb := c.sd("rollback")
-	_ = os.RemoveAll(rb)
-	p := &Pending{From: c.Current, To: m.Version}
-	undo := func() { _ = c.restore(p) }
+	// 先记录全部路径的原始存在状态，再允许第一次 rename。
+	p := &Pending{From: c.Current, To: m.Version, State: "applying", Plan: []PlanEntry{}}
+	changed := map[string]bool{}
 	for _, f := range todo {
-		cur := filepath.Join(c.Dir, filepath.FromSlash(f.Path))
-		if _, err := os.Stat(cur); err == nil {
-			if err := moveFile(cur, filepath.Join(rb, filepath.FromSlash(f.Path))); err != nil {
-				undo()
-				return done, err
-			}
-		} else {
-			p.Added = append(p.Added, f.Path)
-		}
+		changed[f.Path] = true
 		p.Changed = append(p.Changed, f.Path)
-		if err := moveFile(filepath.Join(staging, filepath.FromSlash(f.Path)), cur); err != nil {
-			undo()
+	}
+	paths := append(append([]string{}, p.Changed...), m.Remove...)
+	for _, rel := range paths {
+		exists, err := fileExists(filepath.Join(c.Dir, filepath.FromSlash(rel)))
+		if err != nil {
 			return done, err
 		}
-	}
-	for _, r := range m.Remove {
-		cur := filepath.Join(c.Dir, filepath.FromSlash(r))
-		if _, err := os.Stat(cur); err == nil {
-			if err := moveFile(cur, filepath.Join(rb, filepath.FromSlash(r))); err != nil {
-				undo()
-				return done, err
-			}
-			p.Removed = append(p.Removed, r)
+		p.Plan = append(p.Plan, PlanEntry{Path: rel, Existed: exists})
+		if changed[rel] && !exists {
+			p.Added = append(p.Added, rel)
+		}
+		if !changed[rel] && exists {
+			p.Removed = append(p.Removed, rel)
 		}
 	}
-	_ = os.RemoveAll(staging)
+	exe, err := os.Executable()
+	if err != nil {
+		return done, err
+	}
+	isMain := func(rel string) bool {
+		return filepath.Clean(filepath.Join(c.Dir, filepath.FromSlash(rel))) == filepath.Clean(exe) ||
+			rel == "wallpaperd" || rel == "wallpaperd.exe" || rel == "MacOS/wallpaperd"
+	}
+	sort.SliceStable(p.Plan, func(i, j int) bool { return !isMain(p.Plan[i].Path) && isMain(p.Plan[j].Path) })
+	if err := os.RemoveAll(c.sd("rollback")); err != nil {
+		return done, err
+	}
+	if err := c.writePending(p); err != nil {
+		return done, err
+	}
+	for _, step := range p.Plan {
+		cur := filepath.Join(c.Dir, filepath.FromSlash(step.Path))
+		if step.Existed {
+			if err := c.moveFile(cur, c.sd("rollback", filepath.FromSlash(step.Path))); err != nil {
+				return done, err
+			}
+		}
+		if changed[step.Path] {
+			if err := c.moveFile(filepath.Join(staging, filepath.FromSlash(step.Path)), cur); err != nil {
+				return done, err
+			}
+		}
+	}
+	p.State = "awaiting"
 	return done, c.writePending(p)
 }
 
 func (c *Client) writePending(p *Pending) error {
-	b, _ := json.MarshalIndent(p, "", "  ")
+	if c.writeState != nil {
+		return c.writeState(p)
+	}
+	return c.persistPending(p)
+}
+
+func (c *Client) persistPending(p *Pending) error {
+	b, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(c.sd(), 0o755); err != nil {
 		return err
 	}
-	tmp := c.sd(pendingName + ".tmp")
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	f, err := os.OpenFile(c.sd(pendingName+".tmp"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, c.sd(pendingName))
+	_, werr := f.Write(b)
+	err = errors.Join(werr, f.Sync(), f.Close())
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), c.sd(pendingName)); err != nil {
+		return err
+	}
+	return c.syncParents(c.sd())
 }
 
-// ReadPending 读取 pending.json（没有时返回 nil）。
-func (c *Client) ReadPending() *Pending {
+// ReadPending distinguishes absent records from unreadable or corrupt records.
+func (c *Client) ReadPending() (*Pending, error) {
 	b, err := os.ReadFile(c.sd(pendingName))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var p Pending
-	if json.Unmarshal(b, &p) != nil {
-		return nil
+	if err := json.Unmarshal(b, &p); err != nil {
+		return nil, fmt.Errorf("update: corrupt pending: %w", err)
 	}
-	return &p
+	if p.From == "" || p.To == "" {
+		return nil, errors.New("update: pending missing versions")
+	}
+	if p.State == "" {
+		p.Plan = []PlanEntry{}
+		p.State = "awaiting"
+		if p.Good {
+			p.State = "good"
+		}
+		added := map[string]bool{}
+		for _, rel := range p.Added {
+			added[rel] = true
+		}
+		for _, rel := range append(append([]string{}, p.Changed...), p.Removed...) {
+			p.Plan = append(p.Plan, PlanEntry{Path: rel, Existed: !added[rel]})
+		}
+	} else if p.Plan == nil {
+		return nil, errors.New("update: pending missing plan")
+	}
+	switch p.State {
+	case "applying", "awaiting", "good", "rolling_back":
+	default:
+		return nil, fmt.Errorf("update: invalid pending state %q", p.State)
+	}
+	seen := map[string]bool{}
+	for _, step := range p.Plan {
+		if !safeRel(step.Path) || seen[step.Path] {
+			return nil, fmt.Errorf("update: invalid pending path %q", step.Path)
+		}
+		seen[step.Path] = true
+	}
+	return &p, nil
 }
 
-// Boot 在每次启动时调用：未确认的更新累计启动次数，超过 MaxBoots 自动回滚，返回 rolledBack=true（调用方应提示并重启）。
-func (c *Client) Boot() (rolledBack bool, err error) {
-	p := c.ReadPending()
-	if p == nil || p.Good {
+// Recover rolls back an interrupted transaction before Boot and Cleanup.
+func (c *Client) Recover() error {
+	p, err := c.ReadPending()
+	if err != nil || p == nil {
+		return err
+	}
+	if p.State != "applying" && p.State != "rolling_back" {
+		return nil
+	}
+	return c.rollback(p)
+}
+
+// Boot counts unconfirmed starts and rolls back after MaxBoots.
+func (c *Client) Boot() (bool, error) {
+	p, err := c.ReadPending()
+	if err != nil || p == nil {
+		return false, err
+	}
+	if p.State == "good" {
 		return false, nil
+	}
+	if p.State != "awaiting" {
+		return false, errors.New("update: recovery required before boot")
 	}
 	p.Boots++
 	if p.Boots > MaxBoots {
-		return true, c.Rollback()
+		err := c.Rollback()
+		return err == nil, err
 	}
 	return false, c.writePending(p)
 }
 
-// MarkGood 确认新版本运行正常（保留 rollback 目录以便手动回滚）。
+// MarkGood is the sole stable-boot confirmation.
 func (c *Client) MarkGood() error {
-	p := c.ReadPending()
-	if p == nil || p.Good {
+	p, err := c.ReadPending()
+	if err != nil || p == nil {
+		return err
+	}
+	if p.State == "good" {
 		return nil
 	}
-	p.Good = true
+	if p.State != "awaiting" {
+		return errors.New("update: cannot confirm unfinished transaction")
+	}
+	p.State, p.Good = "good", true
 	return c.writePending(p)
 }
 
-// CanRollback 报告是否有可回滚的上一版本，以及它的版本号。
 func (c *Client) CanRollback() (string, bool) {
-	p := c.ReadPending()
-	if p == nil {
+	p, err := c.ReadPending()
+	if err != nil || p == nil {
 		return "", false
 	}
 	return p.From, true
 }
 
-// Rollback 把上一次更新替换的文件还原。
 func (c *Client) Rollback() error {
-	p := c.ReadPending()
+	p, err := c.ReadPending()
+	if err != nil {
+		return err
+	}
 	if p == nil {
 		return ErrNothing
+	}
+	return c.rollback(p)
+}
+
+func (c *Client) rollback(p *Pending) error {
+	p.State, p.Good = "rolling_back", false
+	if err := c.writePending(p); err != nil {
+		return err
 	}
 	if err := c.restore(p); err != nil {
 		return err
 	}
-	_ = os.Remove(c.sd(pendingName))
-	return os.RemoveAll(c.sd("rollback"))
+	if err := os.RemoveAll(c.sd("rollback")); err != nil {
+		return err
+	}
+	if err := c.syncParents(c.sd()); err != nil {
+		return err
+	}
+	if err := os.Remove(c.sd(pendingName)); err != nil {
+		return err
+	}
+	return c.syncParents(c.sd())
+}
+
+func fileExists(name string) (bool, error) {
+	_, err := os.Lstat(name)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (c *Client) restore(p *Pending) error {
-	rb := c.sd("rollback")
-	added := map[string]bool{}
-	for _, a := range p.Added {
-		added[a] = true
-	}
 	var errs []error
-	for _, f := range append(append([]string{}, p.Changed...), p.Removed...) {
-		cur := filepath.Join(c.Dir, filepath.FromSlash(f))
-		if added[f] {
-			if err := os.Remove(cur); err != nil && !os.IsNotExist(err) {
-				// Windows 上正在运行的新 exe 删不掉：改名留待下次清理
-				_ = os.Rename(cur, cur+".old")
+	for _, step := range p.Plan {
+		cur := filepath.Join(c.Dir, filepath.FromSlash(step.Path))
+		old := c.sd("rollback", filepath.FromSlash(step.Path))
+		exists, err := fileExists(cur)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if step.Existed {
+			backup, err := fileExists(old)
+			if err != nil {
+				errs = append(errs, err)
+				continue
 			}
-			continue
+			if !backup {
+				// 未备份或已经还原；两边都不存在则不是可忽略的恢复步骤。
+				if !exists {
+					errs = append(errs, fmt.Errorf("update: missing original and backup for %s", step.Path))
+				}
+				continue
+			}
 		}
-		old := filepath.Join(rb, filepath.FromSlash(f))
-		if _, err := os.Stat(old); err != nil {
-			continue
-		}
-		if _, err := os.Stat(cur); err == nil {
-			trash := c.sd("trash", fmt.Sprint(time.Now().UnixNano()), filepath.FromSlash(f))
-			if err := moveFile(cur, trash); err != nil {
+		if exists {
+			// Rename also handles a running executable on Windows, without copy/delete.
+			trash := c.sd("trash", fmt.Sprint(time.Now().UnixNano()), filepath.FromSlash(step.Path)+".old")
+			if err := c.moveFile(cur, trash); err != nil {
 				errs = append(errs, err)
 				continue
 			}
 		}
-		if err := moveFile(old, cur); err != nil {
-			errs = append(errs, err)
+		if step.Existed {
+			if err := c.moveFile(old, cur); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// Cleanup 删除上一次留下的 trash 和 staging（启动时调用；Windows 上正在运行的旧 exe 只能下次删）。
+// Cleanup removes expendable staging and trash after recovery.
 func (c *Client) Cleanup() {
 	_ = os.RemoveAll(c.sd("trash"))
 	_ = os.RemoveAll(c.sd("staging"))
 }
 
-func moveFile(src, dst string) error {
+func (c *Client) moveFile(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	if err := os.Rename(src, dst); err == nil {
-		return nil
+	rename := c.rename
+	if rename == nil {
+		rename = os.Rename
 	}
-	b, err := os.ReadFile(src) // 跨卷：复制后删除
+	if err := rename(src, dst); err != nil {
+		return err
+	}
+	return errors.Join(c.syncParents(filepath.Dir(src)), c.syncParents(filepath.Dir(dst)))
+}
+
+// Sync new directory entries as well as the leaf directory after each rename.
+func (c *Client) syncParents(dir string) error {
+	var errs []error
+	for {
+		errs = append(errs, syncDir(dir))
+		if filepath.Clean(dir) == filepath.Clean(c.Dir) {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return errors.Join(errs...)
+}
+
+func writeSynced(name string, b []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, b, 0o755); err != nil {
+	_, werr := f.Write(b)
+	return errors.Join(werr, f.Sync(), f.Close())
+}
+
+// Windows does not support syncing directory handles through os.File.Sync.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	f, err := os.Open(dir)
+	if err != nil {
 		return err
 	}
-	return os.Remove(src)
+	return errors.Join(f.Sync(), f.Close())
 }
 
 // BuildManifest 扫描 dir 生成清单（发布端使用）。

@@ -140,6 +140,7 @@ func (a *App) startNextRendition() {
 		a.transcodeDone = released
 		encode, probe := a.d.EncodeRendition, a.d.ProbeMedia
 		cache := a.d.Store.Paths.Cache
+		// App owns rendition work; it exits after encoding/cancellation and publication or shutdown cleanup.
 		go func() {
 			// Staging lives on the cache filesystem so publication is an atomic rename.
 			err := os.MkdirAll(cache, 0700)

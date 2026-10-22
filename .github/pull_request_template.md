@@ -1,0 +1,7 @@
+- [ ] Verification run and results recorded ([ENGINEERING §1](../docs/ENGINEERING.md#1-正确性与验证)).
+- [ ] New dependencies or abstractions justified ([§3](../docs/ENGINEERING.md#3-依赖与抽象)).
+- [ ] Persistence errors are not silently dropped ([§4](../docs/ENGINEERING.md#4-持久化)).
+- [ ] Goroutines have an owner and exit condition ([§5](../docs/ENGINEERING.md#5-并发)).
+- [ ] Logs and diagnostics reviewed ([§6](../docs/ENGINEERING.md#6-日志与诊断)).
+- [ ] Compatibility and schema changes checked ([§7](../docs/ENGINEERING.md#7-版本与兼容)).
+- [ ] Documentation and release notes updated as applicable ([§8](../docs/ENGINEERING.md#8-文档)).

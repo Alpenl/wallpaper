@@ -242,6 +242,7 @@ func (h *Host) Start() error {
 		return errors.New("win: host already started")
 	}
 	hostSingleton = h
+	// Host 拥有消息线程；启动失败或 Close 投递退出消息后退出。
 	go h.uiThread()
 	return <-h.ready
 }

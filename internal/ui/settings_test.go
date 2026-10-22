@@ -383,6 +383,7 @@ func wait(t *testing.T, tt *ui.Tester, text string) {
 		if tt.HasText(text) {
 			return
 		}
+		// sleep: 有限次数轮询 UI 文本，等待后台更新结果并避免忙等。
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("等待 %q 超时：%q", text, strings.Join(tt.Texts(), " | "))

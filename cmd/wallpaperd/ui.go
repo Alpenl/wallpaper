@@ -6,11 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
 
 	"wpapp/internal/desktop"
+	"wpapp/internal/render/mpv"
 	"wpapp/internal/ui"
 	"wpapp/internal/visibility"
 )
@@ -38,21 +41,31 @@ func runUI(f *flags) int {
 	defer e.close()
 	ctx, cancel := context.WithCancel(context.Background())
 	loopDone := make(chan struct{})
-	// 退出顺序：先让事件循环收尾（关渲染器、写 state.json cleanShutdown），再 Quit。
-	// 不能在 OnWillQuit（主线程）里同步等：mac 上收尾要 RunOnMain，会死锁（MyGo workaround 4）。
+	var quitOnce sync.Once
+	var draining atomic.Bool
+	// 退出顺序：mac 外部退出先在 OnBeforeQuit 阻止，再走 quit 异步收尾（关渲染器、写 state.json cleanShutdown）。
+	// 收尾完成或等满 5 秒后设置 draining，再次 Quit 放行；quitOnce 避免重复启动收尾 goroutine。
+	// 不能在退出回调（主线程）里同步等：mac 上收尾要 RunOnMain，会死锁（MyGo workaround 4）。
 	quit := func() {
-		go func() {
-			cancel()
-			select {
-			case <-loopDone:
-			case <-time.After(5 * time.Second):
-			}
-			mygo.App.Quit()
-		}()
+		quitOnce.Do(func() {
+			go func() {
+				cancel()
+				select {
+				case <-loopDone:
+				case <-time.After(5 * time.Second):
+				}
+				draining.Store(true)
+				mygo.App.Quit()
+			}()
+		})
 	}
 	settings := ui.NewSettings(e.app, runtime.GOOS)
 	settings.SetLaunchAtLogin = mygo.App.SetOpenAtLogin
 	settings.ExportDiag = e.exportDiag
+	settings.ValidateMpvPath = func(path string) error {
+		_, err := mpv.ResolveExecutable(path)
+		return err
+	}
 	settings.OpenPath = mygo.Shell.OpenPath
 	settings.ShowInFolder = mygo.Shell.ShowItemInFolder
 	e.updateHooks(&settings.Hooks, quit)
@@ -64,6 +77,12 @@ func runUI(f *flags) int {
 	sh := &ui.Shell{S: settings, OnQuit: quit}
 	e.app.OnChange(sh.Changed)
 	mygo.App.OnSecondInstance(func([]string, string) { sh.Open() })
+	mygo.App.OnBeforeQuit(func(ev *mygo.QuitEvent) {
+		if runtime.GOOS == "darwin" && !draining.Load() {
+			ev.PreventDefault()
+			quit()
+		}
+	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		cancel() // 系统注销等外部退出：尽力而为
 		if runtime.GOOS != "darwin" {
@@ -92,10 +111,13 @@ func runUI(f *flags) int {
 		if cfg.Update.AutoCheck && cfg.Update.FeedURL != "" && settings.Info.UpdateKey {
 			settings.CheckUpdates()
 		}
+		// UI 拥有更新确认任务；60 秒确认完成或 ctx 取消后退出。
 		go func() { // 稳定运行 60 s 后确认本次更新（F-15）
 			select {
 			case <-time.After(60 * time.Second):
-				_ = e.updater().MarkGood()
+				if err := e.updater().MarkGood(); err != nil {
+					e.log.Error("update confirmation", "err", err)
+				}
 			case <-ctx.Done():
 			}
 		}()

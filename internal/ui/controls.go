@@ -155,6 +155,7 @@ func (s *Settings) exportDiagnostics() {
 	}
 	s.diagBusy, s.diagMsg, s.diagPath = true, "正在导出诊断包…", ""
 	s.mu.Unlock()
+	// Settings owns the export task; it exits after export and status publication.
 	go func() {
 		path, err := s.ExportDiag()
 		s.mu.Lock()

@@ -91,3 +91,11 @@ Windows/macOS 打包和签名钩子在 [`scripts/`](scripts/) 与 [`packaging/`]
 ## MyGo workaround
 
 托盘常驻、窗口关闭后重建、菜单刷新和退出主线程限制见 [历史实现说明](docs/history/IMPLEMENTATION_0.2.1.md) 与当前 [`internal/ui/shell.go`](internal/ui/shell.go)。应结合当前代码和本轮测试使用，不把历史绕行描述视为永久的上游 API 保证。
+
+## 许可证
+
+本项目自有代码采用 PolyForm Strict License 1.0.0，见 [LICENSE](LICENSE)。
+未经作者另行书面许可，禁止任何形式的商业使用。
+商业许可请通过 [GitHub Issues](https://github.com/Alpenl/wallpaper/issues) 联系作者。
+Go modules、mpv 等第三方组件仍适用各自许可证；发布包附带所含组件的许可文本，见 [`scripts/package-metadata.sh`](scripts/package-metadata.sh)。
+本说明不构成法律建议，以英文 LICENSE 文本为准。

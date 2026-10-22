@@ -200,6 +200,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		r.Close()
 		return loadErr
 	}
+	// Renderer 拥有采样循环；Close 关闭 stop 后退出。
 	go r.sampleLoop(stop)
 	return nil
 }

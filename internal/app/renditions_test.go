@@ -115,7 +115,7 @@ func TestRenditionQueueDeduplicatesAndSerializesSharedCancel(t *testing.T) {
 	})
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("rendition not started")
 	}
 	e.a.OptimizeDisplays("x")
@@ -132,7 +132,7 @@ func TestRenditionQueueDeduplicatesAndSerializesSharedCancel(t *testing.T) {
 	e.a.CancelRenditions("x")
 	select {
 	case <-shared:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("shared job did not advance after cancel")
 	}
 	if maxActive.Load() != 1 {

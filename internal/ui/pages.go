@@ -8,7 +8,6 @@ import (
 
 	"wpapp/internal/app"
 	"wpapp/internal/config"
-	"wpapp/internal/render/mpv"
 )
 
 func (s *Settings) set(fn func(*config.Config)) { s.ctl.UpdateConfig(fn) }
@@ -166,8 +165,8 @@ func (s *Settings) perf(c *ui.Context, v app.View) {
 func (s *Settings) mpvPathEditor(c *ui.Context, cfg config.Config) {
 	if !s.mpvPathInit {
 		s.mpvPath, s.mpvPathInit = cfg.Render.MpvPath, true
-		if s.mpvPath != "" {
-			if _, err := mpv.ResolveExecutable(s.mpvPath); err != nil {
+		if s.mpvPath != "" && s.ValidateMpvPath != nil {
+			if err := s.ValidateMpvPath(s.mpvPath); err != nil {
 				s.mpvPathError = err.Error()
 			}
 		}
@@ -190,8 +189,8 @@ func (s *Settings) mpvPathEditor(c *ui.Context, cfg config.Config) {
 
 func (s *Settings) saveMpvPath() bool {
 	p := strings.TrimSpace(s.mpvPath)
-	if p != "" {
-		if _, err := mpv.ResolveExecutable(p); err != nil {
+	if p != "" && s.ValidateMpvPath != nil {
+		if err := s.ValidateMpvPath(p); err != nil {
 			s.mpvPathError = err.Error()
 			return false
 		}
@@ -513,6 +512,7 @@ func (s *Settings) checkUpdate() {
 	s.upd.busy, s.upd.msg, s.upd.info, s.upd.progress = true, "正在检查…", nil, 0
 	s.mu.Unlock()
 	s.invalidate()
+	// Settings 拥有检查任务；更新检查及状态回写完成后退出。
 	go func() {
 		info, err := s.CheckUpdate()
 		s.setUpd(func(u *updState) {
@@ -550,6 +550,7 @@ func (s *Settings) applyUpdate() {
 	if !s.beginUpdate("正在下载…") {
 		return
 	}
+	// Settings 拥有下载任务；更新成功或失败并回写状态后退出。
 	go func() {
 		err := s.ApplyUpdate(func(done, total int64) {
 			s.setUpd(func(u *updState) {
@@ -580,6 +581,7 @@ func (s *Settings) rollback() {
 	if !s.beginUpdate("正在回滚…") {
 		return
 	}
+	// Settings 拥有回滚任务；回滚及重启请求处理完成后退出。
 	go func() {
 		err := s.Rollback()
 		s.setUpd(func(u *updState) {

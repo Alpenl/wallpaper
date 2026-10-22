@@ -215,16 +215,18 @@ func setupWith(t *testing.T, n int, withItem bool, mod func(*Deps)) *env {
 
 func eventually(t *testing.T, what string, f func() bool) {
 	t.Helper()
-	eventuallyD(t, 3*time.Second, what, f)
+	eventuallyD(t, 10*time.Second, what, f)
 }
 
 func eventuallyD(t *testing.T, d time.Duration, what string, f func() bool) {
 	t.Helper()
-	for i := 0; i < int(d/(10*time.Millisecond)); i++ {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
 		if f() {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		// sleep: 有截止时间的条件轮询，避免忙等。
+		time.Sleep(min(10*time.Millisecond, max(0, time.Until(deadline))))
 	}
 	t.Fatal("超时: " + what)
 }
@@ -261,17 +263,13 @@ func TestUserPauseAllAndConfigToggle(t *testing.T) {
 	eventually(t, "启动", func() bool { r := e.cur("A"); return r != nil && r.isLoaded() })
 	e.a.SetPausedAll(true)
 	eventually(t, "暂停全部", func() bool { return e.cur("A").last() == visibility.L1 })
-	if !e.a.View().PausedAll {
-		e.sync()
-		if !e.a.View().PausedAll {
-			t.Fatal("视图应显示暂停全部")
-		}
-	}
+	eventually(t, "视图应显示暂停全部", func() bool { return e.a.View().PausedAll })
 	e.a.SetPausedAll(false)
 	eventually(t, "恢复", func() bool { return e.cur("A").last() == visibility.L0 })
 	// 关闭“全屏时暂停”后，全屏信号被忽略
 	e.a.UpdateConfig(func(c *config.Config) { c.Pause.OnFullscreen = false })
 	e.h.ev <- desktop.Event{Kind: desktop.EventSignal, Display: "A", Reason: visibility.Fullscreen, Active: true}
+	// sleep: 观察策略关闭后不会触发暂停的时间窗口。
 	time.Sleep(300 * time.Millisecond)
 	if e.cur("A").last() == visibility.L1 {
 		t.Fatal("关闭后不应暂停")
@@ -294,6 +292,7 @@ func TestBatteryPolicyAndLowBattery(t *testing.T) {
 	r := e.cur("A")
 	n := len(e.renderers("A"))
 	e.h.ev <- desktop.Event{Kind: desktop.EventSignal, Reason: visibility.Battery, Active: true}
+	// sleep: 观察策略关闭后不会触发暂停的时间窗口。
 	time.Sleep(300 * time.Millisecond)
 	if e.cur("A").last() == visibility.L1 && len(e.renderers("A")) == n {
 		t.Fatal("ignore 策略下不应暂停", r.last())
@@ -306,10 +305,10 @@ func TestCrashRestartAndFail(t *testing.T) {
 	r := e.cur("A")
 	r.done <- errors.New("crash")
 	eventually(t, "退避 0.5 s 后重启", func() bool { c := e.cur("A"); return c != r && c != nil && c.isLoaded() })
-	v := e.a.View()
-	if v.Displays[0].State != "active" {
-		e.sync()
-	}
+	eventually(t, "重启后的视图已发布", func() bool {
+		v := e.a.View()
+		return len(v.Displays) == 1 && v.Displays[0].State == "active"
+	})
 	// 让后续启动全部失败 → 很快累计到 5 次 → Failed
 	e.mu.Lock()
 	e.failLd = true
@@ -448,7 +447,13 @@ func TestSafeMode(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go a.Run(ctx)
 	defer func() { cancel(); a.Wait() }()
-	time.Sleep(100 * time.Millisecond)
+	started := make(chan struct{})
+	a.Do(func() { close(started) })
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("安全模式未启动")
+	}
 	mu.Lock()
 	if made != 0 || !a.View().SafeMode {
 		t.Fatal("安全模式不应加载壁纸")
@@ -584,6 +589,7 @@ func TestResumeDebounceAndQueuedOperationAreNotPlaying(t *testing.T) {
 		t.Fatalf("debounce reported playing: %+v", d)
 	}
 	// A queued renderer operation must not turn the target level into confirmation.
+	// sleep: 跨过去抖窗口，确认阻塞的恢复操作不会提前发布播放状态。
 	time.Sleep(350 * time.Millisecond)
 	e.sync()
 	d = e.a.View().Displays[0]

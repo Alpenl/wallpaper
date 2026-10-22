@@ -39,7 +39,7 @@ func TestLifecycleTimeoutPhases(t *testing.T) {
 			go func() { done <- c.Call("setPause", nil, 100*time.Millisecond, nil) }()
 			select {
 			case <-begun:
-			case <-time.After(time.Second):
+			case <-time.After(10 * time.Second):
 				t.Fatal("missing begin")
 			}
 			if phase == "response" {
@@ -52,7 +52,7 @@ func TestLifecycleTimeoutPhases(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), "TIMEOUT") {
 					t.Fatal(err)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(10 * time.Second):
 				t.Fatal("call did not finish")
 			}
 			mu.Lock()

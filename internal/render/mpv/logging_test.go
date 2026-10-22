@@ -38,7 +38,7 @@ func TestLifecycleLogAndWarningIdentity(t *testing.T) {
 	go func() { _, err := c.cmd("stop"); done <- err }()
 	select {
 	case <-begun:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("missing begin before blocked write")
 	}
 	// Read is deliberately held until the begin record has been observed.

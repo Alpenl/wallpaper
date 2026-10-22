@@ -181,6 +181,7 @@ func TestRemoveCancelsActiveEncoder(t *testing.T) {
 }
 
 func TestReimportAfterRemovalDiscardsOldEncoderOutput(t *testing.T) {
+	importErrors := make(chan error, 1)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	importRelease := make(chan struct{})
@@ -194,7 +195,12 @@ func TestReimportAfterRemovalDiscardsOldEncoderOutput(t *testing.T) {
 			<-release
 			return os.WriteFile(dst, []byte("old encode"), 0600)
 		}
-		d.Import = func(context.Context, string) (*importer.Result, error) {
+		d.Import = func(context.Context, string) (_ *importer.Result, err error) {
+			defer func() {
+				if err != nil {
+					importErrors <- err
+				}
+			}()
 			<-importRelease
 			dir := filepath.Join(root, "x")
 			old, err := tombstone(dir)
@@ -204,12 +210,17 @@ func TestReimportAfterRemovalDiscardsOldEncoderOutput(t *testing.T) {
 			if old != "" {
 				defer os.RemoveAll(old)
 			}
-			os.MkdirAll(dir, 0755)
-			os.WriteFile(filepath.Join(dir, "new.mp4"), []byte("new media"), 0600)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(filepath.Join(dir, "new.mp4"), []byte("new media"), 0600); err != nil {
+				return nil, err
+			}
 			return &importer.Result{Item: config.Item{ID: "x", Title: "Replacement", Type: "video", Dir: dir, Entry: "new.mp4", Transcode: "none"}}, nil
 		}
 	})
 	t.Cleanup(unblockImport)
+	waitForStorageScan(t, e)
 	eventually(t, "screen started", func() bool { return e.cur("A") != nil && e.cur("A").isLoaded() })
 
 	e.a.Transcode("x")
@@ -225,6 +236,11 @@ func TestReimportAfterRemovalDiscardsOldEncoderOutput(t *testing.T) {
 	eventually(t, "old record removed", func() bool { return len(e.a.View().Library) == 0 })
 	unblockImport()
 	eventually(t, "same-ID refreshed", func() bool {
+		select {
+		case err := <-importErrors:
+			t.Fatalf("replacement import failed: %v", err)
+		default:
+		}
 		v := e.a.View()
 		return len(v.Library) == 1 && v.Library[0].Title == "Replacement"
 	})
@@ -308,19 +324,31 @@ func TestShutdownCancelsEncoderAndCleansTemporaryOutput(t *testing.T) {
 }
 
 func TestRemovalCannotDeleteUncommittedReimport(t *testing.T) {
+	importErrors := make(chan error, 1)
+	importStarted := make(chan struct{})
 	diskCommitted := make(chan struct{})
 	finish := make(chan struct{})
 	e := setupWith(t, 0, true, func(d *Deps) {
 		root := d.Store.Paths.Library
-		d.Import = func(ctx context.Context, _ string) (*importer.Result, error) {
+		d.Import = func(ctx context.Context, _ string) (_ *importer.Result, err error) {
+			close(importStarted)
+			defer func() {
+				if err != nil {
+					importErrors <- err
+				}
+			}()
 			dir := filepath.Join(root, "x")
 			old, err := tombstone(dir)
 			if err != nil {
 				return nil, err
 			}
 			defer os.RemoveAll(old)
-			os.MkdirAll(dir, 0755)
-			os.WriteFile(filepath.Join(dir, "new.mp4"), []byte("new"), 0600)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(filepath.Join(dir, "new.mp4"), []byte("new"), 0600); err != nil {
+				return nil, err
+			}
 			close(diskCommitted)
 			select {
 			case <-finish:
@@ -330,11 +358,21 @@ func TestRemovalCannotDeleteUncommittedReimport(t *testing.T) {
 			return &importer.Result{Item: config.Item{ID: "x", Title: "New", Dir: dir, Type: "video", Entry: "new.mp4"}}, nil
 		}
 	})
+	waitForStorageScan(t, e)
 	e.a.Import("same.wpk", "")
 	select {
 	case <-diskCommitted:
+	case err := <-importErrors:
+		t.Fatalf("replacement import failed before disk commit: %v", err)
 	case <-time.After(10 * time.Second):
-		t.Fatal("not imported")
+		started := false
+		select {
+		case <-importStarted:
+			started = true
+		default:
+		}
+		v := e.a.View()
+		t.Fatalf("disk commit not reached: started=%t importing=%t queued=%d last error=%q", started, v.Importing, v.ImportQueued, v.LastError)
 	}
 	e.a.Remove("x")
 	eventually(t, "busy deletion reported", func() bool { return e.a.View().LastError == "导入进行中，请完成后再删除壁纸" })
@@ -467,4 +505,16 @@ func TestCancelledBatchKeepsCompletedItemsWithoutApplying(t *testing.T) {
 	if len(v.Library) != 1 || v.Library[0].ID != "completed" || byID(v, "A").ItemID != "" {
 		t.Fatal("cancellation removed completed item or applied partial batch", v.Library)
 	}
+}
+
+// These tests exercise import/removal ordering, not concurrent storage scans.
+// Run starts a WalkDir scan whose directory handles can block Rename on Windows.
+func waitForStorageScan(t *testing.T, e *env) {
+	t.Helper()
+	eventually(t, "storage scan finished", func() bool {
+		idle := make(chan bool, 1)
+		// Read on the event loop: an initial zero View is not a startup barrier.
+		e.a.Do(func() { idle <- !e.a.storage.Scanning && !e.a.storageDirty })
+		return <-idle
+	})
 }
