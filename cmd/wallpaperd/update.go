@@ -46,12 +46,18 @@ func (e *env) updater() *update.Client {
 // bootUpdate 在启动时处理上一次更新：新版本连续启动失败就回滚并重启旧版本（F-15）。
 func bootUpdate(exe string) (restart bool) {
 	c := &update.Client{Dir: installDir(exe), Current: version}
-	c.Cleanup()
-	rb, err := c.Boot()
-	if err != nil {
+	p, readErr := c.ReadPending()
+	recovering := readErr == nil && p != nil && (p.State == "applying" || p.State == "rolling_back")
+	if err := c.Recover(); err != nil {
+		fmt.Fprintln(os.Stderr, "update recovery:", err)
 		return false
 	}
-	return rb
+	rb, err := c.Boot()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "update boot:", err)
+	}
+	c.Cleanup()
+	return recovering || rb
 }
 
 // relaunch 启动一个新实例。新实例先等旧实例退出、释放单实例锁（WPAPP_RELAUNCH_WAIT）。
@@ -178,6 +184,11 @@ func runUpdateCLI(f *flags) int {
 		fmt.Fprintln(os.Stderr, "apply:", err)
 		return 1
 	}
-	fmt.Printf("updated %s -> %s (%d bytes downloaded, %d files changed)\n", version, m.Version, n, len(c.ReadPending().Changed))
+	p, err := c.ReadPending()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "update pending:", err)
+		return 1
+	}
+	fmt.Printf("updated %s -> %s (%d bytes downloaded, %d files changed)\n", version, m.Version, n, len(p.Changed))
 	return 0
 }
