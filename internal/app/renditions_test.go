@@ -188,3 +188,34 @@ func TestRenditionRejectsWrongSize(t *testing.T) {
 		t.Fatal("bad output published")
 	}
 }
+
+// Cancellation is only a request. Remove must wait for the encoder (and its
+// deferred file closes), even when it takes time to observe cancellation.
+func TestRemoveWaitsForRenditionHandles(t *testing.T) {
+	started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	e := setupWith(t, 1, true, func(d *Deps) {
+		it := d.Store.Library.Find("x")
+		if err := os.WriteFile(filepath.Join(it.Dir, it.Entry), []byte("source"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		d.EncodeRendition = func(ctx context.Context, src, dst string, target transcode.Target) error {
+			close(started)
+			<-ctx.Done()
+			close(cancelled)
+			<-release
+			return ctx.Err()
+		}
+	})
+	<-started
+	e.a.Remove("x")
+	<-cancelled
+	e.sync()
+	if _, err := os.Stat(filepath.Join(e.store.Paths.Library, "x", "content", "a.mp4")); err != nil {
+		t.Fatal("source removed before encoder returned", err)
+	}
+	if len(e.a.View().Library) != 1 {
+		t.Fatal("library removed before encoder returned")
+	}
+	close(release)
+	eventually(t, "removed after handles released", func() bool { return len(e.a.View().Library) == 0 })
+}

@@ -49,7 +49,7 @@ func TestAllPagesRender(t *testing.T) {
 	// 设置子页在顶部“设置”标签下；第一次进入先点“设置”。
 	pages := []struct{ nav, want string }{
 		{"显示器", "布局"}, {"设置", "性能档位"}, {"播放与性能", "性能档位"}, {"暂停与电源", "自动暂停"},
-		{"通用", "颜色模式"}, {"版本管理", "当前版本"}, {"关于与诊断", "诊断包"}, {"壁纸库", "全部 6"},
+		{"通用", "颜色模式"}, {"版本管理", "当前版本"}, {"关于与诊断", "诊断包"}, {"壁纸库", "全部 8"},
 	}
 	for _, goos := range []string{"windows", "darwin", "linux"} {
 		_, _, tt := newUI(t, goos)
@@ -151,7 +151,7 @@ func TestLibrarySearchFilterImport(t *testing.T) {
 	if tt.HasText("HEVC · 本地文件") {
 		t.Fatal("筛选后不应显示极光之夜")
 	}
-	click(t, tt, "全部 6")
+	click(t, tt, "全部 8")
 	s.query = "城市"
 	tt.Frame()
 	must(t, tt, "城市霓虹")
@@ -496,7 +496,7 @@ func TestDiagnosticsExportDoesNotBlockUI(t *testing.T) {
 	click(t, tt, "导出诊断包")
 	<-begin
 	click(t, tt, "壁纸库")
-	must(t, tt, "全部 6")
+	must(t, tt, "全部 8")
 	close(finish)
 	s.SetPage("about")
 	wait(t, tt, "诊断包已导出。请检查内容后再分享。")

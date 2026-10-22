@@ -43,7 +43,7 @@
 | F-11 | Lively/WE video 与纯本地 web 导入；Web 属性转换；exe/scene/audio-reactive/远程入口拒绝 | [`importer`](../internal/importer/)、[`wpk`](../internal/wpk/) | 样例包、非法路径/不支持类型、安全解压；不扩展到 WE scene/app |
 | F-12 | 独立 WebView2/WKWebView 子进程、来源隔离与请求/导航/权限策略、默认拒绝的导入同意对话框与撤销、五类属性持久化/实时注入、rAF 限帧及暂停/电池策略已接线；Linux 明确不支持播放 | [`render/web`](../internal/render/web/)、[`ui/web.go`](../internal/ui/web.go)、[`web-orbit`](../examples/web-orbit/) | 原生沙箱行为、Windows 截图覆盖/恢复、macOS 桌面层级/多屏与隐藏节流、B-T2/Q-B2 仍须真机验证；不能据单元测试标记安全/性能验收完成 |
 | F-13 | 本轮补作者/说明/标签/尺寸/时长/大小与预览主色索引；搜索覆盖名称/来源/作者/说明/标签/中英文颜色；网格/列表/缩略图已有 | [`library.go`](../internal/ui/library.go)、[`palette.go`](../internal/importer/palette.go)、[`search_test.go`](../internal/ui/search_test.go) | 16:09 以前的布局检查点，1000 条查询云端微基准约 1.18 ms，通过该检查点基准目标；不是端到端 UI/旧库完整索引或真机时延认证；UI-01 |
-| F-14 | 原规划 v1；未提供产品级 Shader 渲染器 | [Shader 设计](design/08-web-shader.md) | 实际渲染、GPU 帧时间、自适应分辨率与 L1 停止；不能用占位卡验收 |
+| F-14 | 独立原生 Shader 子进程、GLSL → HLSL/MSL 转译、D3D11/Metal、离屏缩放、GPU 计时与自适应控制、导入和原生属性 UI 已接线；不使用 WebView；Linux 明确 unsupported | [`render/shader`](../internal/render/shader/)、[`shader-waves`](../examples/shader-waves/) | 真机画面、原生 GPU 帧预算与长期暂停恢复尚未验证；当前沙箱无 Metal device，GPU 测试跳过，不能以占位预览验收 |
 | F-15 | 更新清单校验、增量下载/暂存/回滚与打包脚本存在；[标签 CI/CD](releases/README.md) 已接入三系统验证、五目标打包、可选签名与幂等发布；真实签名/更新服务仍待验证 | [`update`](../internal/update/)、[`packaging`](../packaging/)、[`scripts`](../scripts/) | D-02、更新源/公钥、实际签名及公证、安装卸载、mac 更新后签名完整性 |
 | F-16 | 本地日志、诊断包脱敏实现和测试已有；不上传遥测 | [`telemetry`](../internal/telemetry/) | 本轮脱敏测试、失败提示、各平台导出路径；日志性能 AC |
 | F-17 | 每屏 L0–L4、暂停原因、当前 UTC 周已确认动态运行时长/暂停时长已持久化；显示器指标键为 SHA-256 截断摘要；不估算能源 | [`app/metrics.go`](../internal/app/metrics.go)、[`config/metrics.go`](../internal/config/metrics.go)、[`ui/metrics_test.go`](../internal/ui/metrics_test.go) | mpv 展示报告的硬解状态；MF/AVF 仍标 unknown/未验证，不能从框架名推断硬解。真实睡眠/时钟/重启与 UI 一致性需平台验收，完整 F-17 未关闭 |
@@ -101,6 +101,24 @@
 
 验证：新增策略/导航/转义、host fake、导入示例/恶意目录、同意持久化/撤销、schema 迁移、UI Tester 和电池/实时属性测试。三平台 vet 与 CGO_ENABLED=0 构建通过。完整 `go test ./...` 在既有 `internal/update.TestIncrementalUpdateBootRollback` 的 httptest 本地监听处被当前沙箱拒绝（`listen tcp6 [::1]:0: bind: operation not permitted`）；其余包通过。macOS 子进程 smoke 已实际调用规则编译；图形会话不可访问（NSScreen 列表为空，系统 XPC connection invalid），因此页面显示、网络阻断、暂停效果未获真机证据。Windows 原生调用尚无本机执行证据。未实现 CPU/GPU 使用量看门狗；rAF cap 不等于限制任意 JavaScript、CSS 动画或视频帧率。
 
+## Shader 支持（F-14）
+
+| 能力 | Windows | macOS | Linux |
+|---|---|---|---|
+| 引擎隔离 | `-shaderhost` + IPC v1；纯 Go COM；桌面宿主 HWND 下创建子窗口 | `-shaderhost` + IPC v1；purego/objc；desktop/mac 创建进程自有桌面 NSWindow/NSView，挂 CAMetalLayer；不跨进程解引用 NSView 指针 | Capabilities 不提供 Shader；加载明确报 unsupported |
+| 原生 GPU | D3D11 SM 5.0；d3dcompiler_47.dll 运行时编译；flip-discard 双缓冲、waitable swapchain、全屏三角形 | Metal 运行时 newLibraryWithSource；全屏三角形；presentDrawable 与定时器限帧 | 未实现 GLX，不经 WebView 或视频后端回退 |
+| 分辨率/计时 | 0.5–1.0 离屏 render target + 线性采样放大；三组 timestamp/disjoint 查询 | 离屏 Metal texture + 线性采样放大；读取 command buffer GPUStartTime/GPUEndTime；按 backing 像素计算比例 | 可保存属性 |
+| 调度 | 默认 30 FPS、0.75 比例；每项 15/30/60 FPS 覆盖；电池/saver 仍取更严格上限；L1–L3 停呈现并冻结时间；L4 退出，支持位置检查点；宿主无心跳 5 秒由父进程终止并交给现有监管恢复 | 同左 | 不呈现 |
+| 属性/输入 | slider → float，color → RGB float3，bool → bool，select → 从 0 起的选项序号；显式 16 字节槽；iFrame 按 int32 位存储；iMouse、128 个音频 bin 与 level 预留为零 | 相同布局；MSL 显式解包 | 保存属性，不执行 |
+| 导入/预览 | `.wpk`/manifest 目录及自动包装的 `.glsl`/`.frag`；发布包前验证两种转译；独立 helper 尝试离屏 GPU 缩略图，失败使用基于内容哈希的确定性占位图 | 同左 | 转译/管理包与生成占位图 |
+| UI | 有对应条目时显示网页/Shader 筛选；propRow 比例/FPS/用户属性；demo 与 uishots 包含两种侧栏 | 同左 | 同左，播放仍 unsupported |
+
+转译范围：mainImage 单 pass、float/int/bool 与 vec/ivec/bvec、方阵、列主序构造/矩阵尺寸转换、矩阵乘法及读取列、swizzle、函数 in/out/inout、const/全局变量、简单对象/函数宏与精度限定符。`mod` 使用独立 helper 保留 floor 语义及参数单次求值。`texture(iAudio, uv)` 返回预留零输入；尚无 iChannel 外部纹理资源、数组、结构体、include/条件预处理、多 pass 或矩阵列写入支持；这些输入报错，不静默转入其他引擎。select 的 uniform 是选项序号，不是任意字符串值。缩放到 0.5 后仍可能超过 4 ms，控制器不承诺所有素材都能满足预算。
+
+验证（2026-10-22）：19 组 GLSL → HLSL/MSL golden、错误/复杂度边界、uniform 对齐、假 GPU 自适应/暂停、帧策略零 Go 分配、mac 整数 objc 桥零 Go 分配、导入/非法替换、原生 UI、Shader 电池与实时控制、WebView 延迟启动/退出与 rendition 删除等待回归。`shadergpu` 测试已接入 CI；本次 macOS 返回 `no Metal device available` 而跳过，不能声称已编译/显示成功；本机也未安装独立 Metal 编译工具。Windows 原生调用仍待目标设备执行。完整驱动/API 路径的分配和 GPU 性能仍需真机测量。uishots 已生成并检查 Shader 侧栏，不能替代桌面渲染证据。
+
+本次三平台 vet 与要求的无 cgo 构建通过；`go test ./...` 的其余包通过，但既有 `internal/update.TestIncrementalUpdateBootRollback` 被沙箱阻止本地监听：`listen tcp6 [::1]:0: bind: operation not permitted`。没有修改该测试掩盖环境限制。Go 缓存放在 `/private/tmp/wpapp-f14-go-cache`，以避开默认缓存的沙箱访问拒绝。
+
 ## 发布支持
 
 | 范围 | 已实现 | 仍需验证 |
@@ -116,8 +134,8 @@
 ## 尚需区分的完成条件
 
 - **已有源码但缺目标平台证据**：Win/mac 宿主、空间跨屏、原生编解码与播放控制、电源/睡眠、性能预算、签名/公证及安装。不能只以云端测试关闭，也不应重新描述为“完全没有实现”。
-- **仍缺架构或产品实现**：F-14 Shader 引擎，F-25 在线服务/内容授权/信任链，以及其他矩阵明列未提供项。真机测试本身不能补齐这些代码。
-- **后续范围仍需确认**：F-12 已按本次任务扩展；原规格把 F-12/F-14 定为 v1、F-25 定为以后、F-26 在 v0 明确不支持。本轮补全不能默默改变原分期，也不代表用户已同意从“全部功能”中排除它们；扩展到完整 v1/roadmap 的范围仍待确认。
+- **仍缺架构或产品实现**：F-14 的 Linux GLX 后端及超出已声明子集的 Shader 功能，F-25 在线服务/内容授权/信任链，以及其他矩阵明列未提供项。真机测试本身不能补齐这些代码。
+- **后续范围仍需确认**：F-12、F-14 已按本次任务扩展；原规格把 F-12/F-14 定为 v1、F-25 定为以后、F-26 在 v0 明确不支持。本轮补全不能默默改变原分期，也不代表用户已同意从“全部功能”中排除它们；扩展到完整 v1/roadmap 的范围仍待确认。
 
 ## 状态更新规则
 

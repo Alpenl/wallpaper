@@ -255,15 +255,23 @@ type Item struct {
 // ItemProps 是壁纸组自带的播放属性：随壁纸走，换到哪块屏都一样；显示器选项可逐项覆盖。
 // 零值表示默认：Fit "" = 填充，Speed 0 = 1 倍，Volume 0 = 100，Audio "" = 跟随全局“默认静音”。
 type ItemProps struct {
-	WebValues string  `json:"webValues,omitempty"` // canonical JSON; keeps snapshots immutable and ItemProps comparable
-	Fit       string  `json:"fit,omitempty"`
-	Speed     float64 `json:"speed,omitempty"`
-	Volume    int     `json:"volume,omitempty"`
-	Audio     string  `json:"audio,omitempty"` // "" | mute | sound
+	ShaderScale float64 `json:"shaderScale,omitempty"`
+	ShaderFPS   int     `json:"shaderFPS,omitempty"`
+	WebValues   string  `json:"webValues,omitempty"` // canonical JSON; keeps snapshots immutable and ItemProps comparable
+	Fit         string  `json:"fit,omitempty"`
+	Speed       float64 `json:"speed,omitempty"`
+	Volume      int     `json:"volume,omitempty"`
+	Audio       string  `json:"audio,omitempty"` // "" | mute | sound
 }
 
 // Normalize 把非法值退回默认（零值）。
 func (p *ItemProps) Normalize() {
+	if math.IsNaN(p.ShaderScale) || math.IsInf(p.ShaderScale, 0) || p.ShaderScale < .5 || p.ShaderScale > 1 {
+		p.ShaderScale = 0
+	}
+	if p.ShaderFPS != 15 && p.ShaderFPS != 30 && p.ShaderFPS != 60 {
+		p.ShaderFPS = 0
+	}
 	p.Fit = validFit(p.Fit)
 	p.Speed = validSpeed(p.Speed)
 	if p.Volume < 0 || p.Volume > 100 {

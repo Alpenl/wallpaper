@@ -21,7 +21,7 @@ var (
 	fitLabels = []string{"填充", "适应", "拉伸"}
 )
 
-var filterLabels = []string{"全部", "视频", "图片", "建议转码"}
+var filterLabels = []string{"全部", "视频", "图片", "建议转码", "网页", "Shader"}
 
 func (s *Settings) importFiles() {
 	if s.PickFiles == nil {
@@ -136,9 +136,12 @@ func (s *Settings) toolbar(c *ui.Context, v app.View) {
 				n := 0
 				for _, it := range v.Library {
 					switch {
-					case i == 0, i == 1 && it.Type == "video", i == 2 && it.Type == "image", i == 3 && it.Transcode == "recommended":
+					case i == 0, i == 1 && it.Type == "video", i == 2 && it.Type == "image", i == 3 && it.Transcode == "recommended", i == 4 && it.Type == "web", i == 5 && it.Type == "shader":
 						n++
 					}
+				}
+				if i >= 4 && n == 0 {
+					continue
 				}
 				if segment(c.Key("f"+itoa(i)), fmt.Sprintf("%s %d", tr(c, l), n), s.filter == i).FontSize(12).Clicked() {
 					s.filter = i
@@ -169,7 +172,7 @@ func (s *Settings) emptyLibrary(c *ui.Context, v app.View) {
 		ui.Box(c).Absolute().Left(0).Right(0).Top(0).Height(260).LinearGradient(ui.LinearGradient{From: t.Accent.Alpha(0.16), To: ui.Transparent, Angle: 180}).Children(func() {})
 		overline(c, tr(c, "开始使用"))
 		heading(c, tr(c, "把视频、GIF 或图片拖到这里"), 26)
-		text(c, "支持 mp4 / mov / m4v / webm / gif / png / jpg / webp，以及 .wpk、Lively 壁纸包和 Wallpaper Engine 视频壁纸").FontSize(13).TextColor(t.TextMuted)
+		text(c, "支持视频、图片、.glsl / .frag Shader、.wpk、Lively 壁纸包和 Wallpaper Engine 本地壁纸").FontSize(13).TextColor(t.TextMuted)
 		ui.Row(c).Gap(10).Padding(14, 0, 0, 0).Children(func() {
 			if accentButton(c.Key("imp2"), "选择文件…").Disabled(s.PickFiles == nil).Clicked() {
 				s.importFiles()
@@ -406,7 +409,7 @@ func propRow(c *ui.Context, key, label, sub string, last bool, control func()) {
 
 // groupProps 是“属性”：声音、音量、播放速度、填充都随壁纸保存，应用到任何显示器都生效。
 func (s *Settings) groupProps(c *ui.Context, v app.View, it config.Item) {
-	if it.Type == "web" {
+	if it.Type == "web" || it.Type == "shader" {
 		s.webProps(c, v, it)
 		return
 	}

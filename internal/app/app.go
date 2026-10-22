@@ -495,6 +495,8 @@ func (a *App) assignItem(s *screen) {
 				kind := visibility.Video
 				if cp.Type == "web" {
 					kind = visibility.Web
+				} else if cp.Type == "shader" {
+					kind = visibility.Shader
 				}
 				m.SetKind(kind)
 			}
@@ -688,6 +690,12 @@ func (a *App) screenFPSCap(s *screen) int {
 	cfg := a.d.Store.Config
 	if profile := a.d.Store.Assign.OptionsFor(string(s.d.ID)).Profile; profile != "" {
 		cfg.Perf.Profile = profile
+	}
+	if s.item != nil && s.item.Type == "shader" {
+		cfg.Perf.FPSCap = s.item.Props.ShaderFPS
+		if cfg.Perf.FPSCap == 0 {
+			cfg.Perf.FPSCap = 30
+		}
 	}
 	want := EffectiveCap(ProfileCap(cfg), s.machCap)
 	if a.foregroundAction == "saver" {

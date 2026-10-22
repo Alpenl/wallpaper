@@ -12,6 +12,11 @@ import (
 // English UI catalog. User-authored titles, paths, and backend error details
 // are deliberately not rewritten when they have no exact catalog entry.
 var english = map[string]string{
+	"视频 / 图片 / Shader / 壁纸包": "Video / Image / Shader / Wallpaper package",
+	"支持视频、图片、.glsl / .frag Shader、.wpk、Lively 壁纸包和 Wallpaper Engine 本地壁纸":           "Supports videos, images, .glsl / .frag shaders, .wpk, Lively packages, and local Wallpaper Engine wallpapers",
+	"网页使用独立 WebView 宿主，联网默认拒绝。Shader 在 Windows 使用 D3D11、macOS 使用 Metal；Linux 暂不支持。": "Web wallpapers use isolated WebView hosts with network access denied by default. Shaders use D3D11 on Windows and Metal on macOS; Linux is not supported.",
+	"渲染比例":   "Render scale",
+	"Shader": "Shader",
 	"将此屏壁纸复制到所有显示器": "Copy this display’s wallpaper to all displays",
 	"属性值": "Value",
 	"本地网页壁纸在 Windows 和 macOS 的独立沙箱宿主中播放，联网默认拒绝。Linux 不支持网页播放；Shader 尚未实现。": "Local web wallpapers run in isolated hosts on Windows and macOS, with network access denied by default. Linux web playback and Shader rendering are unsupported.",

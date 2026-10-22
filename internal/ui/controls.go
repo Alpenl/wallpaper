@@ -116,7 +116,7 @@ func (s *Settings) capabilityCard(c *ui.Context, v app.View) {
 	card(c.Key("capabilities"), "能力与边界", "只展示当前构建的真实能力，不模拟下载、统计或未实现的渲染器。", func() {
 		for _, item := range []struct{ title, description string }{
 			{"本地壁纸", "视频、图片、GIF，以及受支持的 .wpk、Lively 视频包、Wallpaper Engine 视频目录。普通文件夹可批量导入。"},
-			{"网页与 Shader", "本地网页壁纸在 Windows 和 macOS 的独立沙箱宿主中播放，联网默认拒绝。Linux 不支持网页播放；Shader 尚未实现。"},
+			{"网页与 Shader", "网页使用独立 WebView 宿主，联网默认拒绝。Shader 在 Windows 使用 D3D11、macOS 使用 Metal；Linux 暂不支持。"},
 			{"在线创意工坊", "尚未接入内容服务或账号授权。请下载已有本地视频素材后导入。"},
 			{"跨屏拼接", "Windows 与 macOS 支持按真实布局裁切跨屏画布，保留按屏暂停；各屏视频不保证逐帧同步。Linux 当前不支持多输出跨屏。"},
 			{"版本历史与本机统计", "版本页显示真实的本地回滚版本；显示器和诊断页提供本周暂停时长，不估算节电量。"},

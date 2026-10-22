@@ -28,6 +28,7 @@ import (
 
 // Options 是导入依赖。
 type Options struct {
+	ShaderSnapshot  func(packageDir, dst string) error
 	Library         string
 	Cache           string
 	GOOS            string
@@ -54,7 +55,7 @@ var ErrUnsupported = errors.New("import: not supported in this version")
 var ErrNeedsTranscode = errors.New("import: needs transcoding")
 
 // SupportedExts 是可以拖入的扩展名。
-var SupportedExts = []string{".mp4", ".mov", ".m4v", ".webm", ".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".wpk", ".zip"}
+var SupportedExts = []string{".mp4", ".mov", ".m4v", ".webm", ".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".wpk", ".zip", ".glsl", ".frag"}
 
 // Import 按来源分派。
 func Import(ctx context.Context, src string, o Options) (*Result, error) {
@@ -74,6 +75,8 @@ func Import(ctx context.Context, src string, o Options) (*Result, error) {
 		return nil, fmt.Errorf("%w: 目录里没有 LivelyInfo.json 或 project.json", ErrUnsupported)
 	}
 	switch strings.ToLower(filepath.Ext(src)) {
+	case ".glsl", ".frag":
+		return importShader(src, o)
 	case ".wpk":
 		return importWPK(src, o)
 	case ".zip":
@@ -141,6 +144,9 @@ func importWPK(src string, o Options) (*Result, error) {
 		}
 	}
 	zr.Close()
+	if err := validateShaderArchive(src); err != nil {
+		return nil, err
+	}
 	granted := false
 	r, err := wpk.ExtractChecked(src, o.Library, func(m *wpk.Manifest) error {
 		if err := supportedManifest(m); err != nil {
@@ -175,7 +181,16 @@ func importWPK(src string, o Options) (*Result, error) {
 		it.Codec = m.Video.Codec
 	}
 	applyMetadata(&it, m)
-	if m.Type == "web" {
+	if m.Type == "shader" {
+		preview := filepath.Join(it.Dir, "preview.png")
+		if o.ShaderSnapshot == nil || o.ShaderSnapshot(it.Dir, preview) != nil {
+			b, _ := os.ReadFile(filepath.Join(it.Dir, filepath.FromSlash(m.Entry)))
+			if e := shaderPlaceholder(preview, b); e != nil {
+				return nil, e
+			}
+		}
+	}
+	if m.Type == "web" || m.Type == "shader" {
 		it.Web = m.Web
 		it.PropertyDefs = m.Properties
 		it.NetworkGranted = granted

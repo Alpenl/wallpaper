@@ -20,7 +20,7 @@ type Item struct {
 	Properties     string
 	ID             string
 	Path           string // 入口文件绝对路径（已校验在包目录内）
-	Kind           string // video | image
+	Kind           string // video | image | web | shader
 	Start          float64
 }
 
@@ -140,5 +140,5 @@ type SourceUpdater interface {
 	UpdateSource(Item, visibility.Level) error
 }
 
-// PropertyUpdater delivers validated JSON through one-way script execution.
+// PropertyUpdater applies validated JSON values without reloading the renderer.
 type PropertyUpdater interface{ UpdateProperties(string) error }

@@ -1,0 +1,10 @@
+{
+ "format":"wpk","schema":0,"id":"e4f14000-0000-4000-8000-000000000001","version":1,
+ "type":"shader","entry":"content/main.frag","title":{"en":"Native waves","zh":"原生光波"},
+ "shader":{"dialect":"shadertoy-glsl"},
+ "properties":[
+  {"key":"speed","type":"slider","label":{"en":"Speed","zh":"速度"},"default":1,"min":0.1,"max":3,"step":0.1},
+  {"key":"tint","type":"color","label":{"en":"Tint","zh":"颜色"},"default":"#6688cc"},
+  {"key":"enabled","type":"bool","label":{"en":"Enabled","zh":"启用"},"default":true}
+ ]
+}

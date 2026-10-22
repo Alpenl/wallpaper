@@ -47,15 +47,41 @@ func (s *Settings) webProps(c *ui.Context, v app.View, it config.Item) {
 		s.ctl.SetItemProps(it.ID, p)
 	}
 	group(c.Key("web-properties"), func() {
-		propRow(c, "network", "网络访问", "", len(it.PropertyDefs) == 0, func() {
-			if it.NetworkGranted {
-				if button(c.Key("revoke"), "撤销联网权限").Clicked() {
-					s.ctl.RevokeNetwork(it.ID)
-				}
-			} else {
-				text(c, "已拒绝联网")
+		if it.Type == "shader" {
+			scale := it.Props.ShaderScale
+			if scale == 0 {
+				scale = .75
 			}
-		})
+			propRow(c, "shader-scale", "渲染比例", "", false, func() {
+				if ui.Slider(c.Key("shader-scale-value"), &scale, .5, 1).Label(tr(c, "渲染比例")).Width(130).Changed() {
+					p := it.Props
+					p.ShaderScale = math.Round(scale*20) / 20
+					s.ctl.SetItemProps(it.ID, p)
+				}
+			})
+			fps := it.Props.ShaderFPS
+			if fps == 0 {
+				fps = 30
+			}
+			selected := fmt.Sprint(fps)
+			propRow(c, "shader-fps", "帧率上限", "", len(it.PropertyDefs) == 0, func() {
+				if selectControl(c.Key("shader-fps-value"), &selected, []string{"15", "30", "60"}).Label(tr(c, "帧率上限")).Width(130).Changed() {
+					p := it.Props
+					fmt.Sscan(selected, &p.ShaderFPS)
+					s.ctl.SetItemProps(it.ID, p)
+				}
+			})
+		} else {
+			propRow(c, "network", "网络访问", "", len(it.PropertyDefs) == 0, func() {
+				if it.NetworkGranted {
+					if button(c.Key("revoke"), "撤销联网权限").Clicked() {
+						s.ctl.RevokeNetwork(it.ID)
+					}
+				} else {
+					text(c, "已拒绝联网")
+				}
+			})
+		}
 		for i, p := range it.PropertyDefs {
 			label := p.Label.Pick(v.Config.UI.Lang)
 			if label == "" {

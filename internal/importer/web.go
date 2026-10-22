@@ -10,7 +10,7 @@ import (
 )
 
 func supportedManifest(m *wpk.Manifest) error {
-	if m.Type != "video" && m.Type != "image" && m.Type != "web" {
+	if m.Type != "video" && m.Type != "image" && m.Type != "web" && m.Type != "shader" {
 		return fmt.Errorf("%w: %s", ErrUnsupported, m.Type)
 	}
 	if m.Web != nil {

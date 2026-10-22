@@ -113,3 +113,55 @@ func TestWebConsentCancelAndExplicitAnswer(t *testing.T) {
 		t.Fatal("explicit allow lost")
 	}
 }
+
+func TestWebRendererLifetimeFollowsAssignment(t *testing.T) {
+	var mu sync.Mutex
+	var web *fakeR
+	var calls []string
+	e := setupWith(t, 1, false, func(d *Deps) {
+		for _, kind := range []string{"web", "shader", "video", "image"} {
+			d.Store.Library.Upsert(config.Item{ID: kind, Type: kind, Dir: t.TempDir(), Entry: "content/source"})
+		}
+		d.NewRenderer = func(kind string, _ config.Config, _ desktop.DisplayID) render.Renderer {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, kind)
+			r := &fakeR{done: make(chan error, 1)}
+			if kind == "web" {
+				web = r
+			}
+			return r
+		}
+	})
+	e.sync()
+	mu.Lock()
+	n := len(calls)
+	mu.Unlock()
+	if n != 0 {
+		t.Fatal("renderer created without assignment")
+	}
+	e.a.AssignAll("web")
+	eventually(t, "web shown", func() bool { mu.Lock(); defer mu.Unlock(); return web != nil && web.isLoaded() })
+	mu.Lock()
+	old := web
+	mu.Unlock()
+	e.a.AssignAll("shader")
+	eventually(t, "web closed on shader assignment", func() bool { old.mu.Lock(); defer old.mu.Unlock(); return old.closed })
+	for _, kind := range []string{"video", "image"} {
+		e.a.AssignAll(kind)
+		e.sync()
+	}
+	e.a.AssignAll("")
+	e.sync()
+	mu.Lock()
+	defer mu.Unlock()
+	n = 0
+	for _, kind := range calls {
+		if kind == "web" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatal("unexpected web renderer creations", calls)
+	}
+}

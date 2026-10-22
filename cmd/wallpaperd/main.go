@@ -31,6 +31,7 @@ import (
 	imgr "wpapp/internal/render/image"
 	"wpapp/internal/render/mf"
 	"wpapp/internal/render/mpv"
+	"wpapp/internal/render/shader"
 	webwall "wpapp/internal/render/web"
 	"wpapp/internal/telemetry"
 	"wpapp/internal/transcode"
@@ -49,6 +50,7 @@ type flags struct {
 	importPath    string
 	duration      time.Duration
 	debug         bool
+	shaderhost    bool
 	webhost       bool
 	mfhost        bool
 	pipe, swap    string
@@ -76,6 +78,7 @@ func parseFlags(args []string) *flags {
 	fs.DurationVar(&f.duration, "duration", 0, "headless：运行时长（0=直到 Ctrl+C）")
 	fs.StringVar(&f.statusOut, "status", "", "headless：退出前把状态 JSON 写到此文件（- 为 stdout）")
 	fs.BoolVar(&f.debug, "debug", false, "调试日志")
+	fs.BoolVar(&f.shaderhost, "shaderhost", false, "internal: isolated native shader renderer")
 	fs.BoolVar(&f.webhost, "webhost", false, "internal: isolated web renderer")
 	fs.BoolVar(&f.mfhost, "mfhost", false, "内部：MF 渲染子进程")
 	fs.StringVar(&f.pipe, "pipe", "", "内部：管道名")
@@ -102,10 +105,18 @@ func main() {
 	case f.version:
 		fmt.Println("wallpaperd", version, runtime.GOOS+"/"+runtime.GOARCH)
 		return
+	case f.shaderhost:
+		os.Exit(shader.HostMain())
 	case f.webhost:
 		os.Exit(webwall.HostMain())
 	case f.mfhost:
 		os.Exit(mf.HostMain(f.pipe, f.swap, f.logPath))
+	case f.helper == "shader-preview":
+		if err := shader.PreviewMain(f.in, f.out); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
 	case f.helper == "probe":
 		info, err := media.ProbeFile(f.in)
 		if err != nil {
@@ -192,7 +203,7 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 	exe, _ := os.Executable()
 	e := &env{paths: paths, store: store, log: log, logw: lw, exe: exe, initialConfig: store.Config.Clone()}
 	e.host = newHost(f, log)
-	imp := importer.Options{Library: paths.Library, Cache: paths.Cache, GOOS: runtime.GOOS, Lang: store.Config.UI.Lang,
+	imp := importer.Options{ShaderSnapshot: func(dir, dst string) error { return shader.Preview(e.exe, dir, dst) }, Library: paths.Library, Cache: paths.Cache, GOOS: runtime.GOOS, Lang: store.Config.UI.Lang,
 		Probe: e.probe}
 	imp.Snapshot = e.snapshot
 	enc, ext, encName := e.encoder(store.Config)
@@ -290,6 +301,9 @@ func (e *env) snapshot(src, dst string) error {
 }
 
 func (e *env) newRenderer(kind string, cfg config.Config, d desktop.DisplayID) render.Renderer {
+	if kind == "shader" {
+		return shader.New(e.exe)
+	}
 	if kind == "web" {
 		return webwall.New(e.exe)
 	}

@@ -128,6 +128,8 @@ func (a *App) startNextRendition() {
 		j.state = "正在转码…"
 		ctx, cancel := context.WithCancel(a.ctx)
 		a.transcodeCancel = cancel
+		released := make(chan struct{})
+		a.transcodeDone = released
 		encode, probe := a.d.EncodeRendition, a.d.ProbeMedia
 		cache := a.d.Store.Paths.Cache
 		go func() {
@@ -159,6 +161,8 @@ func (a *App) startNextRendition() {
 			if err == nil {
 				err = ctx.Err()
 			}
+			// Match plain transcodes: deletion waits until encoder and probe release handles.
+			close(released)
 			done := make(chan struct{})
 			a.Do(func() {
 				defer close(done)

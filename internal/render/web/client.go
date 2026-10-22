@@ -36,6 +36,7 @@ type loadRequest struct {
 type Renderer struct {
 	mu      sync.Mutex
 	exe     string
+	command func() *exec.Cmd
 	cmd     *exec.Cmd
 	conn    *ipc.Conn
 	exited  chan struct{}
@@ -56,11 +57,17 @@ func (r *Renderer) Configure(o render.PlaybackOptions) error {
 }
 func (r *Renderer) UpdatePlayback(o render.PlaybackOptions) error { return r.Configure(o) }
 func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
+	if it.Kind != "web" {
+		return fmt.Errorf("web: wrong item type %q", it.Kind)
+	}
 	if runtime.GOOS == "linux" {
 		return fmt.Errorf("%w: web wallpapers are unavailable on Linux", render.ErrUnsupported)
 	}
 	_ = r.Close()
 	cmd := exec.Command(r.exe, "-webhost")
+	if r.command != nil {
+		cmd = r.command()
+	}
 	in, e := cmd.StdinPipe()
 	if e != nil {
 		return e

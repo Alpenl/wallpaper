@@ -267,7 +267,7 @@ func (h *Host) call(fn func()) error {
 
 func (h *Host) Events() <-chan desktop.Event { return h.events }
 func (h *Host) Caps() desktop.Caps {
-	return desktop.Caps{Video: true, Web: true, PerDisplay: true, ForegroundApp: h.foregroundSupported, Spanning: !h.o.Standalone}
+	return desktop.Caps{Video: true, Web: true, Shader: true, PerDisplay: true, ForegroundApp: h.foregroundSupported, Spanning: !h.o.Standalone}
 }
 
 func (h *Host) Displays() []desktop.Display {

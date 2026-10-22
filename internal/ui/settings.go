@@ -441,6 +441,14 @@ func (s *Settings) filtered(v app.View) []config.Item {
 			if it.Type != "image" {
 				continue
 			}
+		case 4:
+			if it.Type != "web" {
+				continue
+			}
+		case 5:
+			if it.Type != "shader" {
+				continue
+			}
 		case 3:
 			if it.Transcode != "recommended" {
 				continue

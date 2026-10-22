@@ -60,3 +60,20 @@ func TestNetworkDialogDefaultDeny(t *testing.T) {
 		t.Fatal("explicit consent lost")
 	}
 }
+
+func TestShaderNativePropertyPanelAndFilters(t *testing.T) {
+	ctl := uidemo.New(nil)
+	s := NewSettings(ctl, "darwin")
+	s.SelectItem("shader-waves")
+	tt := ui.NewTester(s.View, 1120, 800)
+	tt.Frame()
+	must(t, tt, "渲染比例", "帧率上限", "Shader 1", "网页 1")
+	s.filter = 5
+	if got := s.filtered(ctl.View()); len(got) != 1 || got[0].Type != "shader" {
+		t.Fatal(got)
+	}
+	s.filter = 4
+	if got := s.filtered(ctl.View()); len(got) != 1 || got[0].Type != "web" {
+		t.Fatal(got)
+	}
+}

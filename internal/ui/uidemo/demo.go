@@ -7,11 +7,13 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
 	"wpapp/internal/app"
 	"wpapp/internal/config"
 	"wpapp/internal/desktop"
 	"wpapp/internal/render"
 	"wpapp/internal/transcode"
+	"wpapp/internal/wpk"
 )
 
 // Ctl 实现 ui.Controller。
@@ -173,7 +175,7 @@ func (f *Ctl) Transcode(id string) {
 	f.V.Transcoding[id] = "正在转码…"
 }
 
-// New 返回一个有 6 张壁纸、2 块显示器的演示库。thumbs 是 id → 缩略图 PNG 路径（可为空）。
+// New 返回一个有 8 张壁纸、2 块显示器的演示库。thumbs 是 id → 缩略图 PNG 路径（可为空）。
 func New(thumbs map[string]string) *Ctl {
 	t0 := time.Date(2026, 10, 20, 21, 0, 0, 0, time.Local)
 	mk := func(i int, id, title, typ, origin, codec, tc, note string) config.Item {
@@ -188,6 +190,11 @@ func New(thumbs map[string]string) *Ctl {
 		mk(4, "pixel", "像素小镇", "video", "file", "gif", "none", "GIF 已按视频播放"),
 		mk(5, "mount", "雪山", "image", "file", "", "none", ""),
 	}
+	lib = append(lib, mk(6, "web-orbit", "轨道网页", "web", "native", "", "none", ""), mk(7, "shader-waves", "光波 Shader", "shader", "native", "", "none", ""))
+	lib[6].Entry = "content/index.html"
+	lib[6].Web = &wpk.Web{FPSCap: 30}
+	lib[7].Entry = "content/main.frag"
+	lib[7].PropertyDefs = []wpk.Prop{{Key: "tint", Type: "color", Default: json.RawMessage(`"#6699cc"`), Label: wpk.I18n{"en": "Tint", "zh": "颜色"}}, {Key: "enabled", Type: "bool", Default: json.RawMessage(`true`), Label: wpk.I18n{"en": "Enabled", "zh": "启用"}}}
 	lib[1].Props = config.ItemProps{Audio: "sound", Volume: 60, Speed: 0.75}
 	cfg := config.Defaults()
 	cfg.Startup.Asked = true
