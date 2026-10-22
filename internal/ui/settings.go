@@ -37,6 +37,7 @@ type Controller interface {
 	SetItemProps(itemID string, props config.ItemProps)              // 壁纸组自带的播放属性
 	SetLayout(layout, itemID string)
 	Import(path, applyTo string) // applyTo：空 = 只加入库；显示器 ID = 同时应用到这块屏
+	CancelImports()
 	Remove(itemID string)
 	UpdateConfig(func(*config.Config))
 	ExitSafeMode()
@@ -145,6 +146,7 @@ type Settings struct {
 	rollbackAsk     bool
 	rollbackVersion string
 	confirmCache    bool
+	pickerStatus    string
 }
 
 type thumb struct {
@@ -153,10 +155,11 @@ type thumb struct {
 }
 
 type updState struct {
-	busy     bool
-	msg      string
-	info     *UpdateInfo
-	progress float64
+	busy      bool
+	installed bool
+	msg       string
+	info      *UpdateInfo
+	progress  float64
 }
 
 func NewSettings(ctl Controller, goos string) *Settings {
@@ -335,7 +338,7 @@ func banner(c *ui.Context, col ui.Color, title, msg string, action func()) {
 // ---- 共用小部件 ----
 
 // pageWidth 是设置类页面正文的最大宽度。
-const pageWidth = 860
+const pageWidth = 760
 
 // page 画页面标题和可滚动的内容区。
 func page(c *ui.Context, title, sub string, actions func(), body func()) {
@@ -363,16 +366,16 @@ func page(c *ui.Context, title, sub string, actions func(), body func()) {
 // card 是设置分组卡片。
 func card(c *ui.Context, title, desc string, body func()) {
 	t := c.Theme()
-	ui.Column(c).Radius(14).Background(panelBg(t)).Border(1, lineColor(t)).Children(func() {
+	ui.Column(c).Gap(8).Children(func() {
 		if title != "" {
-			ui.Column(c).Padding(16, 20, 4, 20).Gap(3).Children(func() {
-				text(c, title).FontSize(15).FontWeight(600)
-				if desc != "" {
-					text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap()
-				}
-			})
+			sectionHeader(c, "section", tr(c, title), nil)
 		}
-		ui.Column(c).Padding(2, 20, 8, 20).Children(body)
+		group(c.Key("fields"), func() {
+			if desc != "" {
+				text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap().Padding(12, 0, 4, 0)
+			}
+			body()
+		})
 	})
 }
 
@@ -380,7 +383,7 @@ func card(c *ui.Context, title, desc string, body func()) {
 func settingRow(c *ui.Context, title, desc string, control func()) {
 	t := c.Theme()
 	ui.Row(c).Gap(16).Padding(12, 0).MinHeight(52).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(lineColor(t)).Children(func() {
-		ui.Column(c).Grow(1).Shrink(1).Gap(2).Children(func() {
+		ui.Column(c).Grow(1).Shrink(1).MinWidth(160).Gap(2).Children(func() {
 			text(c, title).FontSize(13).FontWeight(500)
 			if desc != "" {
 				text(c, desc).FontSize(12).TextColor(t.TextMuted).Wrap()
@@ -478,6 +481,7 @@ func (s *Settings) curDisplay(v app.View) *app.DisplayView {
 
 // importPath 导入一个文件：默认只加入库；设置为“应用到当前显示器”时只应用到当前那一块。
 func (s *Settings) importPath(p string) {
+	s.pickerStatus = ""
 	v := s.ctl.View()
 	to := ""
 	if v.Config.UI.ImportApply == "current" {

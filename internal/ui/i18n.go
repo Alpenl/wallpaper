@@ -12,6 +12,13 @@ import (
 // English UI catalog. User-authored titles, paths, and backend error details
 // are deliberately not rewritten when they have no exact catalog entry.
 var english = map[string]string{
+	"当前暂停原因":             "Current pause reasons",
+	"继续后仍会遵循自动暂停规则":      "Automatic pause policies still apply after resuming.",
+	"导入已取消；已完成的项目保留在壁纸库": "Import cancelled; completed items remain in the library",
+	"已取消文件选择":            "File selection cancelled",
+	"取消导入":               "Cancel import",
+	"文件选择失败：":            "File selection failed: ",
+
 	"mpv 路径":      "mpv path",
 	"mpv 可执行文件路径": "mpv executable path",
 	"保存 mpv 路径":   "Save mpv path",
@@ -648,7 +655,7 @@ func translate(lang, value string) string {
 	if strings.HasPrefix(value, "已导入「") && strings.HasSuffix(value, "」") {
 		return "Imported: " + strings.TrimSuffix(strings.TrimPrefix(value, "已导入「"), "」")
 	}
-	for _, p := range [][2]string{{"下载并安装 ", "Download and install "}, {"回滚到 ", "Roll back to "}, {"更新失败：", "Update failed: "}, {"回滚失败：", "Rollback failed: "}, {"导出失败：", "Export failed: "}, {"已应用到 ", "Applied to "}, {"使用中 · ", "In use · "}, {"正在用于：", "Used on: "}, {"暂停原因：", "Pause reason: "}, {"后端 ", "Backend "}, {"硬解 ", "Hardware decoding "}, {"规则动作 ", "Rule action "}, {"删除规则 ", "Remove rule "}, {"已导入「", "Imported: "}} {
+	for _, p := range [][2]string{{"文件选择失败：", "File selection failed: "}, {"导入失败: ", "Import failed: "}, {"下载并安装 ", "Download and install "}, {"回滚到 ", "Roll back to "}, {"更新失败：", "Update failed: "}, {"回滚失败：", "Rollback failed: "}, {"导出失败：", "Export failed: "}, {"已应用到 ", "Applied to "}, {"使用中 · ", "In use · "}, {"正在用于：", "Used on: "}, {"暂停原因：", "Pause reason: "}, {"后端 ", "Backend "}, {"硬解 ", "Hardware decoding "}, {"规则动作 ", "Rule action "}, {"删除规则 ", "Remove rule "}, {"已导入「", "Imported: "}} {
 		if strings.HasPrefix(value, p[0]) {
 			return p[1] + strings.TrimPrefix(value, p[0])
 		}
@@ -665,11 +672,18 @@ func textf(c *ui.Context, format string, args ...any) ui.Element {
 func button(c *ui.Context, label string) ui.Element        { return ui.Button(c, tr(c, label)) }
 func primaryButton(c *ui.Context, label string) ui.Element { return ui.PrimaryButton(c, tr(c, label)) }
 func segmented(c *ui.Context, selected *int, labels ...string) ui.Element {
-	translated := make([]string, len(labels))
-	for i, l := range labels {
-		translated[i] = tr(c, l)
+	changed := false
+	e := segmentGroup(c, func() {
+		for i, label := range labels {
+			if segment(c.Key(itoa(i)), label, *selected == i).Clicked() && *selected != i {
+				*selected, changed = i, true
+			}
+		}
+	})
+	if changed {
+		e.SetChanged()
 	}
-	return ui.Segmented(c, selected, translated...)
+	return e
 }
 func selectControl(c *ui.Context, selected *string, options []string) ui.Element {
 	current := tr(c, *selected)

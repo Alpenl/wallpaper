@@ -374,3 +374,66 @@ func TestSameIDPackageUpdateRefreshesActiveRenderer(t *testing.T) {
 		return !v.Importing && len(v.Library) == 1 && v.Library[0].Title == "Updated" && e.cur("A") != first && e.cur("A").isLoaded()
 	})
 }
+
+func TestCancelImportsStopsActiveAndDropsQueue(t *testing.T) {
+	started := make(chan struct{})
+	var calls atomic.Int32
+	e := setupWith(t, 1, false, func(d *Deps) {
+		d.Import = func(ctx context.Context, src string) (*importer.Result, error) {
+			calls.Add(1)
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+	})
+	e.a.Import("first.mp4", "A")
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("import did not start")
+	}
+	e.a.Import("second.mp4", "A")
+	eventually(t, "queued", func() bool { return e.a.View().ImportQueued == 1 })
+	e.a.CancelImports()
+	e.a.CancelImports()
+	eventually(t, "cancelled", func() bool {
+		v := e.a.View()
+		return !v.Importing && v.ImportQueued == 0 && v.LastImport == "导入已取消；已完成的项目保留在壁纸库"
+	})
+	if calls.Load() != 1 || len(e.a.View().Library) != 0 || byID(e.a.View(), "A").ItemID != "" {
+		t.Fatal("cancelled work applied or queued import started")
+	}
+}
+
+func TestCancelledBatchKeepsCompletedItemsWithoutApplying(t *testing.T) {
+	sources := t.TempDir()
+	for _, name := range []string{"a.mp4", "b.mp4"} {
+		if err := os.WriteFile(filepath.Join(sources, name), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	second := make(chan struct{})
+	e := setupWith(t, 1, false, func(d *Deps) {
+		d.Import = func(ctx context.Context, src string) (*importer.Result, error) {
+			if filepath.Base(src) == "b.mp4" {
+				close(second)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return &importer.Result{Item: config.Item{ID: "completed", Title: "Completed", Type: "video", Dir: d.Store.Paths.Library, Entry: "a.mp4"}}, nil
+		}
+	})
+	e.a.Import(sources, "A")
+	select {
+	case <-second:
+	case <-time.After(time.Second):
+		t.Fatal("second source never started")
+	}
+	eventually(t, "first committed", func() bool { return len(e.a.View().Library) == 1 })
+	e.a.CancelImports()
+	eventually(t, "cancelled batch", func() bool { return !e.a.View().Importing })
+	v := e.a.View()
+	if len(v.Library) != 1 || v.Library[0].ID != "completed" || byID(v, "A").ItemID != "" {
+		t.Fatal("cancellation removed completed item or applied partial batch", v.Library)
+	}
+}

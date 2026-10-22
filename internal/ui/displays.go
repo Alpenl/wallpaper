@@ -76,7 +76,7 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 					y := 12 + float32(d.Y-minY)*sc
 					w, h := float32(d.W)*sc-6, float32(d.H)*sc-6
 					sel := d.ID == s.dispSel
-					mon := ui.Box(c.Key("mon"+d.ID)).Absolute().Left(x).Top(y).Size(w, h).Radius(10).Clip().Border(2, t.Border).Cursor(ui.CursorPointer).Children(func() {
+					mon := ui.Box(c.Key("mon"+d.ID)).Absolute().Left(x).Top(y).Size(w, h).Radius(12).Clip().Border(1, lineColor(t)).Cursor(ui.CursorPointer).Children(func() {
 						if it := s.itemByID(v, d.ItemID); it != nil {
 							s.preview(c, *it, h)
 						} else {
@@ -124,18 +124,14 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 		}
 		card(c.Key("advanced"), "多显示器高级选项", "", func() {
 			settingRow(c, "布局方式", "跨屏模式按真实坐标裁切同一画布；保留独立模式设置，可随时切回", func() {
-				independent, span := button, button
-				if v.Layout == "span" {
-					span = primaryButton
-				} else {
-					independent = primaryButton
-				}
-				if independent(c.Key("independent"), "独立显示器").Clicked() {
-					s.ctl.SetLayout("independent", "")
-				}
-				if span(c.Key("span"), "跨屏拼接").Disabled(!v.Capabilities.Spanning).Clicked() {
-					s.ctl.SetLayout("span", d.ItemID)
-				}
+				segmentGroup(c.Key("layout-mode"), func() {
+					if segment(c.Key("independent"), "独立显示器", v.Layout != "span").Clicked() && v.Layout == "span" {
+						s.ctl.SetLayout("independent", "")
+					}
+					if segment(c.Key("span"), "跨屏拼接", v.Layout == "span").Disabled(!v.Capabilities.Spanning).Clicked() && v.Layout != "span" {
+						s.ctl.SetLayout("span", d.ItemID)
+					}
+				})
 			})
 			if !v.Capabilities.Spanning {
 				text(c, "当前桌面宿主不支持跨屏画布；复制壁纸仍可使用。").FontSize(12).TextColor(t.Warning).Wrap()
@@ -147,7 +143,7 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 				text(c, "各屏保留独立解码与暂停，不保证视频逐帧同步。混合缩放按系统桌面坐标拼接。").FontSize(12).TextColor(t.TextMuted).Wrap()
 			} else {
 				settingRow(c, "复制到所有显示器", fmt.Sprintf(tr(c, "把「%s」的壁纸设为默认，并清除所有屏的单独设置"), displayName(c, *d)), func() {
-					if button(c.Key("dup"), "复制").Disabled(d.ItemID == "").Clicked() {
+					if softButton(c.Key("dup"), "复制").Disabled(d.ItemID == "").Clicked() {
 						s.ctl.AssignAll(d.ItemID)
 						c.Toast(tr(c, "已复制到所有显示器"))
 					}
@@ -243,7 +239,11 @@ func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 			hint = "修改后应用到整个跨屏画布"
 		}
 		settingRow(c, "壁纸", hint, func() {
-			s.itemSelect(c.Key("sel"+d.ID), v, d.ID, d.ItemID)
+			assigned := d.ItemID
+			if !d.Custom && v.Layout != "span" {
+				assigned = ""
+			}
+			s.itemSelect(c.Key("sel"+d.ID), v, d.ID, assigned)
 		})
 		// 填充、速度、声音默认跟随壁纸组自带的属性；这里选具体值就是这块屏的覆盖项。
 		follow := tr(c, "跟随壁纸")
@@ -274,7 +274,7 @@ func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 		}
 		settingRow(c, "播放速度", speedHint, func() {
 			speed := eff.Speed
-			if d.Options.Speed != 0 && button(c.Key("speedreset"+d.ID), "跟随壁纸").Clicked() {
+			if d.Options.Speed != 0 && softButton(c.Key("speedreset"+d.ID), "跟随壁纸").Clicked() {
 				o := d.Options
 				o.Speed = 0
 				s.ctl.SetDisplayOptions(d.ID, o)
@@ -345,11 +345,11 @@ func (s *Settings) renameRow(c *ui.Context, d app.DisplayView) {
 	settingRow(c.Key("rn"+d.ID), "名称", desc, func() {
 		if !editing {
 			ui.Text(c, displayName(c, d)).Bold().FontSize(13).SingleLine().Ellipsis("…")
-			if button(c.Key("rename"+d.ID), "重命名").Clicked() {
+			if softButton(c.Key("rename"+d.ID), "重命名").Clicked() {
 				s.renameID, s.renameBuf = d.ID, displayName(c, d)
 			}
 			if d.Alias != "" {
-				if button(c.Key("rnreset"+d.ID), "恢复默认名称").Clicked() {
+				if softButton(c.Key("rnreset"+d.ID), "恢复默认名称").Clicked() {
 					s.ctl.SetAlias(d.ID, "")
 					c.Toast(tr(c, "已恢复默认名称"))
 				}
@@ -370,11 +370,11 @@ func (s *Settings) renameRow(c *ui.Context, d app.DisplayView) {
 			save()
 			return
 		}
-		if primaryButton(c.Key("rnsave"+d.ID), "保存").Clicked() {
+		if accentButton(c.Key("rnsave"+d.ID), "保存").Clicked() {
 			save()
 			return
 		}
-		if button(c.Key("rncancel"+d.ID), "取消").Clicked() {
+		if softButton(c.Key("rncancel"+d.ID), "取消").Clicked() {
 			s.renameID, s.renameBuf = "", ""
 		}
 	})

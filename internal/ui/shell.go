@@ -92,15 +92,21 @@ func (sh *Shell) Start(openWindow bool) error {
 		}
 	}
 	sh.S.PickFolder = func() string {
-		ps, _ := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: translate(sh.S.view0().Config.UI.Lang, "选择壁纸或素材文件夹"), Directory: true})
+		ps, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: translate(sh.S.view0().Config.UI.Lang, "选择壁纸或素材文件夹"), Directory: true})
+		if err != nil {
+			sh.S.pickerStatus = "文件选择失败：" + err.Error()
+		}
 		if len(ps) == 0 {
 			return ""
 		}
 		return ps[0]
 	}
 	sh.S.PickFiles = func() []string {
-		ps, _ := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: translate(sh.S.view0().Config.UI.Lang, "导入壁纸"), Multiple: true,
+		ps, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: translate(sh.S.view0().Config.UI.Lang, "导入壁纸"), Multiple: true,
 			Filters: []mygo.FileFilter{{Name: "视频 / 图片 / 壁纸包", Extensions: []string{"mp4", "mov", "m4v", "webm", "gif", "png", "jpg", "jpeg", "webp", "bmp", "wpk", "zip"}}}})
+		if err != nil {
+			sh.S.pickerStatus = "文件选择失败：" + err.Error()
+		}
 		return ps
 	}
 	t, err := mygo.NewTray(mygo.TrayOptions{ID: "wallpaperd", Icon: Icon(), ToolTip: translate(sh.S.view0().Config.UI.Lang, "动态壁纸"), Menu: sh.menu(false)})

@@ -247,3 +247,10 @@ func (f *Ctl) SetLayout(layout, itemID string) {
 		f.V.Layout = "independent"
 	}
 }
+
+func (f *Ctl) CancelImports() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.V.Importing, f.V.ImportQueued = false, 0
+	f.V.LastImport = "导入已取消；已完成的项目保留在壁纸库"
+}

@@ -86,7 +86,7 @@ func (s *Settings) topBar(c *ui.Context, v app.View) {
 				s.importFolder()
 			}
 			ghostButton(c.Key("more"), "更多导入").Menu(func(m *ui.Menu) {
-				if m.Item(tr(c, "导入 Lively 壁纸包（.zip）…")).Disabled(s.PickFiles == nil).Chosen() {
+				if m.Item(tr(c, "导入 Lively 壁纸包（.zip）…")).Disabled(s.PickFiles == nil || v.Importing).Chosen() {
 					s.importFiles()
 				}
 				if m.Item(tr(c, "导入文件夹…")).Disabled(s.PickFolder == nil || v.Importing).Chosen() {

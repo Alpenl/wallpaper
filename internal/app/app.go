@@ -167,6 +167,8 @@ type App struct {
 	storageDirty     bool
 	ctx              context.Context
 	importing        bool
+	importCancel     context.CancelFunc
+	importCancelled  bool
 	importQueue      []importRequest
 	transcodeQueue   []string
 	transcodingID    string
@@ -1194,6 +1196,19 @@ func (a *App) Import(path, applyTo string) {
 	})
 }
 
+// CancelImports stops the active importer and drops queued requests. Completed
+// items remain in the library; cancellation never auto-applies a partial batch.
+func (a *App) CancelImports() {
+	a.Do(func() {
+		a.importQueue = nil
+		a.importCancelled = true
+		if a.importCancel != nil {
+			a.importCancel()
+		}
+		a.lastImp = "导入已取消；已完成的项目保留在壁纸库"
+	})
+}
+
 // Imports may replace complete item directories, so they are serialized with
 // encoder commits and removals. Finite import requests take priority over queued
 // optimizations; after the import queue drains, one encoder starts at a time.
@@ -1219,9 +1234,12 @@ func (a *App) beginImport(path, applyTo string) {
 		return
 	}
 	a.importing = true
+	a.importCancelled = false
 	a.lastImp = "正在导入 " + filepath.Base(path) + " …"
-	ctx := a.ctx
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.importCancel = cancel
 	go func() {
+		defer cancel()
 		paths := []string{path}
 		var err error
 		if st, e := os.Stat(path); e == nil && st.IsDir() {
@@ -1229,9 +1247,13 @@ func (a *App) beginImport(path, applyTo string) {
 		}
 		if err != nil {
 			a.Do(func() {
-				a.importing = false
+				a.importing, a.importCancel = false, nil
 				a.lastImp = "导入失败: " + err.Error()
-				a.lastErr = a.lastImp
+				if a.importCancelled {
+					a.lastImp = "导入已取消；已完成的项目保留在壁纸库"
+				} else {
+					a.lastErr = a.lastImp
+				}
 				a.advanceJobs()
 			})
 			return
@@ -1286,9 +1308,15 @@ func (a *App) beginImport(path, applyTo string) {
 				}
 			})
 		}
+		cancelled := ctx.Err() != nil
 		a.Do(func() {
-			a.importing = false
+			a.importing, a.importCancel = false, nil
 			defer a.advanceJobs()
+			if cancelled || a.importCancelled {
+				a.lastImp = "导入已取消；已完成的项目保留在壁纸库"
+				a.refreshStorage()
+				return
+			}
 			switch {
 			case imported == 1 && failed == 0:
 				a.lastImp = "已导入「" + firstTitle + "」"

@@ -27,7 +27,12 @@ func (s *Settings) importFiles() {
 	if s.PickFiles == nil {
 		return
 	}
-	for _, p := range s.PickFiles() {
+	s.pickerStatus = ""
+	paths := s.PickFiles()
+	if len(paths) == 0 && s.pickerStatus == "" {
+		s.pickerStatus = "已取消文件选择"
+	}
+	for _, p := range paths {
 		s.importPath(p)
 	}
 }
@@ -66,14 +71,14 @@ func (s *Settings) library(c *ui.Context, v app.View) {
 	drop := ui.Row(c.Key("libdrop")).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 		ui.Column(c.Key("libmain")).Grow(1).Shrink(1).MinWidth(0).MinHeight(0).Children(func() {
 			if len(v.Library) == 0 {
-				if v.Importing || v.LastImport != "" {
+				if v.Importing || v.ImportQueued > 0 || v.LastImport != "" || s.pickerStatus != "" {
 					s.importStatus(c, v)
 				}
 				s.emptyLibrary(c, v)
 				return
 			}
 			s.toolbar(c, v)
-			if v.Importing || v.LastImport != "" {
+			if v.Importing || v.ImportQueued > 0 || v.LastImport != "" || s.pickerStatus != "" {
 				s.importStatus(c, v)
 			}
 			if len(items) == 0 {
@@ -106,7 +111,16 @@ func (s *Settings) importStatus(c *ui.Context, v app.View) {
 		if v.Importing {
 			ui.Spinner(c).Size(14, 14)
 		}
-		text(c, v.LastImport).FontSize(12).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).Shrink(1)
+		message := v.LastImport
+		if s.pickerStatus != "" {
+			message = s.pickerStatus
+		}
+		text(c, message).FontSize(12).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).Shrink(1)
+		if v.Importing || v.ImportQueued > 0 {
+			if ghostButton(c.Key("cancel-import"), "取消导入").Clicked() {
+				s.ctl.CancelImports()
+			}
+		}
 		if v.ImportQueued > 0 {
 			textf(c, "队列中还有 %d 个请求", v.ImportQueued).FontSize(12).TextColor(t.TextMuted)
 		}
