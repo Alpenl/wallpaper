@@ -52,6 +52,7 @@ func NewAsyncWriter(dir, name string) (*AsyncWriter, error) {
 	if err != nil {
 		return nil, err
 	}
+	// AsyncWriter 拥有写入循环；Close 关闭 done，排空队列并刷盘后退出。
 	go w.loop(f, size)
 	return w, nil
 }

@@ -72,7 +72,9 @@ func (h *Host) Start() error {
 	h.c = c
 	h.scr = xproto.Setup(c).DefaultScreen(c)
 	h.initForeground()
+	// Host 拥有事件读取循环；Close 关闭 X11 连接后退出。
 	go h.drain()
+	// Host 拥有信号轮询；Close 关闭 stop 后退出。
 	go h.pollSignals()
 	return nil
 }

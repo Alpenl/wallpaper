@@ -45,6 +45,7 @@ func newClient(rw io.ReadWriteCloser, logs ...render.LogFunc) *client {
 	if len(logs) > 0 {
 		c.log = logs[0]
 	}
+	// client 拥有读取循环；连接关闭或读取失败后退出。
 	go c.readLoop()
 	return c
 }

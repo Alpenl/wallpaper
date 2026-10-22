@@ -512,6 +512,7 @@ func (s *Settings) checkUpdate() {
 	s.upd.busy, s.upd.msg, s.upd.info, s.upd.progress = true, "正在检查…", nil, 0
 	s.mu.Unlock()
 	s.invalidate()
+	// Settings 拥有检查任务；更新检查及状态回写完成后退出。
 	go func() {
 		info, err := s.CheckUpdate()
 		s.setUpd(func(u *updState) {
@@ -549,6 +550,7 @@ func (s *Settings) applyUpdate() {
 	if !s.beginUpdate("正在下载…") {
 		return
 	}
+	// Settings 拥有下载任务；更新成功或失败并回写状态后退出。
 	go func() {
 		err := s.ApplyUpdate(func(done, total int64) {
 			s.setUpd(func(u *updState) {
@@ -579,6 +581,7 @@ func (s *Settings) rollback() {
 	if !s.beginUpdate("正在回滚…") {
 		return
 	}
+	// Settings 拥有回滚任务；回滚及重启请求处理完成后退出。
 	go func() {
 		err := s.Rollback()
 		s.setUpd(func(u *updState) {

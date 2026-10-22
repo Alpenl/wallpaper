@@ -97,6 +97,7 @@ func runUI(f *flags) int {
 		if cfg.Update.AutoCheck && cfg.Update.FeedURL != "" && settings.Info.UpdateKey {
 			settings.CheckUpdates()
 		}
+		// UI 拥有更新确认任务；60 秒确认完成或 ctx 取消后退出。
 		go func() { // 稳定运行 60 s 后确认本次更新（F-15）
 			select {
 			case <-time.After(60 * time.Second):

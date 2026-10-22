@@ -182,6 +182,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	r.statsMu.Lock()
 	r.heartbeat = time.Now()
 	r.statsMu.Unlock()
+	// Renderer owns the watchdog; it exits on child exit or heartbeat timeout.
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()

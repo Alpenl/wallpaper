@@ -435,6 +435,7 @@ func runHeadless(f *flags) int {
 		defer cancel()
 	}
 	if f.importPath != "" {
+		// headless 拥有导入观察器；成功、失败或最多 600 次轮询后退出。
 		go func() {
 			n := len(e.app.View().Library)
 			e.app.Import(f.importPath, "")
