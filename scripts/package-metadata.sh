@@ -7,7 +7,7 @@ package_validate
 mkdir -p dist/package-metadata
 python3 - "$VERSION" <<'PY'
 from pathlib import Path
-import datetime, json, os, re, subprocess, sys
+import json, os, re, subprocess, sys
 version = sys.argv[1]
 out = Path('dist/package-metadata')
 def command(*args):
@@ -21,15 +21,34 @@ if os.environ.get('GITHUB_SHA') and dirty:
 go_version = command('go', 'version')
 if not go_version.startswith('go version go'):
     raise SystemExit('go is not the Go compiler')
-modules_raw = command('go', 'list', '-m', '-json', 'all')
-modules, decoder = [], json.JSONDecoder()
-while modules_raw.strip():
-    entry, end = decoder.raw_decode(modules_raw.lstrip())
-    modules.append(entry)
-    modules_raw = modules_raw.lstrip()[end:]
+# The complete module graph includes upstream test-only modules that are not
+# downloaded or linked. Collect only command dependencies, unioned across every
+# published target so host-specific imports cannot omit a runtime's notices.
+targets = ['windows/amd64', 'windows/arm64', 'darwin/amd64', 'darwin/arm64', 'linux/amd64']
+modules_by_path, decoder = {}, json.JSONDecoder()
+for target in targets:
+    target_os, target_arch = target.split('/')
+    env = dict(os.environ, GOOS=target_os, GOARCH=target_arch, CGO_ENABLED='0')
+    packages_raw = subprocess.check_output(
+        ['go', 'list', '-deps', '-json', './cmd/wallpaperd'], text=True, env=env)
+    while packages_raw.strip():
+        entry, end = decoder.raw_decode(packages_raw.lstrip())
+        packages_raw = packages_raw.lstrip()[end:]
+        module = entry.get('Module')
+        if not module or module.get('Main'):
+            continue
+        if module.get('Replace'):
+            raise SystemExit('Release metadata refuses unreviewed module replacements')
+        selected = {key: module.get(key) for key in ['Path', 'Version', 'Dir']}
+        if not selected['Path'] or not selected['Version']:
+            raise SystemExit('Incomplete runtime module identity for ' + entry.get('ImportPath', target))
+        previous = modules_by_path.setdefault(selected['Path'], selected)
+        if previous != selected:
+            raise SystemExit('Inconsistent runtime module metadata across targets: ' + selected['Path'])
+modules = [modules_by_path[path] for path in sorted(modules_by_path)]
 lines = [f'version={version}', f'commit={commit}', f'dirty={str(dirty).lower()}',
          f'go={go_version}', 'cgo_enabled=0',
-         'targets=windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64',
+         'targets=' + ' '.join(targets),
          'mpv_bundled=false', 'ffmpeg_bundled=false', 'production_update_feed=not-configured',
          'windows_signing=' + ('requested; see external signature verification' if os.environ.get('WPAPP_SIGN_CMD') else 'unsigned'),
          'macos_developer_id=' + ('requested; see external signature verification' if os.environ.get('WPAPP_CODESIGN_ID') else 'none'),
@@ -92,9 +111,9 @@ rights, under %LOCALAPPDATA%\\Programs\\Wallpaper. The NSIS installer itself is
 an x86 bootstrap; its wallpaperd.exe payload matches the filename architecture.
 mpv IS NOT BUNDLED: default Windows video playback needs a separately installed
 matching-architecture mpv from https://mpv.io/installation/. Extract mpv's complete
-upstream distribution to a user-controlled directory. In Wallpaper's Playback & Performance page, under Decode & render, set the mpv
-path to that mpv.exe. Alternatively, put mpv.exe on
-PATH. Restart the application after changing PATH. The experimental Media
+upstream distribution to a user-controlled directory. In Wallpaper's Playback
+& Performance page, under Decode & render, set the mpv path to that mpv.exe.
+Alternatively, put mpv.exe on PATH. Restart the application after changing PATH. The experimental Media
 Foundation route is not a certified replacement for this runtime dependency.
 Optional Windows transcoding additionally requires the user's own ffmpeg build
 with h264_mf. No codec or runtime is downloaded silently.
