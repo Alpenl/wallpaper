@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Native release: checks -> five cross-builds -> installers/archives -> verification.
-# VERSION=0.3.0-mvp SKIP_TESTS=1 scripts/release.sh
+# VERSION=1.2.3 SKIP_TESTS=1 scripts/release.sh
 # Final, flat upload directory: dist/release/ (not the entire dist/ directory).
 # No mpv/ffmpeg download, signing identity, or production update key is needed.
 # Signed builds require explicit ALLOW_SIGNING=1 plus the existing signing hooks.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export VERSION=${VERSION:-0.3.0-mvp}
+export VERSION=${VERSION:?Set VERSION to the release semver}
 export RELEASE_DIR=${RELEASE_DIR:-dist/release}
 source scripts/package-common.sh
 package_validate
@@ -24,10 +24,6 @@ if [ -n "${WPAPP_CODESIGN_ID:-}${WPAPP_NOTARY_PROFILE:-}" ] && [ "$(uname)" != D
 fi
 if [ -n "${WPAPP_NOTARY_PROFILE:-}" ] && [ -z "${WPAPP_CODESIGN_ID:-}" ]; then
   echo 'notarization requires WPAPP_CODESIGN_ID' >&2; exit 1
-fi
-if [ -n "${WPAPP_UPDATE_KEY:-}${WPAPP_UPDATE_PUB:-}" ]; then
-  echo 'This installer/archive release does not configure an update feed. Use the separately reviewed update-publishing process.' >&2
-  exit 1
 fi
 bash scripts/release-self-test.sh
 if [ "${SKIP_TESTS:-0}" != 1 ]; then bash scripts/check.sh; fi
@@ -47,6 +43,7 @@ PY
 ARCHES='amd64 arm64' bash scripts/package-windows.sh
 ARCHES='amd64 arm64' bash scripts/package-macos.sh
 ARCHES='amd64' bash scripts/package-linux.sh
+bash scripts/package-updates.sh
 cp dist/package-metadata/{RELEASE-NOTES,BUILD-INFO}.txt "$RELEASE_DIR/"
 python3 - "$RELEASE_DIR" <<'PY'
 from pathlib import Path

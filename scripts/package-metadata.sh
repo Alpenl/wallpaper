@@ -49,6 +49,7 @@ modules = [modules_by_path[path] for path in sorted(modules_by_path)]
 lines = [f'version={version}', f'commit={commit}', f'dirty={str(dirty).lower()}',
          f'go={go_version}', 'cgo_enabled=0',
          'targets=' + ' '.join(targets),
+         'updater_signing=' + ('signed' if os.environ.get('WPAPP_UPDATE_KEY') and os.environ.get('WPAPP_UPDATE_PUB') else 'unsigned'),
          'mpv_bundled=false', 'ffmpeg_bundled=false', 'production_update_feed=not-configured',
          'windows_signing=' + ('requested; see external signature verification' if os.environ.get('WPAPP_SIGN_CMD') else 'unsigned'),
          'macos_developer_id=' + ('requested; see external signature verification' if os.environ.get('WPAPP_CODESIGN_ID') else 'none'),
@@ -91,7 +92,7 @@ for label, root in roots:
         notice += ['=' * 72, label + ' / ' + path.relative_to(root).as_posix(),
                    '=' * 72, path.read_text(errors='replace').rstrip(), '']
 (out / 'THIRD-PARTY-NOTICES.txt').write_text('\n'.join(notice) + '\n')
-notes = f'''Wallpaper {version} native MVP prerelease
+notes = f'''Wallpaper {version} native release
 
 Native Go + MyGo application only. No React runtime is included.
 
@@ -103,7 +104,9 @@ security controls unless you have verified and trust this release. See
 BUILD-INFO.txt for the build's actual signing-hook configuration. Compilation
 and package verification do not establish Windows/macOS runtime acceptance,
 hardware decoding, power efficiency, installation behavior, or OS compatibility.
-No production update-feed keys are configured. Download new releases manually.
+No hosted update feed is configured. If updater keys were supplied, the separate
+updates archive contains verified signed manifests for deployment by the operator.
+See BUILD-INFO.txt for updater signing status. Download new releases manually.
 
 WINDOWS amd64 / arm64
 Run the matching setup.exe. Installation is per-user, without administrator

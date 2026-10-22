@@ -1,0 +1,131 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing semver tag reachable from master (vMAJOR.MINOR.PATCH)
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+env:
+  GOTOOLCHAIN: local
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      commit: ${{ steps.tag.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and master ancestry
+        id: tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: python3 scripts/release-context.py
+  verify:
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.resolve.outputs.commit }}
+  build:
+    needs: [resolve, verify]
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - name: Restore exact packages from an earlier attempt
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/restore-release.py
+      - name: Install packaging tools
+        if: steps.restore.outputs.restored != 'true'
+        run: brew install nsis sevenzip coreutils osslsigncode
+      - name: Build and verify packages with optional signing
+        if: steps.restore.outputs.restored != 'true'
+        env:
+          SKIP_TESTS: '1'
+          ALLOW_SIGNING: '1'
+          WPAPP_SIGN_CMD: ${{ secrets.WPAPP_SIGN_CMD }}
+          WPAPP_WINDOWS_PFX_BASE64: ${{ secrets.WPAPP_WINDOWS_PFX_BASE64 }}
+          WPAPP_WINDOWS_PFX_PASSWORD: ${{ secrets.WPAPP_WINDOWS_PFX_PASSWORD }}
+          WPAPP_CODESIGN_ID: ${{ secrets.WPAPP_CODESIGN_ID }}
+          WPAPP_MACOS_P12_BASE64: ${{ secrets.WPAPP_MACOS_P12_BASE64 }}
+          WPAPP_MACOS_P12_PASSWORD: ${{ secrets.WPAPP_MACOS_P12_PASSWORD }}
+          WPAPP_NOTARY_PROFILE: ${{ secrets.WPAPP_NOTARY_PROFILE }}
+          WPAPP_APPLE_ID: ${{ secrets.WPAPP_APPLE_ID }}
+          WPAPP_APPLE_PASSWORD: ${{ secrets.WPAPP_APPLE_PASSWORD }}
+          WPAPP_APPLE_TEAM_ID: ${{ secrets.WPAPP_APPLE_TEAM_ID }}
+          WPAPP_UPDATE_KEY: ${{ secrets.WPAPP_UPDATE_KEY }}
+          WPAPP_UPDATE_PUB: ${{ secrets.WPAPP_UPDATE_PUB }}
+        run: |
+          export GITHUB_SHA="$RELEASE_COMMIT"
+          bash scripts/ci-release.sh
+      - name: Verify checksums and provenance
+        run: |
+          python3 - <<'PYCODE'
+          import importlib.util, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('publisher', 'scripts/publish-release.py')
+          p = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(p)
+          p.configure(os.environ['VERSION'], os.environ['TAG'])
+          p.expected_assets(Path('dist/release'))
+          info = Path('dist/release/BUILD-INFO.txt').read_text().splitlines()
+          assert 'commit=' + os.environ['RELEASE_COMMIT'] in info
+          assert 'version=' + os.environ['VERSION'] in info
+          assert 'dirty=false' in info
+          PYCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.restore.outputs.restored != 'true'
+        with:
+          name: release-${{ needs.resolve.outputs.tag }}-${{ needs.resolve.outputs.commit }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 90
+  publish:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Retrieve immutable verified build
+        run: python3 scripts/restore-release.py --required
+      - name: Publish without overwriting assets
+        run: python3 scripts/publish-release.py --assets dist/release --commit "$RELEASE_COMMIT" --version "$VERSION" --tag "$TAG"

@@ -16,12 +16,12 @@ class PackagingGuards(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             for version, destination, bundle, ok in [
-                ('0.3.0-mvp', 'dist/release', '0', True),
-                ('0.3.0-mvp/../../bad', 'dist/release', '0', False),
-                ('0.3.0-mvp', 'dist', '0', False),
-                ('0.3.0-mvp', '../outside', '0', False),
-                ('0.3.0-mvp', 'dist/../../outside', '0', False),
-                ('0.3.0-mvp', 'dist/release', '1', False),
+                ('1.2.3-rc.1', 'dist/release', '0', True),
+                ('1.2.3-rc.1/../../bad', 'dist/release', '0', False),
+                ('1.2.3-rc.1', 'dist', '0', False),
+                ('1.2.3-rc.1', '../outside', '0', False),
+                ('1.2.3-rc.1', 'dist/../../outside', '0', False),
+                ('1.2.3-rc.1', 'dist/release', '1', False),
             ]:
                 env = dict(os.environ, VERSION=version, RELEASE_DIR=destination, BUNDLE_MPV=bundle)
                 result = subprocess.run(['bash', '-c', 'set -euo pipefail; source "$1"; package_validate', 'bash', str(scripts / 'package-common.sh')], cwd=root, env=env, capture_output=True, text=True)
@@ -31,7 +31,7 @@ class PackagingGuards(unittest.TestCase):
             root = Path(temp)
             (root / 'outside').mkdir()
             (root / 'dist').symlink_to(root / 'outside', target_is_directory=True)
-            result = subprocess.run(['bash', '-c', 'set -euo pipefail; source "$1"; package_validate', 'bash', str(scripts / 'package-common.sh')], cwd=root, env=dict(os.environ, VERSION='0.3.0-mvp', RELEASE_DIR='dist/release', BUNDLE_MPV='0'), capture_output=True, text=True)
+            result = subprocess.run(['bash', '-c', 'set -euo pipefail; source "$1"; package_validate', 'bash', str(scripts / 'package-common.sh')], cwd=root, env=dict(os.environ, VERSION='1.2.3-rc.1', RELEASE_DIR='dist/release', BUNDLE_MPV='0'), capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
     def test_metadata_from_exact_module_sources(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -86,7 +86,7 @@ else:
 """)
             (shim / 'git').write_text('#!/usr/bin/env python3\nimport os, sys\nresponses={"rev-parse HEAD": "' + 'a' * 40 + '", "status --porcelain --untracked-files=normal": " M dirty.go" if os.environ.get("FIXTURE_DIRTY") else ""}\nprint(responses[" ".join(sys.argv[1:])])\n')
             for name in ['go', 'git']: (shim / name).chmod(0o755)
-            env = dict(os.environ, PATH=str(shim) + os.pathsep + os.environ['PATH'], VERSION='0.3.0-mvp', RELEASE_DIR='dist/release', BUNDLE_MPV='0', GITHUB_SHA='a' * 40, GITHUB_ACTIONS='true', CI='true')
+            env = dict(os.environ, PATH=str(shim) + os.pathsep + os.environ['PATH'], VERSION='1.2.3-rc.1', RELEASE_DIR='dist/release', BUNDLE_MPV='0', GITHUB_SHA='a' * 40, GITHUB_ACTIONS='true', CI='true')
             for name in ['WPAPP_SIGN_CMD', 'WPAPP_CODESIGN_ID', 'WPAPP_NOTARY_PROFILE', 'FIXTURE_MODULE_MODE', 'FIXTURE_DIRTY']: env.pop(name, None)
             result = subprocess.run(['bash', 'scripts/package-metadata.sh'], cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)

@@ -12,6 +12,8 @@ base = 'Wallpaper-' + version
 expected = {base + '-windows-' + a + '-setup.exe' for a in ['amd64', 'arm64']}
 expected |= {base + '-macos-' + a + '.app.zip' for a in ['amd64', 'arm64']}
 expected |= {base + '-linux-amd64.tar.gz', 'BUILD-INFO.txt', 'RELEASE-NOTES.txt', 'SHA256SUMS'}
+if 'updater_signing=signed' in (root / 'BUILD-INFO.txt').read_text().splitlines():
+    expected.add(base + '-updates.tar.gz')
 actual = {p.name for p in root.iterdir()}
 assert actual == expected, f'Unexpected asset set: missing={expected-actual}, extra={actual-expected}'
 for name in expected:
@@ -106,8 +108,9 @@ with tarfile.open(root / (base + '-linux-amd64.tar.gz'), 'r:gz') as archive:
     same_payload(data, 'linux-amd64')
     for name in ['RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
         assert archive.extractfile(prefix + name).read() == (Path('dist/package-metadata') / name).read_bytes(), 'Linux metadata differs: ' + name
-native_version = subprocess.check_output([str(Path('dist/linux-amd64/wallpaperd').resolve()), '-version'], text=True).strip()
-assert native_version == 'wallpaperd ' + version + ' linux/amd64', 'Linux runtime version mismatch: ' + native_version
-print('PASS: exact 8-asset set, seven checksums, commit/version provenance, five payloads, architecture/permissions, metadata/notices, NSIS extraction; no bundled mpv.')
+if sys.platform == 'linux':
+    native_version = subprocess.check_output([str(Path('dist/linux-amd64/wallpaperd').resolve()), '-version'], text=True).strip()
+    assert native_version == 'wallpaperd ' + version + ' linux/amd64', 'Linux runtime version mismatch: ' + native_version
+print('PASS: exact asset set and checksum coverage, commit/version provenance, five payloads, architecture/permissions, metadata/notices, NSIS extraction; no bundled mpv.')
 print('Not tested: installation or Windows/macOS runtime behavior; Developer ID/notarization are not established by this check.')
 PY

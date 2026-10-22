@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 spec = importlib.util.spec_from_file_location('publisher', Path(__file__).with_name('publish-release.py'))
 publisher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publisher)
+publisher.configure("1.2.3-rc.1")
 
 COMMIT = 'a' * 40
 OTHER_COMMIT = 'b' * 40
@@ -34,15 +35,9 @@ class ReleaseFixture:
         self.folder.mkdir()
         for name in ['windows-amd64-setup.exe', 'windows-arm64-setup.exe', 'macos-amd64.app.zip', 'macos-arm64.app.zip', 'linux-amd64.tar.gz']:
             (self.folder / f'Wallpaper-{publisher.VERSION}-{name}').write_bytes(b'fixture-' + name.encode())
-        (self.folder / 'BUILD-INFO.txt').write_text(f'version={publisher.VERSION}\ncommit={COMMIT}\ndirty=false\n')
+        (self.folder / 'BUILD-INFO.txt').write_text(f'version={publisher.VERSION}\ncommit={COMMIT}\ndirty=false\nwindows_signing=unsigned\nmacos_developer_id=none\n')
         (self.folder / 'RELEASE-NOTES.txt').write_text(NOTES)
         self.write_sums()
-        declaration = self.root / '.github' / 'releases' / (publisher.TAG + '.json')
-        declaration.parent.mkdir(parents=True)
-        declaration.write_text(json.dumps({
-            'version': publisher.VERSION, 'tag': publisher.TAG, 'prerelease': True,
-            'notes': 'docs/releases/' + publisher.TAG + '.md',
-        }))
         notes = self.root / 'docs' / 'releases' / (publisher.TAG + '.md')
         notes.parent.mkdir(parents=True)
         notes.write_text(NOTES)
@@ -122,7 +117,8 @@ class FakeGitHub:
     def __init__(self, folder):
         self.folder = folder
         self.master = COMMIT
-        self.tag = None
+        self.tag = {'type': 'commit', 'sha': COMMIT}
+        self.tag_objects = {}
         self.releases = []
         self.calls = []
         self.writes = []
@@ -201,6 +197,10 @@ class FakeGitHub:
         query.update(fields if method == 'GET' else {})
         if method != 'GET':
             self.writes.append((method, path))
+        if path.startswith('compare/'):
+            return self.response(command, {'status': 'identical' if self.master == COMMIT else 'diverged'})
+        if path.startswith('git/tags/'):
+            return self.response(command, {'object': self.tag_objects.get(path[9:], {'type': 'commit', 'sha': OTHER_COMMIT})})
         if path == 'git/ref/heads/master' and method == 'GET':
             return self.response(command, {'object': {'type': 'commit', 'sha': self.master}})
         if path == 'git/ref/tags/' + publisher.TAG and method == 'GET':
@@ -229,7 +229,7 @@ class FakeGitHub:
                 return self.response(command, error='gh: Validation Failed (HTTP 422): tag_name already_exists')
             assert fields['tag_name'] == publisher.TAG
             assert fields['target_commitish'] == COMMIT
-            assert fields['draft'] is True and fields['prerelease'] is True
+            assert fields['draft'] is True and isinstance(fields['prerelease'], bool)
             release = self.add_release()
             release.update(fields)
             return self.response(command, release)
@@ -237,7 +237,7 @@ class FakeGitHub:
             release = next(r for r in self.releases if r['id'] == int(path[9:]))
             if method == 'PATCH':
                 assert release['draft'], 'Must not modify a published release'
-                assert fields.get('draft') is False and fields.get('prerelease') is True
+                assert fields.get('draft') is False and isinstance(fields.get('prerelease'), bool)
                 release.update(fields)
                 if self.after_publish:
                     self.after_publish(self, release)
@@ -351,13 +351,13 @@ class PublicationLifecycleTests(ReleaseFixture, unittest.TestCase):
 
     def test_stale_master_is_rejected_before_any_write(self):
         self.server.master = OTHER_COMMIT
-        with self.assertRaisesRegex(RuntimeError, 'master moved'):
+        with self.assertRaisesRegex(RuntimeError, 'not reachable'):
             self.invoke()
         self.assertEqual(self.server.writes, [])
 
     def test_master_moving_during_upload_leaves_a_draft(self):
         self.server.after_upload = lambda server, release: setattr(server, 'master', OTHER_COMMIT)
-        with self.assertRaisesRegex(RuntimeError, 'master moved'):
+        with self.assertRaisesRegex(RuntimeError, 'not reachable'):
             self.invoke()
         self.assert_not_published()
 
@@ -461,14 +461,84 @@ class PublicationLifecycleTests(ReleaseFixture, unittest.TestCase):
             self.invoke(commit=COMMIT[:7])
         self.assertEqual(self.server.calls, [])
 
-    def test_declaration_change_fails_before_network(self):
-        declaration = self.root / '.github/releases' / (publisher.TAG + '.json')
-        value = json.loads(declaration.read_text())
-        value['prerelease'] = False
-        declaration.write_text(json.dumps(value))
-        with self.assertRaisesRegex(RuntimeError, 'declaration'):
+    def test_version_provenance_mismatch(self):
+        path = self.folder / 'BUILD-INFO.txt'
+        path.write_text(path.read_text().replace(publisher.VERSION, '9.9.9'))
+        self.write_sums()
+        with self.assertRaisesRegex(RuntimeError, 'version mismatch'):
             self.invoke()
         self.assertEqual(self.server.calls, [])
+
+    def test_annotated_tag_resolves_to_commit(self):
+        self.server.tag = {'type': 'tag', 'sha': OTHER_COMMIT}
+        self.server.tag_objects[OTHER_COMMIT] = {'type': 'commit', 'sha': COMMIT}
+        self.invoke()
+
+    def test_stable_signed_release_and_retry(self):
+        old_version = publisher.VERSION
+        self.addCleanup(publisher.configure, old_version)
+        publisher.configure('4.5.6')
+        for path in self.folder.iterdir():
+            if old_version in path.name:
+                path.rename(path.with_name(path.name.replace(old_version, publisher.VERSION)))
+        info = self.folder / 'BUILD-INFO.txt'
+        info.write_text(info.read_text().replace(old_version, publisher.VERSION)
+                        .replace('windows_signing=unsigned', 'windows_signing=requested; see external signature verification')
+                        .replace('macos_developer_id=none', 'macos_developer_id=requested; see external signature verification'))
+        self.write_sums()
+        self.invoke()
+        self.assertFalse(self.server.releases[0]['prerelease'])
+        self.server.writes.clear()
+        self.invoke()
+        self.assertEqual(self.server.writes, [])
+
+    def test_missing_tag_never_created(self):
+        self.server.tag = None
+        with self.assertRaises(RuntimeError):
+            self.invoke()
+        self.assertEqual(self.server.writes, [])
+
+
+class VersionTests(unittest.TestCase):
+    def tearDown(self):
+        publisher.configure('1.2.3-rc.1')
+
+    def test_versions_and_tags(self):
+        for version in ['0.0.0', '2.10.34', '3.1.0-rc.2', '1.0.0-alpha-beta']:
+            publisher.configure(tag='v' + version)
+            self.assertEqual(publisher.VERSION, version)
+
+    def test_invalid_versions(self):
+        for version in ['', '01.2.3', '1.2', '1.2.3-01', '1.2.3-', '../bad', '1.2.3+a']:
+            with self.subTest(version=version), self.assertRaises(RuntimeError):
+                publisher.configure(version)
+        with self.assertRaises(RuntimeError):
+            publisher.configure('1.2.3', 'v2.0.0')
+
+    def test_stable_signed_and_unsigned_classification(self):
+        publisher.configure('2.3.4')
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            info = folder / 'BUILD-INFO.txt'
+            info.write_text('windows_signing=unsigned\nmacos_developer_id=none\n')
+            self.assertTrue(publisher.is_prerelease(folder))
+            info.write_text('windows_signing=requested; see external signature verification\nmacos_developer_id=requested; see external signature verification\n')
+            self.assertFalse(publisher.is_prerelease(folder))
+            publisher.configure('2.3.4-rc.1')
+            self.assertTrue(publisher.is_prerelease(folder))
+
+    def test_master_ancestor_accepted(self):
+        with mock.patch.object(publisher, 'api', return_value={'status': 'ahead'}):
+            publisher.verify_master(COMMIT)
+
+    def test_fallback_notes_since_previous_tag(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            (folder / 'BUILD-INFO.txt').write_text('windows_signing=unsigned\n')
+            with mock.patch.object(Path, 'is_file', return_value=False), mock.patch.object(publisher.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, 'v1.0.0\n', '')), mock.patch.object(publisher.subprocess, 'check_output', return_value='- Fix something\n') as log:
+                notes = publisher.release_notes(COMMIT, folder)
+                self.assertIn('Unsigned packages', notes)
+                self.assertIn('v1.0.0..' + COMMIT, log.call_args.args[0])
 
 
 class GitHubCLIContractTests(unittest.TestCase):

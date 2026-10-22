@@ -9,6 +9,10 @@ if [ "$(uname)" != Darwin ] || [ -z "${WPAPP_CODESIGN_ID:-}" ]; then echo "sign-
 codesign --force --options runtime --timestamp --sign "$WPAPP_CODESIGN_ID" "$APP"
 if [ -n "${WPAPP_NOTARY_PROFILE:-}" ]; then
   ditto -c -k --keepParent "$APP" "$APP.notary.zip"
-  xcrun notarytool submit "$APP.notary.zip" --keychain-profile "$WPAPP_NOTARY_PROFILE" --wait
+  if [ -n "${WPAPP_NOTARY_KEYCHAIN:-}" ]; then
+    xcrun notarytool submit "$APP.notary.zip" --keychain-profile "$WPAPP_NOTARY_PROFILE" --keychain "$WPAPP_NOTARY_KEYCHAIN" --wait
+  else
+    xcrun notarytool submit "$APP.notary.zip" --keychain-profile "$WPAPP_NOTARY_PROFILE" --wait
+  fi
   xcrun stapler staple "$APP"; rm "$APP.notary.zip"
 fi

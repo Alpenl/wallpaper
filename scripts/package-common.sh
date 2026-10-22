@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared packaging validation. Source from the repository root.
 package_validate() {
-  VERSION=${VERSION:-0.3.0-mvp}
+  VERSION=${VERSION:?Set VERSION to the release semver}
   RELEASE_DIR=${RELEASE_DIR:-dist/release}
   export VERSION RELEASE_DIR
   [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || {
