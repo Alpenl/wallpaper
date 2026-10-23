@@ -33,7 +33,7 @@
 | F-01 | Windows/macOS/Linux 宿主源码存在；Linux 是有限兼容实现，不是全桌面认证 | [`desktop`](../internal/desktop/)、[`app`](../internal/app/) | W-T1/W-T6、M1；图标层级、Explorer 恢复、睡眠/Space 真机 |
 | F-02 | 监管、退避、失败截图兜底和 Windows 子进程约束源码存在 | [`supervisor`](../internal/supervisor/)、[`app_test.go`](../internal/app/app_test.go) | W-T9、真实 TDR、主进程终止后无残留；模拟器不证明驱动恢复 |
 | F-03 | 独立分配、默认壁纸、稳定 ID/别名/迁移、每屏控制已有；新增 Win/mac 每屏裁切原生宿主的空间跨屏，不是复制模式；保留独立分配和按屏暂停 | [跨屏实现与限制](SPANNING.md)、[`spanning.go`](../internal/app/spanning.go)、[`canvas.go`](../internal/desktop/canvas.go) | 真双/三屏、负坐标/混合 DPI、拔插与同数量拓扑变化、静态兜底接缝；不是单解码器或逐帧同步架构；UI-02 |
-| F-04 | 每屏 ops worker 的等级状态已移入独立指针，主循环复制 screen 不再读取 worker 内存；新增视图/优化请求与 worker 并发回归；Windows mpv/MF 命名管道改为重叠 I/O，Accept 可取消超时，mpv 优先写 deadline；新增 Windows 双向并发读写、关闭和静默管道恢复回归（待 windows-latest 执行）；恢复失败最多重建两次并提示；UI 使用已确认等级，恢复中及其他暂停原因可见；每屏转换日志含后端、耗时、错误；分级状态机及平台信号已有；本轮补每屏手动暂停、全局/每屏原因保留、开关重放原始信号；Windows 信号较完整，macOS/Linux 有能力差异 | [`visibility`](../internal/visibility/)、[`app/options_test.go`](../internal/app/options_test.go)、[`desktop`](../internal/desktop/) | W-T10/M2/M4、≤500 ms、暂停 CPU/GPU 与恢复延迟；真实按屏/系统事件复测 |
+| F-04 | 每屏 ops worker 的等级状态已移入独立指针，主循环复制 screen 不再读取 worker 内存；新增视图/优化请求与 worker 并发回归；Windows mpv/MF 命名管道改为重叠 I/O，Accept 可取消超时，mpv 优先写 deadline；新增 Windows 双向并发读写、关闭和静默管道恢复回归（待 windows-latest 执行）；恢复失败最多重建两次并提示；UI 使用已确认等级，恢复中及其他暂停原因可见；每屏转换日志含后端、耗时、错误；分级状态机及平台信号已有；本轮补每屏手动暂停、全局/每屏原因保留、开关重放原始信号；Windows 信号较完整，macOS/Linux 有能力差异 | [`visibility`](../internal/visibility/)、[`app/options_test.go`](../internal/app/options_test.go)、[`desktop`](../internal/desktop/) | AVF/MF L3 释放与恢复已有 #14 实测（见下）；W-T10/M2/M4、≤500 ms、暂停 CPU/GPU 与真实按屏/系统事件仍待完整验收 |
 | F-05 | 生产 mpv/MF/AVF 已有 FPS cap，电池/低电量/省电策略已有；不是“限帧未实现” | [`mpv.go`](../internal/render/mpv/mpv.go)、[`mf`](../internal/render/mf/)、[`avf`](../internal/render/avf/)、`TestFPS15BatteryAndSaverProfile` | 真机验证 MF/AVF 限帧、电源事件与功耗；MF 节流呈现不等于少解码；D-07 |
 | F-06 | mpv、MF、AVFoundation 视频路径已有；硬解/循环质量不能仅由参数证明 | [`render`](../internal/render/) | W-T3/M3、`hwdec-current`、丢帧与逐帧循环；D-04/Q-W10 |
 | F-07 | 手动/自动转码、目标分辨率偏好、隔离任务与严格产物校验已接入；mac 默认原生 AVFoundation helper，无需 ffmpeg；可选 ffmpeg 在 Win/mac 分别要求 h264_mf/h264_videotoolbox，不静默换软件路线 | [转换契约](../internal/transcode/README.md)、[`nativeav`](../internal/transcode/nativeav/)、[`encoder.go`](../cmd/wallpaperd/encoder.go)、[`verify.go`](../internal/transcode/verify.go) | 原生编解码/帧率/IDR/音轨/取消真机验证；已接入按屏 backing 像素 center-cover 缓存、manifest、懒编码与单活跃队列、取消/选择/清理；mpv 保进程换源；MF/AVF 换源重建，跨屏/有声音/非 fill 回退共享版本；avconvert 有限回退不满足严格 AC |
@@ -47,7 +47,7 @@
 | F-15 | 严格 SemVer（含数字 prerelease）排序、dev 不参与更新、下载/替换前拒绝非 schema 1；pending 状态机先持久化完整计划；逐文件原子 rename、主程序最后替换；启动 Recover→Boot→Cleanup，未完成事务幂等回滚，损坏记录保留并报错；故障注入覆盖替换/恢复每步；打包脚本随包保留自有代码 PolyForm Strict 1.0.0 LICENSE 与第三方声明；[标签 CI/CD](releases/README.md) 已接入三系统验证、五目标打包、可选签名与幂等发布；真实签名/更新服务仍待验证 | [`update`](../internal/update/)、[`packaging`](../packaging/)、[`scripts`](../scripts/) | D-02、更新源/公钥、实际签名及公证、安装卸载、mac 更新后签名完整性、三系统真实断电/运行中 exe 验证；主程序两次 rename 之间断电可能无法启动，须重新运行安装器 |
 | F-16 | 存储扫描逐项检查 App 取消且关闭后不回写；IPC 回复写入有 5 秒期限，序列化失败返回 E_INTERNAL 并记录日志；已接入 dispatch 前 Go crash 文件（启动清理旧空文件、保留最新 5 份非空报告并保护当前文件；-version 不安装）、child stderr/MF 文本 2 MiB 写入限额与启动 `.1` 轮换、helper PID/build、worker 转场 begin/end 和生命周期 IPC 分阶段日志、mpv warn 转发；mpv 原生 log-file 保留且仅启动轮换；本地日志、诊断包脱敏实现和测试已有；I/O 错误保留首错但允许后续写入，重开失败仅随刷写 tick 重试；正常退出无日志状态噪声；不上传遥测 | [`telemetry`](../internal/telemetry/) | 本轮脱敏测试、失败提示、各平台导出路径；日志性能 AC |
 | F-17 | 每屏 L0–L4、暂停原因、当前 UTC 周已确认动态运行时长/暂停时长已持久化；显示器指标键为 SHA-256 截断摘要；不估算能源 | [`app/metrics.go`](../internal/app/metrics.go)、[`config/metrics.go`](../internal/config/metrics.go)、[`ui/metrics_test.go`](../internal/ui/metrics_test.go) | mpv 展示报告的硬解状态；MF/AVF 仍标 unknown/未验证，不能从框架名推断硬解。真实睡眠/时钟/重启与 UI 一致性需平台验收，完整 F-17 未关闭 |
-| F-18 | 每屏 fit/speed、静音/降采样按能力接线；mpv/MF/AVF 支持 fit/speed 原位修改并保持暂停；MF 增加原生播放速率、位置采样/异步 seek 及 L3 恢复 | [`render.go`](../internal/render/render.go)、[`options.go`](../internal/app/options.go)、[`mf/playback.go`](../internal/render/mf/playback.go)、[`mf/engine_windows.go`](../internal/render/mf/engine_windows.go) | MF/AVF 原生运行与 ≤200 ms 时延仍未验；MF 不支持帧降采样，全局/不支持属性仍可重建；Web 属性已接入独立宿主，完整 AC 的原生时延仍未关闭 |
+| F-18 | 每屏 fit/speed、静音/降采样按能力接线；mpv/MF/AVF 支持 fit/speed 原位修改并保持暂停；MF 增加原生播放速率、位置采样/异步 seek 及 L3 恢复 | [`render.go`](../internal/render/render.go)、[`options.go`](../internal/app/options.go)、[`mf/playback.go`](../internal/render/mf/playback.go)、[`mf/engine_windows.go`](../internal/render/mf/engine_windows.go) | MF/AVF L3 恢复已有 #14 实测；其他原生路径与 ≤200 ms 时延仍未验；MF 不支持帧降采样，全局/不支持属性仍可重建；Web 属性已接入独立宿主，完整 AC 的原生时延仍未关闭 |
 | F-19 | 本轮接入可执行文件 basename 规则 pause/saver/ignore，Windows/macOS/X11 前台进程探针；ignore 只豁免全屏/遮挡，不能覆盖安全或手动暂停 | [`foreground.go`](../internal/desktop/foreground.go)、[`options.go`](../internal/app/options.go)、[`options_test.go`](../internal/app/options_test.go) | 前台而非“任意后台运行”语义；实际桌面会话探针/权限/误判验证；不可用时能力提示 |
 | F-20 | 未启用远程遥测；`Normalize` 强制 false，与早期 opt-in 设想不同 | [`config/files.go`](../internal/config/files.go)、D-15 | 若将来启用需独立产品/隐私/服务决策；不在本轮暗中增加 |
 | F-21 | 未提供已认证 MSIX/Store/MAS 发布物 | [分发设计](design/11-distribution-licensing.md) | D-06/D-12、账号/审核/签名、W-T8；不是本地构建能认证 |
@@ -65,20 +65,28 @@
 |---|---|---|---|---|
 | crash / child / lifecycle 日志 | Go crash、2 MiB stderr、mpv warn 与转场/IPC 阶段；MF hello/build 与有界文本 | Go crash、web/shader PID/build、转场与有界 stderr | Go crash、mpv warn、转场/IPC 与有界 stderr | 纯 Go 回归含空文件清理、最新 5 份非空 crash 保留与当前文件保护；Windows MF、各平台原生 child/crash 行为仍需实机验证；Go crash 不等于 native dump，mpv log-file 无运行时硬限额 |
 | 日志与配置故障恢复 | 共用纯 Go：日志瞬时错误后继续写；普通 .bak 失败仍保存主文件并报告；迁移备份失败仍中止 | 同左 | 同左 | 同左；故障注入回归覆盖，真实磁盘满/杀毒软件锁文件仍需各平台验证 |
-| 每屏 worker 状态隔离 | 独立指针；纯 Go 并发回归 | 同左 | 同左；原生暂停/恢复仍需真机 | 共用编排结构 |
+| 每屏 worker 状态隔离 | 独立指针；纯 Go 并发回归 | 同左 | 同左；L3 释放/恢复已有 #14 实测，真实每屏编排仍待验证 | 共用编排结构 |
 | fill / fit / stretch | 已接入，可原位调整 | 已接入：源裁切 / MF letterbox / 交换链 stretch，可原位调整 | 已接入，可原位调整 | 单屏自定义不支持；跨屏由图片裁切实现 |
 | 每屏 cover rendition | 相同 key 复用；换源保留进程、位置、暂停与 cap | 选择缓存；换源按现有恢复路径重建 | 选择缓存；原生 helper 支持 cover；换源重建 | 不适用 |
 | 播放速度 | 0.25–4 倍，可原位调整 | 0.25–4 倍，原生 SetPlaybackRate，可原位调整 | 0.25–4 倍，可原位调整 | 不适用 |
 | 静音 / 声音 | 已接入，默认静音 | 已接入，默认静音 | 已接入，默认静音 | 不适用 |
 | 视频帧降采样 | 0.25–1 倍软件滤镜 | 不支持 | 不支持 | 不适用 |
 | FPS cap / 电池 15fps | 已有 fps 滤镜 | 已有 Transfer/Present 节流 | 已有 videoComposition 路径，未真机 | 不需要动态渲染 |
-| 位置记录/恢复 | 按屏+素材持久化检查点；L3/换源等待 file-loaded 后应用 pause，IPC 使用重叠 I/O 与写 deadline；静默管道 pause=false 回归待 Windows CI 执行，真机复测仍待完成 | 父/子双端命名管道均使用重叠 I/O；Accept 超时取消；待 Windows CI/真机验证；已接入 Get/SetCurrentTime；seek 完成重新应用播放意图；L3 退出等待与资源释放已有测试，仍待同 HWND 真机复测 | 已接入延迟 seek/位置采样路径，真机行为未验 | 不适用 |
+| 位置记录/恢复 | 按屏+素材持久化检查点；L3/换源等待 file-loaded 后应用 pause，IPC 使用重叠 I/O 与写 deadline；静默管道 pause=false 回归待 Windows CI 执行，真机复测仍待完成 | 父/子双端命名管道均使用重叠 I/O；Accept 超时取消；待 Windows CI/真机验证；已接入 Get/SetCurrentTime；seek 完成重新应用播放意图；L3 退出等待与资源释放已有测试。真机确认 frame-server 启动 seek 仅在应用 Transfer 一帧后才收到 SEEKED；启动阶段现持续服务帧直到 SEEKED，修复 L3 恢复及初始 Load（Start > 0）等待 10s 超时，L3 恢复实测 6/6 成功 | 已接入延迟 seek/位置采样；L3 释放 AVQueuePlayer/looper/layer，期间黑屏，恢复时重建；Apple Silicon 实测释放解码资源，恢复前后位置差 ≤20 ms（#14，见下） | 不适用 |
+
+### 暂停释放实测（#14，2026-10-23）
+
+以下为临时 harness（未提交）测量，非完整平台验收；素材为 1024² H.264、180 s 视频。
+
+- **AVF**：本开发机 macOS / Apple Silicon，L0 → L1 → L3 后做 5 次 L0/L3 循环。L3 释放解码资源：IOSurface regions 从 L0/L1 的 19 降至 5；线程从 L0 的 24–26 降至 15–19。`phys_footprint` 约 18–23 MB、变化很小，解码帧不计入该指标；5 次循环中每次约增长 0.4 MB，是否泄漏未定，需更长运行。恢复前后位置差 ≤20 ms；`SetLevel` 返回耗时 1–12 ms，约 1.3 s 内观察到播放推进（受 1 s / 250 ms 采样限制），离群值为 2.3 s、3.3 s。L3 → `UpdatePlayback`（音量）→ L1 保持暂停，再到 L0 恢复。
+- **MF**：Windows 11 / RTX 3060 Laptop / 2560×1600，同一素材、flip swapchain、同一 harness。L3 保留 mfhost：GPU Dedicated 约 65 MB → 0、Shared 约 15 MB → 0；子进程 private bytes 约 120 MB → 57 MB；线程约 39 → 16。修复前 L3 恢复每次均在 10 s 超时，frame-server 的 SEEKED 仅在应用 Transfer 一帧后到达；修复后 6/6 次恢复成功，`SetLevel`（含 seek 和首帧）耗时 0.47–0.61 s。L3 → L1 保持暂停，再到 L0 恢复。子进程 private bytes 每循环约增长 0.6 MB，是否泄漏未定。L3 中 `UpdatePlayback` 返回 unsupported，应用回退重建（既有行为）。
+- **mpv**：两台机器均未安装，未测。本次结果仅适用于上述设备、素材和 L3 路径，不代表所有暂停等级或后端的显存释放表现；AVF FPS cap 等其他路径仍未真机验证。
 
 重要边界：
 
 - “视频帧降采样”不是缩小桌面窗口，也不是已经证明省电；软件滤镜可能触发硬解帧回读，必须测开销。不宣传为无损零拷贝优化。
 - mpv/MF/AVF 的每屏 fit/speed 优先调用 `UpdatePlayback`，不应自行恢复已暂停播放器；不支持时才重建，其他错误报告给 UI。全局音频/降采样/后端等设置仍可能重建。原 F-18 的整体无重载与 ≤200 ms 真机 AC 仍开放。
-- MF 在渲染线程串行执行原生属性控制，启动等待媒体/seek 就绪，L3 保存位置；实时更改不调用 Play/seek，失败尝试回滚，回滚失败则标记状态不可信并交监管重启；实时控制 IPC 超时/传输结果不确定、停止/恢复收到原生 fatal 错误时也终止旧宿主，由监管恢复，不能假定命令没有执行。素材/系统不支持的速率会报错，0.25–4 倍是请求范围而非对所有编码格式的成功承诺；MF 画布上限为 16384 像素/轴，设备实际限制可能更低。AVF 同样新增位置采样与延迟 seek。两者仍须 Windows/macOS 真机验证，不能将源码接线说成已测得精准续播或无缝循环。
+- MF 在渲染线程串行执行原生属性控制，启动等待媒体/seek 就绪，L3 保存位置；实时更改不调用 Play/seek，失败尝试回滚，回滚失败则标记状态不可信并交监管重启；实时控制 IPC 超时/传输结果不确定、停止/恢复收到原生 fatal 错误时也终止旧宿主，由监管恢复，不能假定命令没有执行。素材/系统不支持的速率会报错，0.25–4 倍是请求范围而非对所有编码格式的成功承诺；MF 画布上限为 16384 像素/轴，设备实际限制可能更低。AVF 同样新增位置采样与延迟 seek。两者 L3 实测范围见上；其他原生路径和无缝循环仍待真机验证。
 - 应用规则匹配前台进程 basename，不读取窗口标题；Windows 使用进程映像，macOS 使用 NSWorkspace，X11 使用活动窗口 PID 与本地 `/proc`。Wayland 或无法获得进程的会话不宣称有效。
 - 导入和编码采用有界 FIFO（各 256），编码限制单活跃任务；删除会取消关联的排队/运行工作。相关测试覆盖多选导入不丢项、替换/删除与旧编码结果竞态，最终全套结果仍以验证记录为准。
 - macOS 默认原生 AVFoundation helper 与可选 ffmpeg 是严格路线，要求 H.264、恒定 30fps、无音轨、首同步样本/GOP 和偶数尺寸约束；MP4 样本表验证不是完整码流解码。avconvert 只作明确标注的有限回退，不支持 GIF、固定 30fps、目标尺寸或去音轨。Windows ffmpeg 必须具备 h264_mf；框架/编码器名称不证明实际硬件加速。

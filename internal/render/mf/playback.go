@@ -59,6 +59,18 @@ type playbackState struct {
 
 var errNativeStateUnknown = errors.New("mf: native playback state is unknown after failed rollback")
 
+// Frame-server startup seeks need frame servicing until SEEKED, even when the
+// desired playback state is paused. Only SEEKED releases the readiness gate.
+func (s *playbackState) shouldServiceFrames() bool {
+	if s.invalid {
+		return false
+	}
+	if !s.ready {
+		return s.metadata && s.seeking
+	}
+	return !s.paused
+}
+
 func (s *playbackState) loaded(api playbackAPI) error {
 	if s.metadata { // LOADEDMETADATA/CANPLAY can repeat after a seek or loop.
 		return nil

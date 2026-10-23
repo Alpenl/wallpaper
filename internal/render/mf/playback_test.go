@@ -83,6 +83,52 @@ func TestInitialSeekWaitsBeforePlay(t *testing.T) {
 	}
 }
 
+func TestStartupSeekFrameServicing(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(fmt.Sprintf("paused=%t", paused), func(t *testing.T) {
+			var calls []string
+			api := recordingAPI(&calls)
+			s := playbackState{options: render.DefaultPlaybackOptions(), start: 12, paused: paused}
+			if s.shouldServiceFrames() {
+				t.Fatal("servicing before metadata")
+			}
+			for _, event := range []string{"metadata", "canPlay", "seeking", "firstFrameReady"} {
+				switch event {
+				case "metadata", "canPlay":
+					if event == "canPlay" {
+						s.canPlay = true
+					}
+					if err := s.loaded(api); err != nil {
+						t.Fatal(err)
+					}
+				case "seeking":
+					s.seeking = true
+					// FIRSTFRAMEREADY does not change playback state.
+				}
+				if ready, err := s.startReady(api); ready || err != nil || s.ready || !s.seeking || !s.shouldServiceFrames() {
+					t.Fatalf("after %s: ready=%v err=%v state=%+v", event, ready, err, s)
+				}
+			}
+			if !reflect.DeepEqual(calls, []string{"rate:1", "seek:12"}) {
+				t.Fatalf("unexpected calls before SEEKED: %v", calls)
+			}
+			if err := s.seeked(api); err != nil {
+				t.Fatal(err)
+			}
+			if ready, err := s.startReady(api); !ready || err != nil || !s.ready || s.seeking || s.shouldServiceFrames() != !paused {
+				t.Fatalf("after SEEKED: ready=%v err=%v state=%+v", ready, err, s)
+			}
+			want := "play"
+			if paused {
+				want = "pause"
+			}
+			if !reflect.DeepEqual(calls, []string{"rate:1", "seek:12", "fit:fill", want}) {
+				t.Fatalf("wrong ready calls: %v", calls)
+			}
+		})
+	}
+}
+
 func TestInitialPlaybackFailureDoesNotStart(t *testing.T) {
 	for _, failing := range []string{"rate", "seek", "fit", "play"} {
 		t.Run(failing, func(t *testing.T) {
