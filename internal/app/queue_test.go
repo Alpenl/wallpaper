@@ -100,6 +100,7 @@ func TestEncoderQueueIsSerialAndRemoveDropsPending(t *testing.T) {
 		t.Fatal("encoder not started")
 	}
 	eventually(t, "pending encoders", func() bool { return e.a.View().Transcoding["4"] == "等待转码…" })
+	waitForStorageScan(t, e) // Windows 上扫描句柄会让删除的 rename 失败。
 	e.a.Remove("2")
 	eventually(t, "queued removal", func() bool { return len(e.a.View().Library) == 4 })
 	close(release)
