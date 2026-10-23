@@ -19,6 +19,7 @@
 | 如何判断文献、实测、推断与旧结论 | [证据约定与差异说明](EVIDENCE.md) | 来源/适用范围规则 |
 | 为什么选择这些架构与功能 | [设计目录和 ADR](design/README.md) | 设计依据，非完成证明 |
 | 功能 ID、AC 与性能预算 | [F-01…F-26 规格](design/17-features-mvp.md) | 目标与验收定义 |
+| 已定方向但暂不实施的工作 | [待办](TODO.md) | 计划，非已实现 |
 | 哪些事必须由负责人决定 | [D-01…D-15 决策清单](design/DECISIONS_PENDING.md) | 决策门槛，非用户已批准 |
 | Windows/macOS 应该怎么实测 | [真机测试计划](design/bench/TEST_PLAN.md)、[设备交接](design/bench/DEVICE_HANDOFF.md) | 测试步骤，非测试结果 |
 | 还有哪些技术未知量 | [Q-* 问题登记](design/14-open-questions.md) | 历史问题及当前覆盖说明 |
