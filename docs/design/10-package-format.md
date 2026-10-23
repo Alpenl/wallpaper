@@ -104,9 +104,9 @@ Go 的 `archive/zip` 默认**不会**拒绝不安全路径；只有设置 `GODEB
 | 来源 | 识别方式 | 映射 | 不支持的情况 |
 |---|---|---|---|
 | Lively zip 或目录 | 存在 `LivelyInfo.json` | `Title→title.en`，`Desc→description`，`Author→author.name`，`License→license`，`Tags→tags`，`FileName→entry`（复制到 content/），`Type`：video/gif/picture/heic → video 或 image，web → web，url → 拒绝（远程页面不是包）。`LivelyProperties.json` → properties（slider→slider，checkbox→bool，dropdown/scalerDropdown→select，color→color，textbox→text），其余控件类型丢弃并给出警告 | app、unity、godot、bizhawk、unityaudio、videostream、webaudio（音频可视化 v0 不支持）；`IsAbsolutePath=true`，说明是用户自己打开的外部文件，此时直接把那个文件当作素材导入 |
-| WE 项目目录 | `project.json` | `type: video` → video（`file`），`type: web` → web（`file` 是 html）；`title`、`preview`；`general.properties`：slider→slider，bool→bool，combo→select，color→color（WE 用 `"r g b"` 0–1 浮点，换算成 hex），textinput→text | `type: scene`（私有引擎，linux-wallpaperengine 的规模能说明工作量）；`application`；需要 audio 的 web |
+| WE 项目目录 | `project.json` | `type: video` → video（`file`），`type: web` → web（`file` 是 html）；`title`、`preview`；`general.properties`：slider→slider，bool→bool，combo→select，color→color（WE 用 `"r g b"` 0–1 浮点，换算成 hex），textinput→text；`type: scene` → 先做静态替代（用户确认包内预览图或自选图片，导入为 image 包）；PKGV/TEXV/scene.json 只在受限转换 worker 中解析，主进程只接收有大小上限且可校验的结果；实时渲染待兼容探测和功耗实测后再定 | `application`；需要 audio 的 web；加密或缺失资源的 scene |
 | 普通视频或图片文件 | 扩展名加文件头探测 | 自动生成 manifest | |
 
 - **网络权限**：导入的 Web 包，我们扫描 html/js 里的 `http(s)://` 字面量，作为建议的 `networkAllow`，让用户确认。默认不授予网络权限，页面可能会因此显示不全，UI 上给出提示【推断】。
 - **转码**：导入的视频统一按 06 章 6.4 的规范生成 renditions；macOS 上的 VP9/WebM 走 06 章 6.6 的路径。
-- **版权**：只导入用户本地已有的文件。不提供从 Steam Workshop 下载或解密的功能；WE 的 scene 包更不在范围内【推断，非法律意见】。
+- **版权**：只导入用户本地已有的文件。不提供从 Steam Workshop 下载或解密的功能；只解析本地已有、未加密的 scene.pkg，且只在隔离 worker 中进行，不分发其中的素材【推断，非法律意见】。
