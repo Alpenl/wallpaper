@@ -62,5 +62,9 @@ log messages、error strings、identifiers 使用 English；注释沿用所在�
 
 ## 10. Agent 工作流与已知债务
 每份任务 brief 列出范围、文件、验证命令和目标环境；reviewer 独立复跑并记录结果。
-生产 update feed 启用前必须修复事务记录/替换/回滚恢复，并统一稳定启动确认；schema reject 已列本期。
-既有大函数、goroutine ownership、UI→mpv 依赖和 fixed-sleep 测试仅在相关边界触及时整改。
+保留 pending.json 事务记录与启动恢复、restore 错误处理及 MarkGood 唯一稳定启动确认；更新替换/回滚改动须有故障注入测试。
+`scripts/rulecheck` 强制检查 import 边界及测试 sleep 的 `sleep:` 注释；剩余大函数虽长但线性，有意保留，仅触及时拆分。
+Windows 重导入偶发与存储扫描句柄冲突，rename 失败后重试成功。
+退出原因（托盘、信号、注销、更新）尚未记录；诊断导出仍包含导出进程自身的空 crash 文件。
+Windows 暂停/恢复、重构后的 MF/WebView2 及 NSIS 许可页尚未实机验证。
+macOS Dock 退出与注销尚未实测；与 SIGTERM 共用路径，仅测过 SIGTERM。
