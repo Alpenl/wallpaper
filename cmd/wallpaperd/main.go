@@ -59,6 +59,7 @@ type flags struct {
 	pipe, swap    string
 	logPath       string
 	helper        string
+	sceneprobe    string
 	in            string
 	out           string
 	width, height int
@@ -87,7 +88,8 @@ func parseFlags(args []string) *flags {
 	fs.StringVar(&f.pipe, "pipe", "", "内部：管道名")
 	fs.StringVar(&f.swap, "swap", "flip", "内部：MF 交换链模式")
 	fs.StringVar(&f.logPath, "log", "", "内部：子进程日志")
-	fs.StringVar(&f.helper, "helper", "", "内部：probe / transcode")
+	fs.StringVar(&f.helper, "helper", "", "内部：probe / transcode / sceneprobe")
+	fs.StringVar(&f.sceneprobe, "sceneprobe", "", "Probe a local WE scene package or project directory offline")
 	fs.StringVar(&f.in, "in", "", "内部：helper 输入文件")
 	fs.StringVar(&f.out, "out", "", "内部：helper 输出文件")
 	fs.BoolVar(&f.cover, "cover", false, "内部：居中裁切")
@@ -138,6 +140,8 @@ func main() {
 			os.Exit(2)
 		}
 		return
+	case f.helper == "sceneprobe":
+		os.Exit(runSceneProbeHelper(f.in))
 	case f.helper == "probe":
 		info, err := media.ProbeFile(f.in)
 		if err != nil {
@@ -151,6 +155,8 @@ func main() {
 	case f.helper != "":
 		fmt.Fprintln(os.Stderr, "unknown helper operation")
 		os.Exit(2)
+	case f.sceneprobe != "":
+		os.Exit(runSceneProbe(f.sceneprobe))
 	case f.exportDiag:
 		e, err := setup(f, nil, nil)
 		if err != nil {
