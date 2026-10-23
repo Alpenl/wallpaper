@@ -1,8 +1,9 @@
 //go:build darwin
 
 // Package avf 是 macOS 渲染器（04 章）：AVQueuePlayer + AVPlayerLooper + AVPlayerLayer，进程内，
-// 挂到 desktop/mac 表面的 contentView.layer 上。L0 播放，L1–L3 暂停（L3 不释放 AVPlayer：MVP 简化），L4 由调用方 Close。
-// 未在真机验证（盒子上无 macOS）。
+// 挂到 desktop/mac 表面的 contentView.layer 上。
+// L0 plays, L1–L2 pause, L3 releases the player and resume rebuilds it (black background meanwhile), L4 is closed by the caller.
+// L3 release/resume measured on Apple Silicon (#14); other paths, including the FPS cap, are still unverified on device.
 package avf
 
 import (
@@ -33,6 +34,7 @@ type Renderer struct {
 	item          render.Item
 	surf          desktop.Surface
 	paused        bool
+	released      bool
 	options       render.PlaybackOptions
 	stop          chan struct{}
 	pendingStart  float64
@@ -78,6 +80,11 @@ func (r *Renderer) UpdatePlayback(o render.PlaybackOptions) error {
 		return err
 	}
 	r.mu.Lock()
+	if r.released {
+		r.options = o
+		r.mu.Unlock()
+		return nil
+	}
 	if r.player == 0 {
 		r.mu.Unlock()
 		return errors.New("avf: not running")
@@ -151,6 +158,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	r.Close()
 	stop := make(chan struct{})
 	r.mu.Lock()
+	r.released = false
 	r.item, r.surf, r.paused = it, s, paused
 	r.stop, r.pendingStart = stop, it.Start
 	r.positionKnown = false
@@ -286,16 +294,45 @@ func (r *Renderer) sampleOnMain() {
 
 func (r *Renderer) SetLevel(l visibility.Level) error {
 	r.mu.Lock()
+	if r.released {
+		if l >= visibility.L3 {
+			r.mu.Unlock()
+			return nil
+		}
+		it, s, paused := r.item, r.surf, l > visibility.L0
+		r.released = false
+		r.mu.Unlock()
+		return r.Load(it, s, paused)
+	}
 	if r.player == 0 {
 		r.mu.Unlock()
 		return nil
 	}
 	stop := r.stop
 	r.mu.Unlock()
+	var p, lp, ly objc.ID
 	macos.Main(func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if r.stop != stop || r.player == 0 {
+			return
+		}
+		if l >= visibility.L3 {
+			r.paused = true
+			r.player.Send(macos.Sel("pause"))
+			// Read only: sampleOnMain may issue a pending seek or setRate.
+			tm := objc.Send[macos.CMTime](r.player, macos.Sel("currentTime"))
+			if pos, ok := mediaTimeSeconds(tm.Value, tm.Timescale, tm.Flags); ok && pos > 0 {
+				r.item.Start = pos
+			}
+			if r.pendingStart > 0 {
+				r.item.Start = r.pendingStart
+			}
+			p, lp, ly = r.player, r.looper, r.layer
+			r.player, r.looper, r.layer = 0, 0, 0
+			close(r.stop)
+			r.stop = nil
+			r.released = true
 			return
 		}
 		r.paused = l != visibility.L0
@@ -306,6 +343,7 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 		}
 		r.sampleOnMain()
 	})
+	releasePlayer(p, lp, ly)
 	return nil
 }
 
@@ -339,6 +377,7 @@ func (r *Renderer) Done() <-chan error    { return r.done }
 
 func (r *Renderer) Close() error {
 	r.mu.Lock()
+	r.released = false
 	p, lp, ly := r.player, r.looper, r.layer
 	r.player, r.looper, r.layer = 0, 0, 0
 	if r.stop != nil {
@@ -346,8 +385,14 @@ func (r *Renderer) Close() error {
 		r.stop = nil
 	}
 	r.mu.Unlock()
+	releasePlayer(p, lp, ly)
+	return nil
+}
+
+// releasePlayer must be called without r.mu; native teardown runs on main.
+func releasePlayer(p, lp, ly objc.ID) {
 	if p == 0 {
-		return nil
+		return
 	}
 	macos.Main(func() {
 		p.Send(macos.Sel("pause"))
@@ -357,7 +402,6 @@ func (r *Renderer) Close() error {
 		lp.Send(macos.Sel("release"))
 		p.Send(macos.Sel("release"))
 	})
-	return nil
 }
 
 var _ render.Renderer = (*Renderer)(nil)
