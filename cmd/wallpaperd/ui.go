@@ -46,8 +46,9 @@ func runUI(f *flags) int {
 	// 退出顺序：mac 外部退出先在 OnBeforeQuit 阻止，再走 quit 异步收尾（关渲染器、写 state.json cleanShutdown）。
 	// 收尾完成或等满 5 秒后设置 draining，再次 Quit 放行；quitOnce 避免重复启动收尾 goroutine。
 	// 不能在退出回调（主线程）里同步等：mac 上收尾要 RunOnMain，会死锁（MyGo workaround 4）。
-	quit := func() {
+	quit := func(reason string) {
 		quitOnce.Do(func() {
+			e.log.Info("quit_requested", "reason", reason)
 			go func() {
 				cancel()
 				select {
@@ -68,22 +69,25 @@ func runUI(f *flags) int {
 	}
 	settings.OpenPath = mygo.Shell.OpenPath
 	settings.ShowInFolder = mygo.Shell.ShowItemInFolder
-	e.updateHooks(&settings.Hooks, quit)
+	e.updateHooks(&settings.Hooks, func() { quit("update") })
 	settings.Info = ui.Info{Version: build.Version, Commit: build.Revision(), Platform: runtime.GOOS + "/" + runtime.GOARCH, EncoderName: e.enc,
 		DataDir: filepath.Dir(e.paths.Logs), LogsDir: e.paths.Logs, SignedBuild: signedBuild == "1", UpdateKey: updatePub() != nil}
 	if runtime.GOOS != "darwin" {
 		settings.Info.MpvPath = e.mpvPath(e.configSnapshot())
 	}
-	sh := &ui.Shell{S: settings, OnQuit: quit}
+	sh := &ui.Shell{S: settings, OnQuit: func() { quit("tray") }}
 	e.app.OnChange(sh.Changed)
 	mygo.App.OnSecondInstance(func([]string, string) { sh.Open() })
 	mygo.App.OnBeforeQuit(func(ev *mygo.QuitEvent) {
 		if runtime.GOOS == "darwin" && !draining.Load() {
 			ev.PreventDefault()
-			quit()
+			quit("external")
 		}
 	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
+		if runtime.GOOS != "darwin" {
+			quitOnce.Do(func() { e.log.Info("quit_requested", "reason", "external") })
+		}
 		cancel() // 系统注销等外部退出：尽力而为
 		if runtime.GOOS != "darwin" {
 			select {

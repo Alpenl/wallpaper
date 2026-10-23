@@ -456,6 +456,9 @@ func runHeadless(f *flags) int {
 		}()
 	}
 	err = e.app.Run(ctx)
+	if ctx.Err() == context.Canceled {
+		e.log.Info("quit_requested", "reason", "signal")
+	}
 	if f.statusOut != "" {
 		b, _ := json.MarshalIndent(e.app.View(), "", "  ")
 		if f.statusOut == "-" {

@@ -106,6 +106,7 @@ func TestDiagnosticsFormatsAndRecursivePrivacy(t *testing.T) {
 	}
 	putDiagnostic(t, d, "mpv-display.log", "[1][w][decoder] representative warning\n[2][v][decoder] verbose omitted\n")
 	putDiagnostic(t, d, "mfhost-display.log", "2026/10/22 12:00:00 MF failure\n")
+	putDiagnostic(t, d, "crash-empty.log", "")
 	for _, name := range []string{"crash-shader-123.log", "web-stderr-display.log", "mpv-stderr-display.log.1"} {
 		putDiagnostic(t, d, name, "panic: representative crash\nfailed opening \""+filepath.Join(home, "My Movies", "own-secret.mp4")+"\"\nopen /home/foreign/My Movies/foreign-secret.mp4\nopen C:\\Users\\someone\\My Movies\\windows-secret.mp4\nfetch https://private-user:private-pass@example.com/video\n")
 	}
@@ -121,6 +122,12 @@ func TestDiagnosticsFormatsAndRecursivePrivacy(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := unzipDiagnostic(t, out)
+	if _, ok := files["logs/crash-empty.log"]; ok || strings.Contains(files["manifest.json"], "crash-empty.log") {
+		t.Error("empty crash file included in ZIP or manifest")
+	}
+	if !strings.Contains(files["logs/crash-shader-123.log"], "representative crash") {
+		t.Error("non-empty crash file missing from ZIP")
+	}
 	all := ""
 	for _, s := range files {
 		all += s

@@ -112,6 +112,9 @@ func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, s
 		if err != nil {
 			return nil, err
 		}
+		if info.Size() == 0 && strings.HasPrefix(n, "crash-") && strings.HasSuffix(n, ".log") {
+			continue
+		}
 		logs = append(logs, diagnosticSource{path: filepath.Join(logsDir, n), name: "logs/" + n, modified: info.ModTime()})
 	}
 	sort.SliceStable(logs, func(i, j int) bool { return logs[i].modified.After(logs[j].modified) })
