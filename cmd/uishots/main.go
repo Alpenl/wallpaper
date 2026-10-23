@@ -80,23 +80,25 @@ func main() {
 		}
 	}
 	// 空库（首次运行）
-	ctl := uidemo.New(nil)
-	ctl.V.Library, ctl.V.LastImport = nil, ""
-	for i := range ctl.V.Displays {
-		ctl.V.Displays[i].ItemID = ""
+	for _, mode := range []string{"light", "dark"} {
+		ctl := uidemo.New(nil)
+		ctl.V.Library, ctl.V.LastImport = nil, ""
+		for i := range ctl.V.Displays {
+			ctl.V.Displays[i].ItemID = ""
+		}
+		ctl.UpdateConfig(func(c *config.Config) { c.UI.Lang = *lang; c.UI.Theme = mode })
+		s := ui.NewSettings(ctl, *goos)
+		s.Info = ui.Info{Version: "ui-development"}
+		s.PickFiles = func() []string { return nil }
+		tt := mui.NewTester(s.View, *width, *height)
+		tt.SetTitleBar(mui.TitleBar{Height: float32(*caption), Right: captionRight(*caption)})
+		tt.SetScale(float32(*scale))
+		tt.SetLocale(*lang)
+		tt.Frame()
+		p := filepath.Join(*out, "00-empty-library-"+mode+".png")
+		save(p, tt.Image())
+		fmt.Println(p)
 	}
-	ctl.UpdateConfig(func(c *config.Config) { c.UI.Lang = *lang })
-	s := ui.NewSettings(ctl, *goos)
-	s.Info = ui.Info{Version: "ui-development"}
-	s.PickFiles = func() []string { return nil }
-	tt := mui.NewTester(s.View, *width, *height)
-	tt.SetTitleBar(mui.TitleBar{Height: float32(*caption), Right: captionRight(*caption)})
-	tt.SetScale(float32(*scale))
-	tt.SetLocale(*lang)
-	tt.Frame()
-	p := filepath.Join(*out, "00-empty-library-light.png")
-	save(p, tt.Image())
-	fmt.Println(p)
 }
 
 func save(p string, img image.Image) {

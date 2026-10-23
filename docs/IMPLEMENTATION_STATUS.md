@@ -14,7 +14,7 @@
 
 | ID | 页面与原规划映射 | 必须可验收的行为 | F-* / 设计依据 | 主要源码 |
 |---|---|---|---|---|
-| UI-01 | 壁纸库（紧凑原生布局） | 12px 横向边距、宽窗合并标题/工具栏、窄窗两行紧凑栏；320px 全高属性栏（预览固定、属性独立滚动、38px 固定应用区），左侧 38px 底栏只占内容列；Windows 按 TitleBar inset 留拖动条、macOS/默认标题栏预览贴顶；空库保留属性占位；导入反馈进入底栏；1920×1080 网格至少六列四行的 Tester 回归； 搜索/筛选、网格/列表、详情、导入、应用到选定屏/所有屏、优化、删除确认；空库/取消/导入失败有明确状态 | F-06/07/08/11/13/18；[包格式](design/10-package-format.md) | [`library.go`](../internal/ui/library.go)、[`app.go`](../internal/app/app.go)、[`importer`](../internal/importer/) |
+| UI-01 | 壁纸库（紧凑原生布局） | 12px 横向边距、宽窗合并标题/工具栏、按左列可用宽 960px 切换「筛选与显示」（筛选/排序/视图），不足 680px 时导航独立一行，搜索至少 140px；默认深色（缺失/非法值同样回退深色）；320px 全高属性栏（预览固定、属性独立滚动、38px 固定应用区），左侧 38px 底栏只占内容列；Windows 按 TitleBar inset 留拖动条、macOS/默认标题栏预览贴顶；空库保留属性占位；导入反馈进入底栏；1920×1080 网格至少六列四行的 Tester 回归； 搜索/筛选、网格/列表、详情、导入、应用到选定屏/所有屏、优化、删除确认；空库/取消/导入失败有明确状态 | F-06/07/08/11/13/18；[包格式](design/10-package-format.md) | [`library.go`](../internal/ui/library.go)、[`app.go`](../internal/app/app.go)、[`importer`](../internal/importer/) |
 | UI-02 | 显示器 | 布局选择、稳定 ID 别名、独立壁纸/跟随默认、每屏状态与暂停；Win/mac 原生跨屏空间裁切、切回保留独立分配；不支持宿主明确禁用 | F-03/04/17；[多屏](design/09-multimonitor-dpi-hdr.md) | [`displays.go`](../internal/ui/displays.go)、[`display_test.go`](../internal/app/display_test.go) |
 | UI-03 | 播放与性能 | 档位/FPS、可用后端与路径、支持的缩放/声音/速度；配置写入后实际应用或报错，不支持后端不显示成功 | F-05/06/07/18；[视频管线](design/06-video-pipeline.md) | [`pages.go`](../internal/ui/pages.go)、[`render`](../internal/render/)、[`config`](../internal/config/) |
 | UI-04 | 暂停与电源 | 全屏/遮挡策略、电池 pause/fps15/ignore、低电量阈值、当前原因与恢复；新增应用规则只匹配进程，不采集窗口标题 | F-04/05/19；[状态机](design/07-pause-power-state-machine.md) | [`pages.go`](../internal/ui/pages.go)、[`visibility`](../internal/visibility/)、[`desktop`](../internal/desktop/) |
@@ -126,7 +126,7 @@
 
 | 范围 | 已实现 | 仍需验证 |
 |---|---|---|
-| 原生紧凑 UI | 隐藏系统标题文字并保留原生窗口按钮，使用 TitleBar insets 和拖动区域；壁纸库全高右栏、独立属性滚动与对齐的 38px 底栏，宽窗标题/工具栏合并；显示器与设置页保持全宽；下拉筛选、32 项演示库、紧凑可关闭错误栏；缺编码器时自动按屏优化跳过，手动请求保留本地化提示 | Windows 真机标题栏拖动、最小化/最大化/关闭、混合 DPI；macOS/Linux 标题栏与桌面环境回退仍需真机验证，离屏截图不证明系统窗口行为 |
+| 原生紧凑 UI | 隐藏系统标题文字并保留原生窗口按钮，使用 TitleBar insets 和拖动区域；壁纸库全高右栏、独立属性滚动与对齐的 38px 底栏，宽窗标题/工具栏合并；显示器与设置页保持全宽；响应式工具栏（820/900/1033/1280/1440px、断点两侧及缩放往返的空/有内容 Tester 回归）；默认深色、三层蓝紫底色与选中/主操作光晕；下拉筛选、32 项演示库、紧凑可关闭错误栏；缺编码器时自动按屏优化跳过，手动请求保留本地化提示 | Windows 真机标题栏拖动、最小化/最大化/关闭、混合 DPI；macOS/Linux 标题栏与桌面环境回退仍需真机验证，离屏截图不证明系统窗口行为 |
 | 构建身份与兼容 | CLI、启动头（含 PID）、About、诊断共用 buildinfo；commit time 与未知值明确；IPC major 常量；四类未来 config 写后字节保持；release 验证核对 VERSION | 原生 About 的目标设备展示；真实签名更新/安装、macOS 更新后签名完整性；生产 feed 启用前仍须修复更新事务与统一稳定启动确认 |
 | goroutine 生命周期 | 存储扫描/缓存清理取消与结果回写守卫；IPC 断连/回复写入期限与 marshal 错误回归；排除 MF engine 与 Windows web host 的生产 go 语句已审查归属 | 原生文件系统调用不可中断；Handler 须自行返回；真实设备关闭/管道释放仍需验证，两个排除文件由独立任务负责 |
 | 标签发布 | 分支/PR CI；master 可达的 SemVer 标签触发；五目标包与 SHA256SUMS；自有代码采用 [PolyForm Strict 1.0.0](../LICENSE)，安装包及可选更新包携带 LICENSE 与第三方声明，NSIS 提供许可页；凭据缺失时明确标记未签名预发布；保留原始构建并续传 draft | GitHub hosted 三系统实际运行；真实 Windows/Apple 证书、公证与安装卸载；更新源部署及 macOS 更新后签名完整性。见 [发布说明](releases/README.md) |

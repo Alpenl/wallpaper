@@ -49,7 +49,7 @@ func TestAllPagesRender(t *testing.T) {
 	// 设置子页在顶部“设置”标签下；第一次进入先点“设置”。
 	pages := []struct{ nav, want string }{
 		{"显示器", "布局"}, {"设置", "性能档位"}, {"播放与性能", "性能档位"}, {"暂停与电源", "自动暂停"},
-		{"通用", "颜色模式"}, {"版本管理", "当前版本"}, {"关于与诊断", "诊断包"}, {"壁纸库", "筛选结果"},
+		{"通用", "颜色模式"}, {"版本管理", "当前版本"}, {"关于与诊断", "诊断包"}, {"壁纸库", "筛选与显示"},
 	}
 	for _, goos := range []string{"windows", "darwin", "linux"} {
 		_, _, tt := newUI(t, goos)
@@ -146,7 +146,7 @@ func TestWallpaperGroupProps(t *testing.T) {
 
 func TestLibrarySearchFilterImport(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
-	click(t, tt, "筛选结果")
+	click(t, tt, "筛选与显示")
 	if err := tt.ChooseMenuItem("建议转码 2"); err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestLibrarySearchFilterImport(t *testing.T) {
 	if tt.HasText("HEVC · 本地文件") {
 		t.Fatal("筛选后不应显示极光之夜")
 	}
-	click(t, tt, "筛选结果")
+	click(t, tt, "筛选与显示")
 	if err := tt.ChooseMenuItem("全部 32"); err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,11 @@ func TestLibrarySearchFilterImport(t *testing.T) {
 	if len(ctl.ImportTo) != 2 || ctl.ImportTo[1] != "d2" {
 		t.Fatal("设置为应用到当前显示器时只传当前那块", ctl.ImportTo)
 	}
-	click(t, tt, "列表")
+	click(t, tt, "筛选与显示")
+	if err := tt.ChooseMenuItem("列表"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
 	if ctl.View().Config.UI.LibraryView != "list" {
 		t.Fatal("应切到列表视图")
 	}
@@ -250,7 +254,7 @@ func TestSettingsChangeConfig(t *testing.T) {
 	click(t, tt, "恢复默认")
 	tt.Key(0, ui.KeyEnter) // 对话框的默认按钮“恢复默认”
 	tt.Frame()
-	if c := ctl.View().Config; c.UI.Theme != "system" || c.Perf.Profile != "balanced" || !c.Startup.LaunchAtLogin {
+	if c := ctl.View().Config; c.UI.Theme != "dark" || c.Perf.Profile != "balanced" || !c.Startup.LaunchAtLogin {
 		t.Fatal("恢复默认应保留开机自启、重置其他", c.UI.Theme, c.Perf.Profile)
 	}
 }
@@ -519,7 +523,7 @@ func TestDiagnosticsExportDoesNotBlockUI(t *testing.T) {
 	click(t, tt, "导出诊断包")
 	<-begin
 	click(t, tt, "壁纸库")
-	must(t, tt, "筛选结果")
+	must(t, tt, "筛选与显示")
 	close(finish)
 	s.SetPage("about")
 	wait(t, tt, "诊断包已导出。请检查内容后再分享。")
