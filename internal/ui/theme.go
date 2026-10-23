@@ -32,7 +32,8 @@ func (s *Settings) applyTheme(c *ui.Context, u config.UI) {
 	switch u.Theme {
 	case "light":
 		dark = false
-	case "dark":
+	case "system":
+	default:
 		dark = true
 	}
 	key := u.Accent
@@ -43,13 +44,13 @@ func (s *Settings) applyTheme(c *ui.Context, u config.UI) {
 		var t ui.Theme
 		if dark {
 			t = *ui.DarkTheme()
-			t.Background = ui.Hex("#0e1014")
-			t.Surface = ui.Hex("#1c1f26")
-			t.SurfaceHover = ui.Hex("#242832")
-			t.SurfacePressed = ui.Hex("#2b303b")
-			t.Border = ui.RGBA(255, 255, 255, 0.07)
-			t.Text = ui.Hex("#e8eaf0")
-			t.TextMuted = ui.Hex("#8a91a0")
+			t.Background = ui.Hex("#10111b")
+			t.Surface = ui.Hex("#292c40")
+			t.SurfaceHover = ui.Hex("#32364d")
+			t.SurfacePressed = ui.Hex("#3a3e56")
+			t.Border = ui.RGBA(164, 176, 224, 0.18)
+			t.Text = ui.Hex("#edeefa")
+			t.TextMuted = ui.Hex("#b2b8d0")
 		} else {
 			t = *ui.LightTheme()
 			t.Background = ui.Hex("#eef0f4")
@@ -79,7 +80,7 @@ func (s *Settings) applyTheme(c *ui.Context, u config.UI) {
 // panelBg 是面板层（右侧属性栏、设置分组、底部栏）。
 func panelBg(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.Hex("#15181e")
+		return ui.Hex("#1c1e2e")
 	}
 	return ui.Hex("#f8f9fb")
 }
@@ -87,7 +88,7 @@ func panelBg(t *ui.Theme) ui.Color {
 // raisedBg 是面板里再抬高一层的分组卡片（属性组、详细信息）。
 func raisedBg(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.Hex("#1b1e25")
+		return ui.Hex("#292c40")
 	}
 	return ui.Hex("#ffffff")
 }
@@ -95,7 +96,7 @@ func raisedBg(t *ui.Theme) ui.Color {
 // barBg 是顶部和底部栏。
 func barBg(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.Hex("#121419")
+		return ui.Hex("#191b29")
 	}
 	return ui.Hex("#f8f9fb")
 }
@@ -103,7 +104,7 @@ func barBg(t *ui.Theme) ui.Color {
 // lineColor 是细分隔线。
 func lineColor(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.RGBA(255, 255, 255, 0.06)
+		return ui.RGBA(164, 176, 224, 0.14)
 	}
 	return ui.RGBA(15, 23, 42, 0.08)
 }
@@ -111,14 +112,14 @@ func lineColor(t *ui.Theme) ui.Color {
 // faint 是第三档文字（元数据、占位）。
 func faint(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.Hex("#5d6473")
+		return ui.Hex("#929bb8")
 	}
 	return ui.Hex("#9097a6")
 }
 
 func shadowColor(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.RGBA(0, 0, 0, 0.5)
+		return ui.RGBA(4, 5, 16, 0.65)
 	}
 	return ui.RGBA(20, 30, 60, 0.12)
 }
@@ -146,9 +147,13 @@ func sectionHeader(c *ui.Context, key, label string, right func()) {
 // accentButton 是主操作：强调色渐变 + 柔和光晕。
 func accentButton(c *ui.Context, label string) ui.Element {
 	t := c.Theme()
-	return primaryButton(c, label).Radius(9).Height(26).FontSize(13).Padding(4, 12).FontWeight(600).
+	b := primaryButton(c, label).Radius(9).Height(26).FontSize(13).Padding(4, 12).FontWeight(600).
 		LinearGradient(ui.LinearGradient{From: t.Accent.Mix(ui.Hex("#ffffff"), 0.08), To: t.Accent.Mix(ui.Hex("#7c3aed"), 0.28), Angle: 120}).
 		Shadow(0, 6, 18, -6, t.Accent.Alpha(0.7))
+	if t.Dark {
+		b.Shadow(0, 2, 20, 0, t.Accent.Alpha(0.65))
+	}
+	return b
 }
 
 // ghostButton 是次要操作：无底色，悬停时出现浅底。
@@ -174,7 +179,7 @@ func segment(c *ui.Context, label string, sel bool) ui.Element {
 	if sel {
 		bg := ui.Hex("#ffffff")
 		if t.Dark {
-			bg = ui.Hex("#2a2f3a")
+			bg = ui.Hex("#35394f")
 		}
 		b.Background(bg).TextColor(t.Text).FontWeight(600).Shadow(0, 1, 3, 0, shadowColor(t))
 	} else {
@@ -188,7 +193,7 @@ func segmentGroup(c *ui.Context, fn func()) ui.Element {
 	t := c.Theme()
 	bg := ui.Hex("#e3e6ec")
 	if t.Dark {
-		bg = ui.Hex("#171a20")
+		bg = ui.Hex("#131521")
 	}
 	return ui.Row(c).Gap(2).Padding(2).Radius(6).Background(bg).Border(1, lineColor(t)).AlignItems(ui.Center).Children(fn)
 }

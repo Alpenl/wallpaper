@@ -101,7 +101,7 @@ func Defaults() Config {
 		Startup: Startup{LaunchAtLogin: false, OpenSettings: true},
 		Privacy: Privacy{Telemetry: false},
 		Render:  Render{TranscodeResolution: "display", WindowsBackend: "mpv", Muted: true, ResumePosition: true},
-		UI:      UI{Lang: "zh-CN", Theme: "system", Accent: "blue", LibraryView: "grid", ImportApply: "none"},
+		UI:      UI{Lang: "zh-CN", Theme: "dark", Accent: "blue", LibraryView: "grid", ImportApply: "none"},
 		Update:  Update{AutoCheck: true}}
 }
 

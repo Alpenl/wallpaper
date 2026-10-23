@@ -118,10 +118,18 @@ func (s *Settings) importStatus(c *ui.Context, v app.View) {
 }
 
 // toolbar shares the navigation row: search, filter menu, sort and view.
-func (s *Settings) toolbar(c *ui.Context, v app.View) {
+// Budgets include CJK font headroom, fixed controls, gaps and a 140px search.
+const libraryToolbarWide float32 = 960
+const libraryToolbarNav float32 = 680
+
+func (s *Settings) toolbar(c *ui.Context, v app.View, narrow bool) {
 	ui.Row(c.Key("filters")).Grow(1).Shrink(1).MinWidth(0).Gap(6).AlignItems(ui.Center).Children(func() {
-		ui.TextInput(c.Key("q"), &s.query).Placeholder(tr(c, "搜索名称、标签、作者")).Label(tr(c, "搜索壁纸")).Radius(9).Padding(4, 8).FontSize(13).Height(26).Grow(1).Shrink(1).MinWidth(80)
-		softButton(c.Key("ftabs"), "筛选结果").Menu(func(m *ui.Menu) {
+		ui.TextInput(c.Key("q"), &s.query).Placeholder(tr(c, "搜索名称、标签、作者")).Label(tr(c, "搜索壁纸")).Radius(9).Padding(4, 8).FontSize(13).Height(26).Grow(1).Shrink(1).MinWidth(140)
+		label := "筛选结果"
+		if narrow {
+			label = "筛选与显示"
+		}
+		softButton(c.Key("ftabs"), label).Menu(func(m *ui.Menu) {
 			for i, l := range filterLabels {
 				n := 0
 				for _, it := range v.Library {
@@ -137,7 +145,24 @@ func (s *Settings) toolbar(c *ui.Context, v app.View) {
 					s.filter = i
 				}
 			}
+			if narrow {
+				m.Separator()
+				for _, o := range []struct{ id, label string }{{"", "最近导入"}, {"name", "名称"}} {
+					if m.Item(tr(c, o.label)).Checked(s.sortBy == o.id).Chosen() {
+						s.sortBy = o.id
+					}
+				}
+				m.Separator()
+				for _, o := range []struct{ id, label string }{{"grid", "网格"}, {"list", "列表"}} {
+					if m.Item(tr(c, o.label)).Checked(v.Config.UI.LibraryView == o.id || (o.id == "grid" && v.Config.UI.LibraryView != "list")).Chosen() {
+						s.ctl.UpdateConfig(func(x *config.Config) { x.UI.LibraryView = o.id })
+					}
+				}
+			}
 		})
+		if narrow {
+			return
+		}
 		sortLabel := map[string]string{"": "最近导入", "name": "名称"}[s.sortBy]
 		if selectControl(c.Key("sort"), &sortLabel, []string{"最近导入", "名称"}).Label(tr(c, "排序")).Radius(9).Width(118).Height(26).FontSize(12).Shrink(0).Changed() {
 			s.sortBy = map[string]string{"最近导入": "", "名称": "name"}[sortLabel]
@@ -157,8 +182,12 @@ func (s *Settings) toolbar(c *ui.Context, v app.View) {
 func (s *Settings) emptyLibrary(c *ui.Context, v app.View) {
 	t := c.Theme()
 	ui.Column(c.Key("empty")).Grow(1).Margin(18, 24, 18, 24).Radius(18).Background(panelBg(t)).Border(1, lineColor(t)).AlignItems(ui.Center).Justify(ui.Center).Gap(10).Clip().Children(func() {
+		glow := float32(0.16)
+		if t.Dark {
+			glow = 0.28
+		}
 		// 顶部一抹强调色，让空页面不是一块死灰
-		ui.Box(c).Absolute().Left(0).Right(0).Top(0).Height(260).LinearGradient(ui.LinearGradient{From: t.Accent.Alpha(0.16), To: ui.Transparent, Angle: 180}).Children(func() {})
+		ui.Box(c).Absolute().Left(0).Right(0).Top(0).Height(260).LinearGradient(ui.LinearGradient{From: t.Accent.Alpha(glow), To: ui.Transparent, Angle: 180}).Children(func() {})
 		overline(c, tr(c, "开始使用"))
 		heading(c, tr(c, "把视频、GIF 或图片拖到这里"), 26)
 		text(c, "支持视频、图片、.glsl / .frag Shader、.wpk、Lively 壁纸包和 Wallpaper Engine 本地壁纸").FontSize(13).TextColor(t.TextMuted)
@@ -219,6 +248,9 @@ func (s *Settings) libGrid(c *ui.Context, v app.View, items []config.Item) {
 		switch {
 		case sel:
 			tile.Border(2, t.Accent).Shadow(0, 8, 24, -6, t.Accent.Alpha(0.6))
+			if t.Dark {
+				tile.Shadow(0, 0, 20, 1, t.Accent.Alpha(0.75))
+			}
 		case tile.Hovered():
 			tile.Border(1, t.Accent.Alpha(0.55)).Shadow(0, 10, 22, -8, shadowColor(t))
 		default:

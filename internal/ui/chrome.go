@@ -59,7 +59,7 @@ func (s *Settings) topBar(c *ui.Context, v app.View) {
 		})
 		ui.Box(c).Grow(1).MinWidth(12).DragWindow().Children(func() {})
 	}
-	toolbarContent := func() {
+	navContent := func() {
 		segmentGroup(c.Key("nav"), func() {
 			if segment(c.Key("t-lib"), "壁纸库", s.page == pgLibrary).Clicked() {
 				s.page = pgLibrary
@@ -71,10 +71,23 @@ func (s *Settings) topBar(c *ui.Context, v app.View) {
 				s.page = s.lastSettings
 			}
 		})
+	}
+	// Separate tabs have 12px padding; the merged title row also reserves
+	// caption insets and 380px for display title, picker and their gaps.
+	available := w - 24
+	if merged {
+		available = w - max(12, bar.Left) - max(12, right) - 380
+	}
+	narrow := available < libraryToolbarWide
+	splitNav := s.page == pgLibrary && available < libraryToolbarNav
+	toolbarContent := func() {
+		if !splitNav {
+			navContent()
+		}
 		if s.page != pgLibrary {
 			return
 		}
-		s.toolbar(c, v)
+		s.toolbar(c, v, narrow)
 		ghostButton(c.Key("more"), "更多导入").Menu(func(m *ui.Menu) {
 			if m.Item(tr(c, "导入 Lively 壁纸包（.zip）…")).Disabled(s.PickFiles == nil || v.Importing).Chosen() {
 				s.importFiles()
@@ -98,6 +111,9 @@ func (s *Settings) topBar(c *ui.Context, v app.View) {
 				toolbarContent()
 			}
 		})
+		if splitNav {
+			ui.Row(c.Key("nav-row")).Height(32).Padding(0, 12).AlignItems(ui.Center).Children(navContent)
+		}
 		if !merged {
 			ui.Row(c.Key("tabs")).Height(32).Padding(0, 12).Gap(6).AlignItems(ui.Center).Children(toolbarContent)
 		}

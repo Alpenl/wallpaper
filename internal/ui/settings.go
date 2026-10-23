@@ -272,6 +272,16 @@ func (s *Settings) View(c *ui.Context) {
 
 // frame 是窗口内容：标题与标签、页面、底部操作栏。
 func (s *Settings) frame(c *ui.Context, v app.View) {
+	// Suppress only a named success notice once its item disappears from the snapshot.
+	if strings.HasPrefix(v.LastImport, "已导入「") {
+		found := false
+		for _, it := range v.Library {
+			found = found || strings.HasPrefix(v.LastImport, "已导入「"+it.Title+"」")
+		}
+		if !found {
+			v.LastImport = ""
+		}
+	}
 	if s.page == pgLibrary {
 		ui.Row(c.Key("library-window")).Absolute().Left(0).Top(0).Right(0).Bottom(0).AlignItems(ui.Stretch).Children(func() {
 			ui.Column(c.Key("left-column")).Grow(1).Shrink(1).MinWidth(0).MinHeight(0).Children(func() {

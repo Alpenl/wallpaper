@@ -13,6 +13,9 @@ import (
 
 func TestDefaultsMatchDecisions(t *testing.T) {
 	c := Defaults()
+	if c.UI.Theme != "dark" {
+		t.Fatal(c.UI.Theme)
+	}
 	if c.Pause.BatteryPolicy != "pause" || c.Pause.LowBatteryPct != 20 {
 		t.Fatal("D-07 默认值不对", c.Pause)
 	}
@@ -346,5 +349,20 @@ func TestErrorCallbackFlushWithoutPendingDoesNotRecurse(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatal(calls)
+	}
+}
+
+func TestThemeFallback(t *testing.T) {
+	for _, mode := range []string{"", "invalid", "light", "dark", "system"} {
+		c := Defaults()
+		c.UI.Theme = mode
+		c.Normalize()
+		want := mode
+		if mode == "" || mode == "invalid" {
+			want = "dark"
+		}
+		if c.UI.Theme != want {
+			t.Fatalf("%q: got %q", mode, c.UI.Theme)
+		}
 	}
 }

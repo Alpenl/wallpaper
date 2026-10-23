@@ -12,6 +12,7 @@ import (
 // English UI catalog. User-authored titles, paths, and backend error details
 // are deliberately not rewritten when they have no exact catalog entry.
 var english = map[string]string{
+	"筛选与显示":              "Filter & view",
 	"版本 %s · 提交 %s · %s": "Version %s · Commit %s · %s",
 	"正在恢复…":              "Resuming…",
 	"继续播放 · 屏 %d 因%s仍暂停": "Resume · Display %d remains paused: %s",

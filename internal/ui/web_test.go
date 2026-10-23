@@ -67,7 +67,7 @@ func TestShaderNativePropertyPanelAndFilters(t *testing.T) {
 	s.SelectItem("shader-waves")
 	tt := ui.NewTester(s.View, 1120, 800)
 	tt.Frame()
-	must(t, tt, "渲染比例", "帧率上限", "筛选结果")
+	must(t, tt, "渲染比例", "帧率上限", "筛选与显示")
 	s.filter = 5
 	if got := s.filtered(ctl.View()); len(got) != 1 || got[0].Type != "shader" {
 		t.Fatal(got)
