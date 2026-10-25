@@ -55,6 +55,7 @@ var (
 	MsgInitWindow func(objc.ID, objc.SEL, CGRect, uint, uint, bool, objc.ID) objc.ID
 	MsgSetFrame   func(objc.ID, objc.SEL, CGRect)
 	MsgSetCMTime  func(objc.ID, objc.SEL, CMTime)
+	MsgSeekCMTime func(objc.ID, objc.SEL, CMTime, CMTime, CMTime)
 
 	KLayer, KBounds, KPID uintptr
 	GravityFill           objc.ID
@@ -128,6 +129,7 @@ func Load() error {
 		purego.RegisterFunc(&MsgInitWindow, ms)
 		purego.RegisterFunc(&MsgSetFrame, ms)
 		purego.RegisterFunc(&MsgSetCMTime, ms)
+		purego.RegisterFunc(&MsgSeekCMTime, ms)
 		KLayer, KBounds, KPID = symPtr(cg, "kCGWindowLayer"), symPtr(cg, "kCGWindowBounds"), symPtr(cg, "kCGWindowOwnerPID")
 		GravityFill = objc.ID(symPtr(av, "AVLayerVideoGravityResizeAspectFill"))
 	})

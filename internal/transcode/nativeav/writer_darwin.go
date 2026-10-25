@@ -89,10 +89,10 @@ func newWriter(ctx context.Context, path string, width, height int) (_ *writer, 
 	}
 	w.owned, _ = os.Lstat(path)
 	msgSetTime(w.object, sel("startSessionAtSourceTime:"), frameTime(0))
-	// Per Apple, the adaptor's pool is unavailable until the session has started.
-	w.pool = objc.Send[uintptr](w.adaptor, sel("pixelBufferPool"))
-	if w.pool == 0 {
-		return nil, w.failure("writer did not create a pixel buffer pool")
+	// macOS may expose the encoder's YUV pool through the adaptor even with
+	// BGRA source attributes. Own a BGRA pool for the CPU drawing path instead.
+	if status := cvPoolCreate(0, 0, uintptr(attrs), &w.pool); status != 0 || w.pool == 0 {
+		return nil, fmt.Errorf("nativeav: cannot create BGRA pixel buffer pool (%d)", status)
 	}
 	return w, nil
 }
@@ -102,6 +102,10 @@ func (w *writer) failure(prefix string) error {
 func (w *writer) close() {
 	if w.object != 0 && !w.complete {
 		w.object.Send(sel("cancelWriting"))
+	}
+	if w.pool != 0 {
+		cfRelease(w.pool)
+		w.pool = 0
 	}
 	if w.colorSpace != 0 {
 		cgColorSpaceRelease(w.colorSpace)
@@ -166,9 +170,9 @@ func (w *writer) locked(p uintptr) ([]byte, int, error) {
 		return nil, 0, fmt.Errorf("nativeav: cannot lock pixel buffer (%d)", status)
 	}
 	stride, h, base := cvPixelBufferGetBytesPerRow(p), cvPixelBufferGetHeight(p), cvPixelBufferGetBaseAddress(p)
-	if base == 0 || h != uintptr(w.height) || stride < uintptr(w.width*4) || stride > uintptr(w.width*4+65536) || stride*h > 256<<20 {
+	if cvPixelBufferGetPixelFormatType(p) != pixelFormatBGRA || cvPixelBufferGetWidth(p) != uintptr(w.width) || base == 0 || h != uintptr(w.height) || stride < uintptr(w.width*4) || stride > uintptr(w.width*4+65536) || stride*h > 256<<20 {
 		cvPixelBufferUnlockBaseAddress(p, 0)
-		return nil, 0, errors.New("nativeav: invalid pixel buffer layout")
+		return nil, 0, fmt.Errorf("nativeav: invalid pixel buffer layout (width=%d height=%d stride=%d buffer_height=%d base_present=%t format=%x buffer_width=%d)", w.width, w.height, stride, h, base != 0, cvPixelBufferGetPixelFormatType(p), cvPixelBufferGetWidth(p))
 	}
 	return unsafe.Slice((*byte)(unsafe.Pointer(base)), int(stride*h)), int(stride), nil
 }

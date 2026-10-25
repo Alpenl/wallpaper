@@ -1,0 +1,12 @@
+{"actual":13.2,"requested":13.2,"stage":"exact_paused_seek"}
+{"actual":38.15,"requested":38.15,"stage":"exact_paused_seek"}
+{"actual":599,"requested":599,"stage":"exact_paused_seek"}
+{"loops":1,"pos":0.119843333,"stage":"loop_boundary"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":22398008,"pos":14.143277583,"ps_lines":24,"stage":"initial_L0","thread_count":23}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":22840376,"pos":15.045209417,"ps_lines":19,"stage":"initial_L1","thread_count":18}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,6],"memory_unit":"bytes","phys_footprint":22414392,"pos":15.045209417,"ps_lines":19,"stage":"initial_L3","thread_count":18}
+{"held":true,"stage":"native_pause_frame","video_layers":0}
+{"advance_pos":16.028079375,"first_advance_ms":1129.396792,"pre_l3_pos":15.045209417,"resume_pos":15.045209417,"set_level_ms":12.27625,"stage":"initial_resume"}
+{"ready":true,"stage":"native_video_ready","still_released":true}
+{"end_pos":16.047561,"observation_s":3,"paused":true,"stage":"edge_paused","start_pos":16.047561,"update_playback_ok":true}
+{"advance_pos":17.191401125,"first_advance_ms":1168.333125,"pre_l3_pos":16.047561,"resume_pos":16.047561,"set_level_ms":0.53675,"stage":"edge_resume"}

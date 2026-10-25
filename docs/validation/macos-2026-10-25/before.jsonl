@@ -1,0 +1,21 @@
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":18580512,"pos":14.855977583,"ps_lines":23,"stage":"initial_L0","thread_count":22}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":19285024,"pos":14.888563833,"ps_lines":18,"stage":"initial_L1","thread_count":17}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,5],"memory_unit":"bytes","phys_footprint":20382728,"pos":14.888563833,"ps_lines":16,"stage":"initial_L3","thread_count":15}
+{"advance_pos":17.657597584,"first_advance_ms":1283.886583,"pre_l3_pos":14.888563833,"resume_pos":14.888563833,"set_level_ms":12.739917,"stage":"initial_resume"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":20988960,"pos":27.706310625,"ps_lines":23,"stage":"cycle_1_L0","thread_count":22}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,5],"memory_unit":"bytes","phys_footprint":20988936,"pos":27.706310625,"ps_lines":18,"stage":"cycle_1_L3","thread_count":17}
+{"advance_pos":28.02714425,"first_advance_ms":3343.372875,"pre_l3_pos":27.706310625,"resume_pos":27.750146334,"set_level_ms":3.403833,"stage":"cycle_1_resume"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,23],"memory_unit":"bytes","phys_footprint":22316064,"pos":38.099001458,"ps_lines":24,"stage":"cycle_2_L0","thread_count":23}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,9],"memory_unit":"bytes","phys_footprint":22266912,"pos":38.099001458,"ps_lines":16,"stage":"cycle_2_L3","thread_count":15}
+{"advance_pos":42.662623584,"first_advance_ms":1275.945,"pre_l3_pos":38.099001458,"resume_pos":38.154300292,"set_level_ms":5.668583,"stage":"cycle_2_resume"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,27],"memory_unit":"bytes","phys_footprint":22561824,"pos":52.723865042,"ps_lines":25,"stage":"cycle_3_L0","thread_count":24}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,13],"memory_unit":"bytes","phys_footprint":22414368,"pos":52.723865042,"ps_lines":18,"stage":"cycle_3_L3","thread_count":17}
+{"advance_pos":53.012760375,"first_advance_ms":3316.875166,"pre_l3_pos":52.723865042,"resume_pos":52.757400084,"set_level_ms":13.945291,"stage":"cycle_3_resume"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,28],"memory_unit":"bytes","phys_footprint":23135264,"pos":63.079472709,"ps_lines":24,"stage":"cycle_4_L0","thread_count":23}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,13],"memory_unit":"bytes","phys_footprint":22856736,"pos":63.079472709,"ps_lines":17,"stage":"cycle_4_L3","thread_count":16}
+{"advance_pos":67.650446834,"first_advance_ms":1277.606125,"pre_l3_pos":63.079472709,"resume_pos":63.112934417,"set_level_ms":7.3475,"stage":"cycle_4_resume"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,27],"memory_unit":"bytes","phys_footprint":23168032,"pos":77.716689834,"ps_lines":24,"stage":"cycle_5_L0","thread_count":23}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,13],"memory_unit":"bytes","phys_footprint":22889504,"pos":77.716689834,"ps_lines":18,"stage":"cycle_5_L3","thread_count":17}
+{"advance_pos":78.00157,"first_advance_ms":3324.598291,"pre_l3_pos":77.716689834,"resume_pos":77.727977959,"set_level_ms":12.849083,"stage":"cycle_5_resume"}
+{"end_pos":75,"observation_s":3,"paused":true,"stage":"edge_paused","start_pos":75,"update_playback_ok":true}
+{"advance_pos":75.287687958,"first_advance_ms":308.8665,"pre_l3_pos":75,"resume_pos":75,"set_level_ms":2.818584,"stage":"edge_resume"}

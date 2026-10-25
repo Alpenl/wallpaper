@@ -2,6 +2,10 @@
 
 本文件连接“原来的 F-* 需求 → 七页 UI 计划 → 产品源码 → 自动化/真机验收”。它不是发布合格证明。正式实现基于主分支 `master/2710033ef169852bd7c4a1b5c063d29f3f3e89fd`；UI 分支 `5f00d334` 仅为设计参考，不复制 React 代码。本矩阵描述主分支工作区中的原生实现；历史测试不自动继承，本轮实际结果以 [VALIDATION.md](VALIDATION.md) 为准。标签规则见 [EVIDENCE.md](EVIDENCE.md)。
 
+> 2026-10-25 macOS 真机增量：视频循环、AVF L3 释放与七次恢复、精确续播修复、原生编码和无证书打包结果，见 [验证记录](VALIDATION.md#macos-真机补验2026-10-25singapore-utc8)。下文历史检查点不替代该记录。
+
+> test.4 完整界面复测：用户确认遮挡暂停/恢复“快了很多”，短遮挡、长遮挡及短锁屏恢复均无黑屏、动画继续；日志与计时边界见 [本轮记录](VALIDATION.md#test4-完整界面响应复测2026-10-25-15261531utc8)。
+
 ## 产品界面只使用原生 MyGo
 
 - 唯一正式应用路径：[`cmd/wallpaperd`](../cmd/wallpaperd/) → [`internal/ui`](../internal/ui/) → [`internal/app`](../internal/app/) → 平台宿主/渲染器。导入、设置持久化和桌面控制都在原生产品中实现。
@@ -72,7 +76,7 @@
 | 静音 / 声音 | 已接入，默认静音 | 已接入，默认静音 | 已接入，默认静音 | 不适用 |
 | 视频帧降采样 | 0.25–1 倍软件滤镜 | 不支持 | 不支持 | 不适用 |
 | FPS cap / 电池 15fps | 已有 fps 滤镜 | 已有 Transfer/Present 节流 | 已有 videoComposition 路径，未真机 | 不需要动态渲染 |
-| 位置记录/恢复 | 按屏+素材持久化检查点；L3/换源等待 file-loaded 后应用 pause，IPC 使用重叠 I/O 与写 deadline；静默管道 pause=false 回归待 Windows CI 执行，真机复测仍待完成 | 父/子双端命名管道均使用重叠 I/O；Accept 超时取消；待 Windows CI/真机验证；已接入 Get/SetCurrentTime；seek 完成重新应用播放意图；L3 退出等待与资源释放已有测试。真机确认 frame-server 启动 seek 仅在应用 Transfer 一帧后才收到 SEEKED；启动阶段现持续服务帧直到 SEEKED，修复 L3 恢复及初始 Load（Start > 0）等待 10s 超时，L3 恢复实测 6/6 成功 | 已接入延迟 seek/位置采样；L3 释放 AVQueuePlayer/looper/layer，期间黑屏，恢复时重建；Apple Silicon 实测释放解码资源，恢复前后位置差 ≤20 ms（#14，见下） | 不适用 |
+| 位置记录/恢复 | 按屏+素材持久化检查点；L3/换源等待 file-loaded 后应用 pause，IPC 使用重叠 I/O 与写 deadline；静默管道 pause=false 回归待 Windows CI 执行，真机复测仍待完成 | 父/子双端命名管道均使用重叠 I/O；Accept 超时取消；待 Windows CI/真机验证；已接入 Get/SetCurrentTime；seek 完成重新应用播放意图；L3 退出等待与资源释放已有测试。真机确认 frame-server 启动 seek 仅在应用 Transfer 一帧后才收到 SEEKED；启动阶段现持续服务帧直到 SEEKED，修复 L3 恢复及初始 Load（Start > 0）等待 10s 超时，L3 恢复实测 6/6 成功 | 已接入延迟 seek/位置采样；L3 释放 AVQueuePlayer/looper/layer，保留有界静态帧，恢复首帧就绪后无动画切回（2026-10-25 修复，见 VALIDATION）；Apple Silicon 实测释放解码资源，恢复前后位置差 ≤20 ms（#14，见下） | 不适用 |
 
 ### 暂停释放实测（#14，2026-10-23）
 

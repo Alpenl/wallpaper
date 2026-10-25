@@ -2,7 +2,7 @@
 
 // macOS 宿主（04 章）：每块 NSScreen 一个桌面层级无边框 NSWindow（kCGDesktopWindowLevelKey，
 // CanJoinAllSpaces|Stationary|IgnoresCycle，忽略鼠标），contentView 的 layer 交给 render/avf 挂 AVPlayerLayer。
-// 可见性：后台 goroutine 每秒采样 CGWindowList（layer 0、非本进程窗口）做 50 pt 网格遮挡/全屏判定，
+// 可见性：后台 goroutine 每 250 ms 采样 CGWindowList（layer 0、非本进程窗口）做 50 pt 网格遮挡/全屏判定，
 // 连续 3 次一致才上报（Wallnetic 策略，原型 proto_darwin.go）。电源：IOKit 1 s 采样 AC/电池，NSProcessInfo 1 s 采样低电量模式与 thermalState（power_darwin.go），pmset -g batt 30 s 报电量。
 // 锁屏/睡眠由 UI 层用 mygo.Power 转发（见 internal/ui）。
 // 未在真机验证（盒子上无 macOS）：只保证交叉编译通过。
@@ -357,9 +357,10 @@ func (h *Host) SetSystemWallpaper(id desktop.DisplayID, path string) error {
 }
 
 func (h *Host) sampler() {
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
 	me := int32(os.Getpid())
+	nextTopology := time.Now().Add(5 * time.Second)
 	for {
 		select {
 		case <-h.stop:
@@ -402,7 +403,8 @@ func (h *Host) sampler() {
 			}
 		}
 		// 屏幕增删：每 5 s 在主线程重新枚举
-		if time.Now().Unix()%5 == 0 {
+		if now := time.Now(); !now.Before(nextTopology) {
+			nextTopology = now.Add(5 * time.Second)
 			macos.Main(h.refresh)
 		}
 	}

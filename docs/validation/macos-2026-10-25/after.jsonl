@@ -1,0 +1,25 @@
+{"actual":13.2,"requested":13.2,"stage":"exact_paused_seek"}
+{"actual":38.15,"requested":38.15,"stage":"exact_paused_seek"}
+{"actual":599,"requested":599,"stage":"exact_paused_seek"}
+{"loops":1,"pos":0.265807375,"stage":"loop_boundary"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":20874344,"pos":14.079905084,"ps_lines":20,"stage":"initial_L0","thread_count":19}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":21988480,"pos":15.036376042,"ps_lines":20,"stage":"initial_L1","thread_count":19}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,5],"memory_unit":"bytes","phys_footprint":22103168,"pos":15.036376042,"ps_lines":16,"stage":"initial_L3","thread_count":15}
+{"advance_pos":15.954381417,"first_advance_ms":1280.135959,"pre_l3_pos":15.036376042,"resume_pos":15.036376042,"set_level_ms":7.622417,"stage":"initial_resume"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":22873216,"pos":26.019817084,"ps_lines":24,"stage":"cycle_1_L0","thread_count":23}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,5],"memory_unit":"bytes","phys_footprint":23413888,"pos":26.019817084,"ps_lines":18,"stage":"cycle_1_L3","thread_count":17}
+{"advance_pos":27.019380708,"first_advance_ms":1285.485083,"pre_l3_pos":26.019817084,"resume_pos":26.040530209,"set_level_ms":14.356958,"stage":"cycle_1_resume"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":24036480,"pos":37.086727875,"ps_lines":28,"stage":"cycle_2_L0","thread_count":27}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,5],"memory_unit":"bytes","phys_footprint":23626880,"pos":37.086727875,"ps_lines":20,"stage":"cycle_2_L3","thread_count":19}
+{"advance_pos":38.054219791,"first_advance_ms":1283.57225,"pre_l3_pos":37.086727875,"resume_pos":37.108983417,"set_level_ms":13.6325,"stage":"cycle_2_resume"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":23954560,"pos":48.117174041,"ps_lines":26,"stage":"cycle_3_L0","thread_count":25}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,5],"memory_unit":"bytes","phys_footprint":23610496,"pos":48.117174041,"ps_lines":18,"stage":"cycle_3_L3","thread_count":17}
+{"advance_pos":49.084085583,"first_advance_ms":1275.380459,"pre_l3_pos":48.117174041,"resume_pos":48.161627708,"set_level_ms":5.645,"stage":"cycle_3_resume"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,19],"memory_unit":"bytes","phys_footprint":23938176,"pos":59.149726917,"ps_lines":25,"stage":"cycle_4_L0","thread_count":24}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,5],"memory_unit":"bytes","phys_footprint":23610496,"pos":59.149726917,"ps_lines":18,"stage":"cycle_4_L3","thread_count":17}
+{"advance_pos":60.154812417,"first_advance_ms":1279.26975,"pre_l3_pos":59.149726917,"resume_pos":59.17908675,"set_level_ms":7.616625,"stage":"cycle_4_resume"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,20],"memory_unit":"bytes","phys_footprint":23889024,"pos":69.234228167,"ps_lines":25,"stage":"cycle_5_L0","thread_count":24}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,6],"memory_unit":"bytes","phys_footprint":23741568,"pos":69.234228167,"ps_lines":18,"stage":"cycle_5_L3","thread_count":17}
+{"advance_pos":70.226081584,"first_advance_ms":10.511417,"pre_l3_pos":69.234228167,"resume_pos":70.226081584,"set_level_ms":10.484708,"stage":"cycle_5_resume"}
+{"end_pos":70.226082,"observation_s":3,"paused":true,"stage":"edge_paused","start_pos":70.226082,"update_playback_ok":true}
+{"advance_pos":70.447177709,"first_advance_ms":262.718792,"pre_l3_pos":70.226082,"resume_pos":70.226082,"set_level_ms":9.307167,"stage":"edge_resume"}
