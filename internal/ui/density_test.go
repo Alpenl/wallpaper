@@ -76,6 +76,38 @@ func TestTitleBarControlInsets(t *testing.T) {
 	}
 }
 
+func TestMacCaptionNavigationFits(t *testing.T) {
+	for _, lang := range []string{"zh-CN", "en"} {
+		ctl, s, tt := newUI(t, "darwin")
+		ctl.V.Config.UI.Lang = lang
+		tt.SetLocale(lang)
+		tt.SetTitleBar(ui.TitleBar{Height: 38, Left: 80})
+		for _, page := range []string{pgLibrary, pgDisplays, pgPerf} {
+			s.SetPage(page)
+			for _, width := range []int{900, 1120, 1470} {
+				tt.SetSize(width, 740)
+				tt.Frame()
+				nav, ok := tt.Find(translate(lang, "壁纸库"))
+				if !ok || nav.X < 12 || nav.Y < 38 || nav.Y+nav.H > 74 {
+					t.Fatalf("%s/%s/%d navigation overlaps caption controls: %+v", lang, page, width, nav)
+				}
+				picker, ok := tt.Find(translate(lang, "选择显示器"))
+				right := float32(width - 12)
+				if page == pgLibrary {
+					right -= 320
+				}
+				if !ok || picker.X+picker.W > right+0.5 || picker.Y+picker.H > 38 {
+					t.Fatalf("%s/%s/%d display picker overlaps navigation or edge: %+v / %+v", lang, page, width, picker, nav)
+				}
+				click(t, tt, translate(lang, "选择显示器"))
+				if len(tt.Menu()) != 2 {
+					t.Fatal("caption drag region blocks display menu")
+				}
+			}
+		}
+	}
+}
+
 func TestPropertyPanelEmptyAndPageScope(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
 	ctl.V.Library = nil
@@ -138,5 +170,32 @@ func TestPanelCaptionAndPinnedRegions(t *testing.T) {
 				t.Fatal("scroll moved pinned regions or grid")
 			}
 		})
+	}
+}
+
+// Navigation and search share one compact toolbar in either window mode.
+func TestMacFullscreenHeaderAlignment(t *testing.T) {
+	_, _, tt := newUI(t, "darwin")
+	for _, width := range []int{900, 1470, 2048} {
+		tt.SetSize(width, 900)
+		for _, bar := range []ui.TitleBar{{Height: 38, Left: 80}, {}, {Height: 38, Left: 80}, {}} {
+			tt.SetTitleBar(bar)
+			tt.Frame()
+			nav, _ := tt.Find("壁纸库")
+			search, _ := tt.Find("搜索壁纸")
+			picker, _ := tt.Find("选择显示器")
+			if math.Abs(float64(picker.X+picker.W/2)-float64(width-320)/2) > 0.5 {
+				t.Fatalf("%d display title must center on library panel: %+v", width, picker)
+			}
+			if math.Abs(float64(nav.Y+nav.H/2-search.Y-search.H/2)) > 1 || search.X <= nav.X+nav.W || search.Y+search.H > max(32, bar.Height)+36 {
+				t.Fatalf("%d toolbar must share one compact row: %+v / %+v", width, nav, search)
+			}
+			if math.Abs(float64(nav.X-21)) > 1 {
+				t.Fatalf("%d fullscreen navigation/search alignment: %+v / %+v", width, nav, search)
+			}
+			if bar.Left > 0 && nav.Y < bar.Height {
+				t.Fatalf("%d windowed navigation overlaps traffic lights: %+v", width, nav)
+			}
+		}
 	}
 }

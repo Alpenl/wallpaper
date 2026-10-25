@@ -181,7 +181,7 @@ func (s *Settings) toolbar(c *ui.Context, v app.View, narrow bool) {
 
 func (s *Settings) emptyLibrary(c *ui.Context, v app.View) {
 	t := c.Theme()
-	ui.Column(c.Key("empty")).Grow(1).Margin(18, 24, 18, 24).Radius(18).Background(panelBg(t)).Border(1, lineColor(t)).AlignItems(ui.Center).Justify(ui.Center).Gap(10).Clip().Children(func() {
+	ui.Column(c.Key("empty")).Grow(1).Margin(18, 12, 18, 12).Radius(18).Background(panelBg(t)).Border(1, lineColor(t)).AlignItems(ui.Center).Justify(ui.Center).Gap(10).Clip().Children(func() {
 		glow := float32(0.16)
 		if t.Dark {
 			glow = 0.28

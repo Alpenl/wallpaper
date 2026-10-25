@@ -12,6 +12,20 @@ import (
 // English UI catalog. User-authored titles, paths, and backend error details
 // are deliberately not rewritten when they have no exact catalog entry.
 var english = map[string]string{
+	"导入壁纸…":              "Import wallpaper…",
+	"显示器设置…":             "Display settings…",
+	"自动暂停":               "Auto-pause",
+	"被窗口遮挡时":             "When covered by windows",
+	"其他应用全屏时":            "When another app is fullscreen",
+	"更多电源设置…":            "More power settings…",
+	"版本与诊断":              "Version & diagnostics",
+	"未命名壁纸":              "Untitled wallpaper",
+	"已手动暂停全部":            "All manually paused",
+	"导入视频或图片开始使用":        "Import a video or image to get started",
+	"正在使用 %d 张壁纸":        "%d wallpapers in use",
+	"播放失败，请打开壁纸库":        "Playback failed — open the library",
+	"浏览全部壁纸…":            "Browse all wallpapers…",
+	"切换壁纸":               "Change wallpaper",
 	"暂停 显示器 %d":          "Pause Display %d",
 	"安全模式：壁纸未加载":         "Safe mode: wallpapers not loaded",
 	"退出安全模式":             "Exit safe mode",
@@ -579,7 +593,6 @@ var english = map[string]string{
 	"自动":         "Auto",
 	"自动发送":       "Send",
 	"自动安装更新":     "Install automatically",
-	"自动暂停":       "Auto pause",
 	"自动暂停中":      "Automatically paused",
 	"自动检查更新":     "Check automatically",
 	"自定义":        "Custom",
