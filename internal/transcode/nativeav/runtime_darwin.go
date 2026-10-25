@@ -41,12 +41,15 @@ var (
 	cgContextRelease                  func(uintptr)
 	cgContextDrawImage                func(uintptr, cgRect, uintptr)
 	cgContextSetInterpolationQuality  func(uintptr, int32)
+	cvPoolCreate                      func(uintptr, uintptr, uintptr, *uintptr) int32
 	cvPoolCreatePixelBuffer           func(uintptr, uintptr, uintptr, *uintptr) int32
 	cvPixelBufferLockBaseAddress      func(uintptr, uint64) int32
 	cvPixelBufferUnlockBaseAddress    func(uintptr, uint64) int32
 	cvPixelBufferGetBaseAddress       func(uintptr) uintptr
 	cvPixelBufferGetBytesPerRow       func(uintptr) uintptr
 	cvPixelBufferGetHeight            func(uintptr) uintptr
+	cvPixelBufferGetPixelFormatType   func(uintptr) uint32
+	cvPixelBufferGetWidth             func(uintptr) uintptr
 	cmTimeAdd                         func(cmTime, cmTime) cmTime
 	msgSetTime                        func(objc.ID, objc.SEL, cmTime)
 	msgSetSize                        func(objc.ID, objc.SEL, cgSize)
@@ -105,12 +108,15 @@ func loadNative() error {
 		purego.RegisterLibFunc(&cgContextRelease, cg, "CGContextRelease")
 		purego.RegisterLibFunc(&cgContextDrawImage, cg, "CGContextDrawImage")
 		purego.RegisterLibFunc(&cgContextSetInterpolationQuality, cg, "CGContextSetInterpolationQuality")
+		purego.RegisterLibFunc(&cvPoolCreate, cv, "CVPixelBufferPoolCreate")
 		purego.RegisterLibFunc(&cvPoolCreatePixelBuffer, cv, "CVPixelBufferPoolCreatePixelBufferWithAuxAttributes")
 		purego.RegisterLibFunc(&cvPixelBufferLockBaseAddress, cv, "CVPixelBufferLockBaseAddress")
 		purego.RegisterLibFunc(&cvPixelBufferUnlockBaseAddress, cv, "CVPixelBufferUnlockBaseAddress")
 		purego.RegisterLibFunc(&cvPixelBufferGetBaseAddress, cv, "CVPixelBufferGetBaseAddress")
 		purego.RegisterLibFunc(&cvPixelBufferGetBytesPerRow, cv, "CVPixelBufferGetBytesPerRow")
 		purego.RegisterLibFunc(&cvPixelBufferGetHeight, cv, "CVPixelBufferGetHeight")
+		purego.RegisterLibFunc(&cvPixelBufferGetPixelFormatType, cv, "CVPixelBufferGetPixelFormatType")
+		purego.RegisterLibFunc(&cvPixelBufferGetWidth, cv, "CVPixelBufferGetWidth")
 		purego.RegisterLibFunc(&cmTimeAdd, cm, "CMTimeAdd")
 		lo, e := purego.Dlopen("/usr/lib/libobjc.A.dylib", purego.RTLD_GLOBAL|purego.RTLD_NOW)
 		if e != nil {

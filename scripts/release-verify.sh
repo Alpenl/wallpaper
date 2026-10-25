@@ -15,6 +15,13 @@ expected |= {base + '-linux-amd64.tar.gz', 'BUILD-INFO.txt', 'RELEASE-NOTES.txt'
 if 'updater_signing=signed' in (root / 'BUILD-INFO.txt').read_text().splitlines():
     expected.add(base + '-updates.tar.gz')
 actual = {p.name for p in root.iterdir()}
+for arch in ['amd64', 'arm64']:
+    dmg = base + '-macos-' + arch + '.dmg'
+    if dmg in actual:
+        expected.add(dmg)
+        if sys.platform == 'darwin':
+            subprocess.run(['hdiutil', 'verify', str(root / dmg)], check=True)
+
 assert actual == expected, f'Unexpected asset set: missing={expected-actual}, extra={actual-expected}'
 for name in expected:
     path = root / name
@@ -55,7 +62,29 @@ def same_payload(data, target):
     signed = ((target.startswith('windows-') and 'windows_signing=unsigned' not in metadata.splitlines()) or
               (target.startswith('darwin-') and 'macos_developer_id=none' not in metadata.splitlines()))
     if not signed:
-        assert data == binary.read_bytes(), target + ': packaged binary differs from build'
+        original = binary.read_bytes()
+        if target.startswith('darwin-') and data != original and sys.platform == 'darwin':
+            # Bundle sealing replaces Go's ad-hoc signature; compare both payloads
+            # after removing signatures, rather than skipping provenance checks.
+            with tempfile.TemporaryDirectory(prefix='wallpaper-signature-check-') as temp:
+                normalized = []
+                for name, content in [('packaged', data), ('built', original)]:
+                    path = Path(temp) / name
+                    path.write_bytes(content)
+                    subprocess.run(['codesign', '--remove-signature', str(path)], check=True)
+                    content = bytearray(path.read_bytes())
+                    # codesign leaves the previous __LINKEDIT virtual size behind;
+                    # it covers the replaced signature, not executable instructions.
+                    offset = 32
+                    for _ in range(struct.unpack_from('<I', content, 16)[0]):
+                        command, size = struct.unpack_from('<II', content, offset)
+                        if command == 0x19 and content[offset+8:offset+24].rstrip(b'\0') == b'__LINKEDIT':
+                            struct.pack_into('<Q', content, offset+32, 0)
+                        offset += size
+                    normalized.append(content)
+                assert normalized[0] == normalized[1], target + ': code differs beyond signature'
+        else:
+            assert data == original, target + ': packaged binary differs from build'
 
 extractor = shutil.which('7z') or shutil.which('7zz')
 assert extractor, 'Need 7z or 7zz to independently verify NSIS payloads (Ubuntu: p7zip-full)'

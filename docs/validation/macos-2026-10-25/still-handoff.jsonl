@@ -1,0 +1,17 @@
+{"actual":13.2,"requested":13.2,"stage":"exact_paused_seek"}
+{"actual":38.15,"requested":38.15,"stage":"exact_paused_seek"}
+{"actual":599,"requested":599,"stage":"exact_paused_seek"}
+{"loops":1,"pos":0.530949375,"stage":"loop_boundary"}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,25],"memory_unit":"bytes","phys_footprint":21120032,"pos":14.354713708,"ps_lines":22,"stage":"initial_L0","thread_count":21}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,25],"memory_unit":"bytes","phys_footprint":22479928,"pos":15.045720042,"ps_lines":18,"stage":"initial_L1","thread_count":17}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,11],"memory_unit":"bytes","phys_footprint":22512696,"pos":15.045720042,"ps_lines":18,"stage":"initial_L3","thread_count":17}
+{"held":true,"stage":"native_pause_frame","video_layers":0}
+{"advance_pos":16.220404834,"first_advance_ms":1587.205625,"pre_l3_pos":15.045720042,"resume_pos":15.045720042,"set_level_ms":12.301458,"stage":"initial_resume"}
+{"ready":true,"stage":"native_video_ready","still_released":true}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,24],"memory_unit":"bytes","phys_footprint":22856760,"pos":26.279417625,"ps_lines":24,"stage":"cycle_1_L0","thread_count":23}
+{"footprint_command":"footprint -p PID -f bytes","iosurface_columns":[0,0,0,11],"memory_unit":"bytes","phys_footprint":23102520,"pos":26.335043709,"ps_lines":16,"stage":"cycle_1_L3","thread_count":15}
+{"held":true,"stage":"native_pause_frame","video_layers":0}
+{"advance_pos":26.566385791,"first_advance_ms":571.76625,"pre_l3_pos":26.279417625,"resume_pos":26.335043709,"set_level_ms":12.980375,"stage":"cycle_1_resume"}
+{"ready":true,"stage":"native_video_ready","still_released":true}
+{"end_pos":26.632485,"observation_s":3,"paused":true,"stage":"edge_paused","start_pos":26.632485,"update_playback_ok":true}
+{"advance_pos":27.160610166,"first_advance_ms":565.13675,"pre_l3_pos":26.632485,"resume_pos":26.632485,"set_level_ms":4.492042,"stage":"edge_resume"}

@@ -114,12 +114,13 @@ func (a *App) applyLevel(s *screen, l visibility.Level) {
 		begin := time.Now()
 		from := s.worker.level
 		ctx := log.With("from", from.String(), "to", l.String())
-		ctx.Info("transition_begin")
+		// Cached position is diagnostic evidence, not a first-frame timestamp.
+		ctx.Info("transition_begin", "position_s", r.Stats().Pos)
 		err := r.SetLevel(l)
 		if err == nil {
 			s.worker.level = l
 		}
-		ctx.Info("transition_end", "queue_ms", begin.Sub(queued).Milliseconds(), "elapsed_ms", time.Since(begin).Milliseconds(), "err", err)
+		ctx.Info("transition_end", "queue_ms", begin.Sub(queued).Milliseconds(), "elapsed_ms", time.Since(begin).Milliseconds(), "position_s", r.Stats().Pos, "err", err)
 		a.Do(func() {
 			if s.gen != gen {
 				return

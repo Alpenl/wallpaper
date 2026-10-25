@@ -54,6 +54,7 @@ lines = [f'version={version}', f'commit={commit}', f'dirty={str(dirty).lower()}'
          'mpv_bundled=false', 'ffmpeg_bundled=false', 'production_update_feed=not-configured',
          'windows_signing=' + ('requested; see external signature verification' if os.environ.get('WPAPP_SIGN_CMD') else 'unsigned'),
          'macos_developer_id=' + ('requested; see external signature verification' if os.environ.get('WPAPP_CODESIGN_ID') else 'none'),
+         'macos_bundle_signing=' + ('developer-id-requested' if os.environ.get('WPAPP_CODESIGN_ID') else ('ad-hoc' if sys.platform == 'darwin' else 'go-linker-only')),
          'macos_notarization=' + ('requested; see external notarization verification' if os.environ.get('WPAPP_NOTARY_PROFILE') else 'none'),
          'platform_runtime_testing=not-established-by-this-build']
 for module in modules:
@@ -99,7 +100,8 @@ Native Go + MyGo application only. No React runtime is included.
 
 SIGNING AND VALIDATION
 Default artifacts have no Windows Authenticode signature and no macOS Apple
-Developer ID signature/notarization. A Go-generated ad-hoc Mach-O signature is
+Developer ID signature/notarization. macOS packaging on a Mac seals the app
+with an ad-hoc signature when no identity is configured. An ad-hoc signature is
 not an identified developer signature. OS warnings are expected; do not bypass
 security controls unless you have verified and trust this release. See
 BUILD-INFO.txt for the build's actual signing-hook configuration. Compilation

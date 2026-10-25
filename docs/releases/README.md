@@ -15,7 +15,9 @@ must be completed by the reviewer before tagging.
 
 Packages are built on macOS with `VERSION` in the environment. `release.sh`
 verifies package structure, payload architecture, provenance and SHA256SUMS.
-Windows and macOS packages are unsigned when their credentials are unavailable.
+Windows packages are unsigned when credentials are unavailable. On macOS,
+packages receive a verified ad-hoc bundle signature without credentials (as
+opposed to a Developer ID signature); notarization remains unavailable.
 A version suffix or either unsigned platform makes the release a prerelease.
 Linux has no platform code-signing hook. Compilation and CI tests do not certify
 installation, runtime rendering, Apple notarization acceptance or Windows trust.
@@ -62,3 +64,29 @@ NSIS, 7z/7zz and sha256sum (on macOS add Homebrew coreutils' `libexec/gnubin` to
 PATH). Apple signing additionally requires macOS. Local dirty builds may be
 inspected but cannot be published. This checkout's release work changes no Go
 source; hosted runners and real signing credentials still require live validation.
+
+## Local macOS package without a certificate
+
+On a Mac, build and package only the host architecture, using a chosen test
+prerelease version (not an official release tag):
+
+```sh
+export VERSION=0.3.4-mac-test.1
+TARGETS=darwin/arm64 bash scripts/build.sh
+bash scripts/package-metadata.sh
+ARCHES=arm64 MACOS_DMG=1 RELEASE_DIR=dist/macos-local bash scripts/package-macos.sh
+```
+
+Use `darwin/amd64` and `ARCHES=amd64` for Intel. The ZIP preserves executable
+permissions; the optional compressed DMG contains `Wallpaper.app` and an
+`Applications` shortcut. DMG creation and verification require macOS. ZIP remains
+the default CI release asset; local DMGs are not passed to the GitHub publisher.
+The application stays a menu-bar app (`LSUIElement`); it does not copy
+DuckBrowser's browser data, resources or signing identity. Bundle metadata adds
+localizations, `NSApplication` and automatic graphics switching.
+
+`codesign --verify --strict` checks the completed bundle. No certificate is
+needed for ad-hoc signing; this does not establish a trusted publisher or bypass
+Gatekeeper for quarantined downloads. `WPAPP_NOTARY_PROFILE` without a Developer
+ID identity fails explicitly. No `xattr` removal or security-setting changes are
+performed. Local packaging does not publish, install or update an existing app.

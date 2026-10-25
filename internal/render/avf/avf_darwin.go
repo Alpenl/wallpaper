@@ -1,8 +1,9 @@
 //go:build darwin
 
 // Package avf 是 macOS 渲染器（04 章）：AVQueuePlayer + AVPlayerLooper + AVPlayerLayer，进程内，
-// 挂到 desktop/mac 表面的 contentView.layer 上。L0 播放，L1–L3 暂停（L3 不释放 AVPlayer：MVP 简化），L4 由调用方 Close。
-// 未在真机验证（盒子上无 macOS）。
+// 挂到 desktop/mac 表面的 contentView.layer 上。
+// L0 plays, L1–L2 pause, L3 keeps a bounded still while releasing the player; resume rebuilds and reveals a ready video layer. L4 is closed by the caller.
+// L3 release/resume measured on Apple Silicon (#14); other paths, including the FPS cap, are still unverified on device.
 package avf
 
 import (
@@ -33,10 +34,12 @@ type Renderer struct {
 	item          render.Item
 	surf          desktop.Surface
 	paused        bool
+	released      bool
 	options       render.PlaybackOptions
 	stop          chan struct{}
 	pendingStart  float64
 	positionKnown bool
+	awaitingFrame bool
 	stats         atomic.Value // render.Stats; no native/UI calls in Stats
 }
 
@@ -78,6 +81,11 @@ func (r *Renderer) UpdatePlayback(o render.PlaybackOptions) error {
 		return err
 	}
 	r.mu.Lock()
+	if r.released {
+		r.options = o
+		r.mu.Unlock()
+		return nil
+	}
 	if r.player == 0 {
 		r.mu.Unlock()
 		return errors.New("avf: not running")
@@ -148,12 +156,14 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	if view == 0 {
 		return errors.New("avf: no view")
 	}
-	r.Close()
+	r.close(r.surf != nil && r.surf.Native() == uintptr(view))
 	stop := make(chan struct{})
 	r.mu.Lock()
+	r.released = false
 	r.item, r.surf, r.paused = it, s, paused
 	r.stop, r.pendingStart = stop, it.Start
 	r.positionKnown = false
+	r.awaitingFrame = true
 	fps := r.fps
 	o := r.options
 	r.mu.Unlock()
@@ -188,6 +198,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		root := view.Send(macos.Sel("layer"))
 		macos.MsgSetFrame(ly, macos.Sel("setFrame:"), objc.Send[macos.CGRect](root, macos.Sel("bounds")))
 		ly.Send(macos.Sel("setAutoresizingMask:"), uint(2|16))
+		ly.Send(macos.Sel("setHidden:"), true)
 		root.Send(macos.Sel("addSublayer:"), ly)
 		if !paused && it.Start == 0 {
 			p.Send(macos.Sel("setRate:"), float32(o.Speed))
@@ -220,11 +231,11 @@ func (r *Renderer) sampleLoop(stop chan struct{}) {
 				return // a queued callback must not touch a closed/replaced player
 			}
 			r.sampleOnMain()
-			pending = r.pendingStart > 0
+			pending = r.pendingStart > 0 || r.awaitingFrame
 		})
 		delay := time.Second
 		if pending {
-			delay = 250 * time.Millisecond // wait for metadata before the initial seek
+			delay = 50 * time.Millisecond // transient readiness polling; steady playback stays at 1 Hz
 		}
 		timer := time.NewTimer(delay)
 		select {
@@ -267,7 +278,10 @@ func (r *Renderer) sampleOnMain() {
 			start = math.Mod(start, duration)
 		}
 		ticks, _ := seekTicks(start)
-		macos.MsgSetCMTime(p, macos.Sel("seekToTime:"), macos.CMTime{Value: ticks, Timescale: seekTimescale, Flags: 1})
+		// Default seek tolerances may land on a nearby keyframe, skipping seconds
+		// on L3 resume. Require the saved presentation time in both directions.
+		zero := macos.CMTime{Timescale: seekTimescale, Flags: 1}
+		macos.MsgSeekCMTime(p, macos.Sel("seekToTime:toleranceBefore:toleranceAfter:"), macos.CMTime{Value: ticks, Timescale: seekTimescale, Flags: 1}, zero, zero)
 		r.pendingStart = 0
 		if !r.paused {
 			p.Send(macos.Sel("setRate:"), float32(r.options.Speed))
@@ -282,16 +296,36 @@ func (r *Renderer) sampleOnMain() {
 	}
 	st.Loops = objc.Send[int64](r.looper, macos.Sel("loopCount"))
 	r.stats.Store(st)
+	if r.awaitingFrame && objc.Send[bool](r.layer, macos.Sel("isReadyForDisplay")) {
+		withoutLayerActions(func() {
+			r.layer.Send(macos.Sel("setHidden:"), false)
+			objc.ID(r.surf.Native()).Send(macos.Sel("layer")).Send(macos.Sel("setContents:"), objc.ID(0))
+		})
+		r.awaitingFrame = false
+	}
 }
 
 func (r *Renderer) SetLevel(l visibility.Level) error {
 	r.mu.Lock()
+	if r.released {
+		if l >= visibility.L3 {
+			r.mu.Unlock()
+			return nil
+		}
+		it, s, paused := r.item, r.surf, l > visibility.L0
+		r.released = false
+		r.mu.Unlock()
+		return r.Load(it, s, paused)
+	}
 	if r.player == 0 {
 		r.mu.Unlock()
 		return nil
 	}
 	stop := r.stop
 	r.mu.Unlock()
+	if l >= visibility.L3 {
+		return r.releaseWithStill(stop)
+	}
 	macos.Main(func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -329,7 +363,6 @@ func (r *Renderer) SetFPSCap(fps int) error {
 	if !running || s == nil {
 		return nil
 	}
-	r.Close()
 	return r.Load(it, s, paused)
 }
 
@@ -338,7 +371,12 @@ func (r *Renderer) Stats() render.Stats   { return r.stats.Load().(render.Stats)
 func (r *Renderer) Done() <-chan error    { return r.done }
 
 func (r *Renderer) Close() error {
+	return r.close(false)
+}
+
+func (r *Renderer) close(keepStill bool) error {
 	r.mu.Lock()
+	r.released = false
 	p, lp, ly := r.player, r.looper, r.layer
 	r.player, r.looper, r.layer = 0, 0, 0
 	if r.stop != nil {
@@ -346,8 +384,21 @@ func (r *Renderer) Close() error {
 		r.stop = nil
 	}
 	r.mu.Unlock()
+	releasePlayer(p, lp, ly)
+	if !keepStill && r.surf != nil {
+		macos.Main(func() {
+			withoutLayerActions(func() {
+				objc.ID(r.surf.Native()).Send(macos.Sel("layer")).Send(macos.Sel("setContents:"), objc.ID(0))
+			})
+		})
+	}
+	return nil
+}
+
+// releasePlayer must be called without r.mu; native teardown runs on main.
+func releasePlayer(p, lp, ly objc.ID) {
 	if p == 0 {
-		return nil
+		return
 	}
 	macos.Main(func() {
 		p.Send(macos.Sel("pause"))
@@ -357,7 +408,6 @@ func (r *Renderer) Close() error {
 		lp.Send(macos.Sel("release"))
 		p.Send(macos.Sel("release"))
 	})
-	return nil
 }
 
 var _ render.Renderer = (*Renderer)(nil)

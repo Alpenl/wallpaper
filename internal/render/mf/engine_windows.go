@@ -746,9 +746,9 @@ func (s *renderThreadState) run() {
 	defer progress.Stop()
 	s.lastPTS, s.minDelta = -1, 0
 	for {
-		// Paused players still service commands/events and sample position, but
-		// do not decode/present continuously or wait for every vblank.
-		if !s.state.ready || s.state.paused {
+		// Idle players still service commands/events and sample position.
+		// Pending startup seeks service frames even with paused intent.
+		if !s.state.shouldServiceFrames() {
 			select {
 			case <-b.quit:
 				return
@@ -814,7 +814,7 @@ func (s *renderThreadState) presentFrame() error {
 	}
 	s.lastPTS = pts
 	b.lastPTS.Store(pts)
-	if cap := b.fpsCap.Load(); cap > 0 && time.Since(s.lastPresent) < time.Second/time.Duration(cap)-2*time.Millisecond {
+	if cap := b.fpsCap.Load(); s.state.ready && cap > 0 && time.Since(s.lastPresent) < time.Second/time.Duration(cap)-2*time.Millisecond {
 		return nil
 	}
 	if err := s.draw(s.state.options.Fit); err != nil {
