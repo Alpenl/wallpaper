@@ -12,6 +12,12 @@ import (
 // English UI catalog. User-authored titles, paths, and backend error details
 // are deliberately not rewritten when they have no exact catalog entry.
 var english = map[string]string{
+	"暂停 显示器 %d":          "Pause Display %d",
+	"安全模式：壁纸未加载":         "Safe mode: wallpapers not loaded",
+	"退出安全模式":             "Exit safe mode",
+	"动态壁纸 · 安全模式":        "Wallpaper · Safe mode",
+	"动态壁纸 · 已手动暂停全部":     "Wallpaper · All manually paused",
+	"暂停 显示器 %d · %s":     "Pause Display %d · %s",
 	"筛选与显示":              "Filter & view",
 	"版本 %s · 提交 %s · %s": "Version %s · Commit %s · %s",
 	"正在恢复…":              "Resuming…",
