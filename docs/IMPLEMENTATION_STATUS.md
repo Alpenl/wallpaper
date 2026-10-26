@@ -46,7 +46,7 @@
 | F-08 | 静态系统壁纸/跨屏静态裁切已有；mac 原生 GIF 预检、透明/子矩形/帧延迟/disposal 合成后编码视频，Win/Linux 可用外部转码；mac GIF 导入接入原生路线 | [`nativeav/gif.go`](../internal/transcode/nativeav/gif.go)、[`importer`](../internal/importer/)、[`panorama`](../internal/render/panorama/) | GIF 合成纯 Go 测试与 Linux 真 ffmpeg 不能替代 mac 原生编码/播放；透明复杂 GIF、末帧、资源限额及静态 CPU 需真机；有限 avconvert 不支持 GIF |
 | F-09 | 原生托盘、菜单、窗口按需打开/关闭；Windows 左键打开库；安全模式提示/恢复、暂停状态 ToolTip、全局与按屏暂停（含 span）；同快照刷新；设置不使用 WebView | [`shell.go`](../internal/ui/shell.go) | 各系统托盘/退出/窗口重建；后台内存与菜单时延 |
 | F-10 | MyGo 自启桥接、默认关闭、首次询问已有 | [`cmd/wallpaperd`](../cmd/wallpaperd/)、[`config`](../internal/config/) | 真机登录后启动、禁用后撤销、失败回滚；不是网页开关 |
-| F-11 | Lively/WE video 与纯本地 web 导入；Web 属性转换；exe/scene/audio-reactive/远程入口拒绝 | [`importer`](../internal/importer/)、[`wpk`](../internal/wpk/) | 样例包、非法路径/不支持类型、安全解压；不扩展到 WE scene/app |
+| F-11 | Lively/WE video 与纯本地 web 导入；Web 属性转换；exe/scene/audio-reactive/远程入口拒绝；已有离线 scene 特征探测（`-sceneprobe`）；导入仍拒绝 | [`importer`](../internal/importer/)、[`wpk`](../internal/wpk/)、[`wescene`](../internal/wescene/) | 样例包、非法路径/不支持类型、安全解压；scene 探测含真实结构的合成包回归；用户提供 Windows 38 包基线（27 complete / 1 partial / 10 failed），本轮修复后真实包及跨平台运行待复测；不支持 scene/app 播放 |
 | F-12 | 独立 WebView2/WKWebView 子进程、来源隔离与请求/导航/权限策略、默认拒绝的导入同意对话框与撤销、五类属性持久化/实时注入、rAF 限帧及暂停/电池策略已接线；Linux 明确不支持播放 | [`render/web`](../internal/render/web/)、[`ui/web.go`](../internal/ui/web.go)、[`web-orbit`](../examples/web-orbit/) | 原生沙箱行为、Windows 截图覆盖/恢复、macOS 桌面层级/多屏与隐藏节流、B-T2/Q-B2 仍须真机验证；不能据单元测试标记安全/性能验收完成 |
 | F-13 | 本轮补作者/说明/标签/尺寸/时长/大小与预览主色索引；搜索覆盖名称/来源/作者/说明/标签/中英文颜色；网格/列表/缩略图已有 | [`library.go`](../internal/ui/library.go)、[`palette.go`](../internal/importer/palette.go)、[`search_test.go`](../internal/ui/search_test.go) | 16:09 以前的布局检查点，1000 条查询云端微基准约 1.18 ms，通过该检查点基准目标；不是端到端 UI/旧库完整索引或真机时延认证；UI-01 |
 | F-14 | 独立原生 Shader 子进程、GLSL → HLSL/MSL 转译、D3D11/Metal、离屏缩放、GPU 计时与自适应控制、导入和原生属性 UI 已接线；不使用 WebView；Linux 明确 unsupported | [`render/shader`](../internal/render/shader/)、[`shader-waves`](../examples/shader-waves/) | 真机画面、原生 GPU 帧预算与长期暂停恢复尚未验证；当前沙箱无 Metal device，GPU 测试跳过，不能以占位预览验收 |
@@ -111,6 +111,7 @@
 | 页面隔离 | `-webhost` + IPC v1；每包临时 user data folder；virtual host `<id>.wpk.invalid` | `-webhost` + IPC v1；独立桌面 NSWindow；`wpk://<id>/` + os.Root；nonPersistent data store | 不启动网页引擎 |
 | 网络与宿主权限 | 默认非来源请求 403；使用 `_22` filter 覆盖 document/worker；取消外部导航、新窗口和下载；设备权限拒绝；禁宿主对象/消息桥/devtools/菜单 | 未授权时编译 WKContentRuleList 阻断 http(s)/ws(s)；取消外部导航/新窗口/不可显示响应；拒绝媒体权限/文件选择；不注册消息桥 | 不适用 |
 | 暂停/限帧 | L1–L3 截取最后帧到 STATIC 子窗口，再隐藏 controller、TrySuspend；恢复移除截图；L4 退出进程 | L1–L3 隐藏 WKWebView；L4 退出进程；隐藏后的 CPU/rAF 节流强度待实测 | 不适用 |
+| WE scene 离线特征探测 | `-sceneprobe <项目目录或 scene.pkg>`；只读本地未加密 PKGV0001–0024；schema v2 general 标志/相机、other 对象及嵌套 script 计数；导入仍拒绝 | 同左 | 同左；无播放支持 |
 | 自定义属性 | slider/color/select/bool/text；JSON 编码单向 ExecuteScript；兼容 wpk/Lively/WE 回调；暂停期间保存更新，恢复重推 | 同左，evaluateJavaScript | 保存属性但不执行 |
 | 运行时边界 | 需要支持 `ICoreWebView2_22` 的 WebView2 Runtime；官方 loader 或 Evergreen client；缺少/过旧明确报能力错误 | 需要正常图形登录会话与 WebKit；透明背景要求 macOS 12+ | 明确 unsupported |
 
@@ -188,3 +189,16 @@ Windows hosted UI 用例已改为点击布局框的稳定无障碍标签“选�
 - `go test ./...` 已执行：除 `internal/update.TestIncrementalUpdateBootRollback` 因沙箱禁止 `listen tcp6 [::1]:0: bind: operation not permitted` 失败外，其余包通过。未跳过或修改该测试来掩盖限制。
 
 本轮恢复回归覆盖：应用层一次恢复失败重建及提示、持续失败上限、60 秒 L3 释放后恢复、300 ms 去抖及排队期间真实视图、MF seek 完成、mpv 换源与 file-loaded/暂停命令顺序。单元测试与跨平台编译不代表 Windows GPU/驱动真机通过；设备仍冻结时请提供 `%LOCALAPPDATA%\WallpaperApp\logs`。
+
+### WE scene 离线探测边界（F-11）
+
+`wallpaperd -sceneprobe <项目目录或 scene.pkg>` 只输出特征报告，不表示 scene 兼容或可播放，不接入导入器/UI，也不提取、执行、复制或再分发素材。目录固定查找 `scene.pkg`；可选 `project.json` 若存在，必须是 `type: scene`（大小写不敏感，接受 `Scene`）。项目元数据和包内容均在 `-helper sceneprobe -in …` 子进程内读取。
+
+- 索引：仅接受 PKGV0001–0024，小端有符号 32 位字段；最多 10,000 项、单名称 1,024 字节、索引 4 MiB。名称按区分大小写的 slash 路径规范化，拒绝别名重复、路径逃逸、负值、越界及非空数据范围重叠；未知版本直接失败。
+- JSON：project.json ≤1 MiB、scene.json ≤16 MiB；最多 64 层、100,000 个 token 节点（包括键和容器），任意层重复键拒绝。只读 scene.json 和索引，不读 material/model 内容、纹理或 shader 正文。对象计数仅统计顶层 objects 中显式类型/标记；effects 统计 JSON 中 effects 数组的记录，名称取 name/file。material/model 引用及 models/、materials/ 路径仅按包内名称查找，未找到可能是 WE 内置资源，不等于素材损坏。
+- schema_version=2、parser_version="1"；complete 表示本轮有界结构探测完成，不表示所有功能均可判断。显式未知 type/kind、非法对象或 effects 形态标 partial；解析失败标 failed 并附原因。无类型键的对象计入 objects.other，不据此推断它是 group/null；其他对象计数为观察值，不保证识别资源或脚本中的功能。
+- 仅顶层 general 的 bloom、cameraparallax（报告 parallax）、camerashake 使用 on/off/property/unknown：布尔值直接记录 on/off；含 value 的对象记录 property，布尔当前值另存 bloom_value/parallax_value/camerashake_value，否则为 null；缺失或不识别形态为 unknown。显式 false 是文件事实 off。
+- camera：general.orthogonalprojection 含正整数 width/height 时为 ortho，camera_width/camera_height 范围 1–1048576；general 对象存在且投影缺失或 null 时为 perspective；否则 unknown，尺寸为 0。不从 fov 等辅助参数推断相机。
+- 其余功能保持 present/unknown；shader/script 可由索引路径观察。script_count 计数 scene.json 中任意深度的 script 键（包含对象属性和数组内嵌属性；不依赖脚本值类型或是否为空），不计索引条目。脚本正文不检查、不输出、不执行；JSON 解码仍受既有字节/深度/节点预算限制。脚本行为和资源内部功能保持未知。
+- 报告 ≤64 KiB（含换行），每个名称列表 ≤64 项、单标签 ≤256 字节；标签或报告超预算会省略并设置 truncated、partial 和 reason，计数保留。父进程限制 10 秒、stdout 64 KiB、stderr 16 KiB，超限 kill 并 reap，拒绝异常退出、重复/多个 JSON、字段缺失、未知字段、版本不符及非法范围。failed 报告输出后 CLI 非零退出；partial 仍为成功的有限探测。
+- helper 使用 128 MiB Go 软内存限制及读取预算；这是崩溃隔离，**不是安全沙箱或 OS 硬内存限制**。合成 PKGV、test-binary helper 回归及 macOS 上真实 CLI 的文件/目录/失败退出流程已验证；真实 WE 包覆盖率和 Windows/Linux 实际 CLI 运行仍需验证，不提交真实 WE 素材。
