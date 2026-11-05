@@ -4,13 +4,15 @@
 
 本主分支工作区包含原生产品代码、前期调研和真机实验代码；React 设计稿仅保留在独立的 UI 分支作为视觉参考。它们的用途不同，不能把原型结果或历史测试当作当前产品验收。
 
-> 正式应用以主分支 `master/2710033e` 为实现基线，`ui` 分支仅提供设计参考。最终源码与测试范围见 [验证记录](VALIDATION.md)。
+> 正式应用来自主分支 `master`，`ui` 分支仅提供设计参考。2026-11-05 已合入状态菜单/事件循环改进与离线 scene 探测，合并检查点为 `9f09dbd`；原 `2710033e` 为早期原生 UI 检查点。具体变更见 [提交总结](COMMIT_SUMMARIES.md)，测试范围见 [验证记录](VALIDATION.md)。
 
 ## 按问题找文档
 
 | 想知道什么 | 入口 | 性质 |
 |---|---|---|
-| 本次预发布与安装依赖 | [v0.3.0-mvp](releases/v0.3.0-mvp.md) | 未签名检查点、范围与运行门槛 |
+| 当前发布范围、资产与签名约束 | [发布流程](releases/README.md) | Windows/macOS 四目标契约，不等于已发布 |
+| 每次提交改了什么、为什么改 | [提交总结](COMMIT_SUMMARIES.md) | 逐次追加、与代码同提交；历史合并补记有标注 |
+| 早期 MVP 预发布与安装依赖 | [v0.3.0-mvp](releases/v0.3.0-mvp.md) | 历史未签名检查点，不代表当前已发布版本 |
 | 如何构建和启动 | [项目 README](../README.md) | 当前使用入口 |
 | 七页 UI 如何对应原规划、哪些功能实际接线 | [实现与验收矩阵](IMPLEMENTATION_STATUS.md) | 当前源码状态、验收计划 |
 | 本轮跑了什么、哪些没有验证 | [验证记录与发布门槛](VALIDATION.md) | 当前结果，不继承历史 PASS |
@@ -23,6 +25,7 @@
 | Windows/macOS 应该怎么实测 | [真机测试计划](design/bench/TEST_PLAN.md)、[设备交接](design/bench/DEVICE_HANDOFF.md) | 测试步骤，非测试结果 |
 | 还有哪些技术未知量 | [Q-* 问题登记](design/14-open-questions.md) | 历史问题及当前覆盖说明 |
 | 前期市场、技术、可行性研究 | [调研索引](research/README.md) | 保留原文，时效性未重核 |
+| 本机 Wallpaper Engine 与我们的定位、能力差距 | [WE 2.8.42 对比](research/COMPARISON_WALLPAPER_ENGINE_2026-11-05.md) | 2026-11-05 只读本机对比，不是市场调研或性能基准 |
 | 本轮七页原生 UI 的样子 | [当前软件渲染截图](screenshots/native-current/README.md) | 假控制器视图，不是真机/浏览器截图 |
 | UI 分支改造前的实现/测试说明 | [0.2.1 历史 README](history/IMPLEMENTATION_0.2.1.md) | 历史证据，不是本轮结果 |
 | 原规划七页 UI 的设计参考 | [UI 分支 React 设计稿](https://github.com/Alpenl/wallpaper/tree/5f00d334cd32412291964d228fad4f3b9461cc7b/web) | 只作 UI 设计，产品只能使用原生界面 |
@@ -38,7 +41,7 @@
 
 - `internal/`、`cmd/`：唯一产品实现与原生 MyGo 界面；本主分支工作区不包含 `web/`，React 设计稿仅从 UI 分支参考。
 - `docs/design/`：01–17 章规格、ADR、问题、决策、实验；其中 `prototype/`、`visibility/`、`linux-dbus/` 有独立 Go 模块，根目录 `go test ./...` 不覆盖这些嵌套模块。
-- `docs/research/`：2026-10-20 起的三份早期研究，以及早期 MyGo 原型。
+- `docs/research/`：2026-10-20 起的三份早期研究、原生 MVP 补充、2026-11-05 本机 WE 对比，以及早期 MyGo 原型。
 - `docs/history/`：被当前实现说明替代的历史快照，保留证据，不删除。
 - `docs/screenshots/` 根目录：历史原生 UI 图；`native-current/`：本轮带来源说明的软件绘制截图。两者均不能替代真实平台运行。
 

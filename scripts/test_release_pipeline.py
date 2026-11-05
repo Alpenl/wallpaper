@@ -80,6 +80,9 @@ class ReleaseAssetContractTests(release_tests.ReleaseFixture, unittest.TestCase)
         self.version = release_tests.publisher.VERSION
         self.base = 'Wallpaper-' + self.version
         (self.root / 'LICENSE').write_bytes(b'license-fixture')
+        icon = self.root / 'assets/icon'
+        icon.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(SCRIPTS.parent / 'assets/icon/AppIcon.icns', icon / 'AppIcon.icns')
         info = self.folder / 'BUILD-INFO.txt'
         info.write_text(info.read_text() + 'production_update_feed=not-configured\n')
         self.package_fixtures()
@@ -91,13 +94,26 @@ class ReleaseAssetContractTests(release_tests.ReleaseFixture, unittest.TestCase)
 
     @staticmethod
     def pe_fixture(machine):
-        data = bytearray(512)
+        pe32plus = machine != 0x14c
+        optional_size = 240 if pe32plus else 224
+        data = bytearray(0x300)
         data[:2] = b'MZ'
         struct.pack_into('<I', data, 0x3c, 0x80)
         data[0x80:0x84] = b'PE\0\0'
         struct.pack_into('<H', data, 0x84, machine)
-        struct.pack_into('<H', data, 0x98, 0x10b if machine == 0x14c else 0x20b)
-        struct.pack_into('<H', data, 0x98 + 68, 2)
+        struct.pack_into('<H', data, 0x86, 1)        # one section (.rsrc)
+        struct.pack_into('<H', data, 0x94, optional_size)
+        struct.pack_into('<H', data, 0x98, 0x20b if pe32plus else 0x10b)
+        struct.pack_into('<H', data, 0x98 + 68, 2)   # GUI subsystem
+        directory = 0x98 + (112 if pe32plus else 96)
+        struct.pack_into('<II', data, directory + 8 * 2, 0x1000, 40)  # resources
+        section = 0x98 + optional_size
+        data[section:section + 8] = b'.rsrc\0\0\0'
+        struct.pack_into('<IIIIIIHHI', data, section + 8,
+                         40, 0x1000, 40, 0x200, 0, 0, 0, 0, 0x40000040)
+        # Minimal resource tree: one RT_GROUP_ICON (type 14) entry.
+        struct.pack_into('<HH', data, 0x200 + 12, 0, 1)
+        struct.pack_into('<II', data, 0x210, 14, 0x80000000 | 24)
         return bytes(data)
 
     def package_fixtures(self):
@@ -129,10 +145,13 @@ class ReleaseAssetContractTests(release_tests.ReleaseFixture, unittest.TestCase)
                 archive.writestr(executable, binary.read_bytes())
                 archive.writestr('Wallpaper.app/Contents/Info.plist', plistlib.dumps({
                     'CFBundleExecutable': 'wallpaperd',
+                    'CFBundleIconFile': 'AppIcon.icns',
                     'CFBundleShortVersionString': self.version.split('-')[0],
                     'CFBundleVersion': self.version.split('-')[0],
                     'LSUIElement': True,
                 }))
+                archive.write(self.root / 'assets/icon/AppIcon.icns',
+                              'Wallpaper.app/Contents/Resources/AppIcon.icns')
                 for path in metadata.iterdir():
                     archive.write(path, 'Wallpaper.app/Contents/Resources/' + path.name)
 

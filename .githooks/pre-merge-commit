@@ -1,0 +1,5 @@
+#!/bin/sh
+# 此时 MERGE_HEAD 尚未写入；统一要求先停在合并暂存区，避免复用分支旧总结。
+printf '%s\n' 'Automatic merge commit stopped: append and stage a merge summary, then git commit.' >&2
+printf '%s\n' 'For future merges, use git merge --no-ff --no-commit <branch>.' >&2
+exit 1

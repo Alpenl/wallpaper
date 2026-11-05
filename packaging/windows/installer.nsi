@@ -17,12 +17,26 @@ Unicode true
 !define APPNAME "Wallpaper"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
 
+; package-windows.sh passes an absolute path; this fallback keeps a manual
+; makensis invocation from the repository root working too.
+!ifndef ICON
+  !define ICON "${__FILEDIR__}../../assets/icon/wallpaper.ico"
+!endif
+!if /FileExists "${ICON}"
+!else
+  !error "icon not found: ${ICON} (pass -DICON=<absolute path>)"
+!endif
+Icon "${ICON}"
+UnIcon "${ICON}"
+
 Name "${APPNAME} ${VERSION}"
 OutFile "${OUT}"
 RequestExecutionLevel user
 InstallDir "$LOCALAPPDATA\Programs\${APPNAME}"
 SetCompressor /SOLID lzma
 !include "MUI2.nsh"
+!define MUI_ICON "${ICON}"
+!define MUI_UNICON "${ICON}"
 !define MUI_WELCOMEPAGE_TITLE "Wallpaper ${VERSION} (${ARCH})"
 !define MUI_WELCOMEPAGE_TEXT "Native ${ARCH} application. Use the installer matching your Windows architecture.$\r$\n$\r$\nThis developer release does not bundle mpv. Default video playback requires a separately installed mpv; set its executable path in Playback & Performance, under Decode & render.$\r$\n$\r$\nRead RELEASE-NOTES.txt in the install folder for signing, runtime and validation limits."
 !insertmacro MUI_PAGE_WELCOME
@@ -47,8 +61,9 @@ Section "Install"
   File "${SRC}/LICENSE"
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\uninstall.exe"
-  CreateShortCut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\wallpaperd.exe"
+  CreateShortCut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\wallpaperd.exe" "" "$INSTDIR\wallpaperd.exe" 0
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayName" "${APPNAME}"
+  WriteRegStr HKCU "${UNINSTKEY}" "DisplayIcon" "$INSTDIR\wallpaperd.exe,0"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "${UNINSTKEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINSTKEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'

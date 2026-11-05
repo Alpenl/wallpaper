@@ -1,0 +1,17 @@
+{
+  "RT_GROUP_ICON": {
+    "APP": {
+      "0000": [
+        "windows/icon-16.png",
+        "windows/icon-20.png",
+        "windows/icon-24.png",
+        "windows/icon-32.png",
+        "windows/icon-40.png",
+        "windows/icon-48.png",
+        "windows/icon-64.png",
+        "windows/icon-128.png",
+        "windows/icon-256.png"
+      ]
+    }
+  }
+}

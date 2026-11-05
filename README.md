@@ -1,8 +1,10 @@
 # Wallpaper
 
+<img src="assets/icon/windows/icon-128.png" width="96" alt="Wallpaper 应用图标">
+
 [工程规则](docs/ENGINEERING.md)
 
-> **实现基线**：主分支 `master` 的 `2710033ef169852bd7c4a1b5c063d29f3f3e89fd`。`ui` 分支只提供 [React 设计稿](https://github.com/Alpenl/wallpaper/tree/5f00d334cd32412291964d228fad4f3b9461cc7b/web)，不作为应用代码或产品运行入口；正式界面只能使用原生 MyGo。
+> **产品代码**：以主分支 `master` 为准。2026-11-05 合并检查点为 `9f09dbd`，包含状态菜单/事件循环改进和离线 scene 探测；原 `2710033e` 是早期原生 UI 检查点。变更与验证边界见 [提交总结](docs/COMMIT_SUMMARIES.md)。`ui` 分支只提供 [React 设计稿](https://github.com/Alpenl/wallpaper/tree/5f00d334cd32412291964d228fad4f3b9461cc7b/web)，不作为应用代码或产品运行入口；正式界面只能使用原生 MyGo。
 
 跨平台动态壁纸桌面应用：Go + MyGo 原生设置界面，Windows 使用 mpv/可选 Media Foundation，macOS 使用 AVFoundation。**2026-11-04 范围决定：当前只开发和验收 Windows、macOS，暂停 Linux 开发；已有 X11 代码和兼容检查保留，不代表 Linux 支持或发布承诺，恢复需另行决定。** 发布版本由 release tag 注入；普通构建为 `dev`，不参与自动更新排序。发布范围、安装依赖和验证限制见 [版本说明](docs/releases/README.md)。
 
@@ -11,6 +13,7 @@
 ## 从这里开始
 
 - [完整文档导航](docs/README.md)：当前实现、设计、决策、测试与历史研究的入口。
+- [逐次提交总结](docs/COMMIT_SUMMARIES.md)：每次代码提交的目的、改动、验证与限制；[提交规范](docs/ENGINEERING.md#每次提交追加总结2026-11-05-起) 说明格式和本地防漏检查。
 - [本轮原生 UI 截图](docs/screenshots/native-current/README.md)：七页示例及中/英文、浅/深主题，注明软件绘制和模拟数据边界。
 - [原生跨屏说明](docs/SPANNING.md)、[本轮研究补充](docs/research/NATIVE_MVP_ADDENDUM.md)：实现、替代方案和剩余技术门槛。
 - [七页 UI / F-01…F-26 对照](docs/IMPLEMENTATION_STATUS.md)：壁纸库、显示器、播放与性能、暂停与电源、通用、版本管理、关于与诊断。
@@ -77,6 +80,7 @@ Windows/macOS 打包和签名钩子在 [`scripts/`](scripts/) 与 [`packaging/`]
 | `internal/visibility`、`internal/supervisor` | 暂停/电源状态机与故障恢复 |
 | `internal/importer`、`internal/wpk`、`internal/media`、`internal/transcode` | 安全导入、媒体探测、转码 |
 | `internal/config`、`internal/telemetry`、`internal/update` | 本地持久化、脱敏日志、签名清单更新 |
+| `assets/icon` | 应用图标母版、Windows ICO/资源与 macOS ICNS，见 [说明](assets/icon/README.md) |
 | [UI 分支设计稿](https://github.com/Alpenl/wallpaper/tree/5f00d334cd32412291964d228fad4f3b9461cc7b/web) | 仅外部设计参考，不包含在主分支应用中 |
 | `docs` | [导航](docs/README.md)、实现矩阵、验证与历史研究 |
 

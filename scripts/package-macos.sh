@@ -16,6 +16,7 @@ for arch in ${ARCHES:-arm64 amd64}; do
   rm -rf "$app"; mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   cp "$bin" "$app/Contents/MacOS/wallpaperd"; chmod 755 "$app/Contents/MacOS/wallpaperd"
   cp dist/package-metadata/LICENSE dist/package-metadata/{RELEASE-NOTES,BUILD-INFO,THIRD-PARTY-NOTICES}.txt "$app/Contents/Resources/"
+  cp assets/icon/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
   sed "s/@VERSION@/${VERSION%%-*}/g" packaging/macos/Info.plist.tmpl > "$app/Contents/Info.plist"
   printf 'APPL????' > "$app/Contents/PkgInfo"
   if [ "$(uname)" = Darwin ]; then plutil -lint "$app/Contents/Info.plist"; fi

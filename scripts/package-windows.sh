@@ -20,7 +20,11 @@ for arch in ${ARCHES:-amd64 arm64}; do
   # Fresh staging never inherits third_party/mpv or a previous dist/*/mpv.
   scripts/sign-windows.sh "$src/wallpaperd.exe"
   out="$RELEASE_DIR/Wallpaper-$VERSION-windows-$arch-setup.exe"
-  makensis -V2 -DVERSION="$VERSION" -DARCH="$arch" -DSRC="$src" -DOUT="$out" packaging/windows/installer.nsi
+  # Git Bash's $PWD is /c/...; native makensis.exe needs a Windows path.
+  icon="$PWD/assets/icon/wallpaper.ico"
+  if command -v cygpath >/dev/null 2>&1; then icon=$(cygpath -w "$icon"); fi
+  makensis -V2 -DVERSION="$VERSION" -DARCH="$arch" -DSRC="$src" -DOUT="$out" \
+    -DICON="$icon" packaging/windows/installer.nsi
   scripts/sign-windows.sh "$out"
   ls -la "$out"
 done

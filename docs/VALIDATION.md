@@ -2,9 +2,10 @@
 
 ## 2026-11-05 分支合并阻碍修复
 
-本次基于 `codex/status-menu/9f04e48` 与 `we-sceneprobe/6127045` 分别修复，
-未合入 `master`、未推送或发布。以下组合验证针对两分支无冲突合并树加修复的
-独立 LF 源码副本，不代表两分支已经实际合并。
+本次基于 `codex/status-menu/9f04e48` 与 `we-sceneprobe/6127045` 分别修复。
+以下先记录合并前的独立 LF 组合源码验证；随后已经实际合并并推送至 `master`，
+最终检查点为 `9f09dbd`。末尾补充合并后复验；未创建 tag 或 GitHub Release。
+提交来源、根因与范围见 [提交总结](COMMIT_SUMMARIES.md)。
 
 - 发布资产约定统一为 Windows/macOS 四目标必需包，拒绝 Linux 包；可选 DMG
   与签名更新包保留完整文件、校验和和远端摘要检查。
@@ -26,7 +27,21 @@
   C 编译器。本轮不能声称 `scripts/check.sh`（包含 race）整体通过。
 
 本轮独立复核覆盖上述三个已确认阻碍，不是两个功能分支的完整运行验收。
-没有实际发布到 GitHub，也没有新增 macOS 真机、安装器、签名或公证证据。
+没有发布 GitHub Release，也没有新增 macOS 真机、安装器、签名或公证证据。
+
+### 实际合并与合并后复验
+
+两组修复分别提交为 `c299795`、`8636fdc`，以 `730cd23`、`9f09dbd` 两次
+no-fast-forward 合并进入 `master`；两条修复分支和 `master` 均已推送。
+本地 `master` 与本地记录的 `origin/master` 在文档补记开始时均指向 `9f09dbd`。
+没有创建 tag 或正式 Release。
+
+合并后的独立 LF 副本再次执行：Windows 根模块普通 Go 测试及 sceneprobe 聚焦回归通过；
+Windows/macOS/Linux 三平台 vet 和 Windows/macOS 各 amd64、arm64 加 Linux amd64
+五目标无 CGO 构建通过；文档检查通过（当时 46 个文件、417 个本地链接）；
+WSL 的 66 项发布脚本测试和 6 项打包守卫通过。这不解除前述 race 环境限制。
+推送后的最后一次远端状态观察为 Docs 成功、CI 仍在运行；未记录最终 CI 结论。
+本次补记不把历史真机、签名或其他环境的 race 结果移植为当前检查点的结果。
 
 ## 2026-11-04 事件循环可靠性
 

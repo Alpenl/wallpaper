@@ -56,6 +56,41 @@ def pe(data, machine, unsigned=False):
         directory = optional + (112 if magic == 0x20b else 96)
         assert struct.unpack_from('<II', data, directory+8*4) == (0, 0), 'Unexpected Authenticode signature'
 
+def has_group_icon(data):
+    """Return True when a PE carries an RT_GROUP_ICON resource (type 14)."""
+    assert data[:2] == b'MZ', 'Not PE'
+    offset = struct.unpack_from('<I', data, 0x3c)[0]
+    assert data[offset:offset+4] == b'PE\0\0', 'Invalid PE signature'
+    coff = offset + 4
+    sections = struct.unpack_from('<H', data, coff+2)[0]
+    optional_size = struct.unpack_from('<H', data, coff+16)[0]
+    optional = coff + 20
+    magic = struct.unpack_from('<H', data, optional)[0]
+    directory = optional + (112 if magic == 0x20b else 96)
+    rva, size = struct.unpack_from('<II', data, directory + 8*2)
+    if not rva or not size:
+        return False
+    section_base = optional + optional_size
+    def rva_to_offset(value):
+        for i in range(sections):
+            entry = section_base + i * 40
+            virtual_size, virtual_address, raw_size, raw_pointer = struct.unpack_from(
+                '<IIII', data, entry + 8)
+            if virtual_address <= value < virtual_address + max(virtual_size, raw_size):
+                return raw_pointer + value - virtual_address
+        return None
+    root = rva_to_offset(rva)
+    if root is None or root + 16 > len(data):
+        return False
+    named, ids = struct.unpack_from('<HH', data, root + 12)
+    for i in range(named + ids):
+        entry = root + 16 + i * 8
+        name, _ = struct.unpack_from('<II', data, entry)
+        if not name & 0x80000000 and name == 14:
+            return True
+    return False
+
+
 def same_payload(data, target):
     binary = Path('dist') / target / ('wallpaperd.exe' if target.startswith('windows-') else 'wallpaperd')
     # Windows signing hook may alter a staged binary, but unsigned release must match exactly.
@@ -92,7 +127,9 @@ for arch, machine in [('amd64', 0x8664), ('arm64', 0xaa64)]:
     installer = root / (base + '-windows-' + arch + '-setup.exe')
     unsigned = 'windows_signing=unsigned' in metadata.splitlines()
     # NSIS uses an x86 bootstrap for both native payload architectures.
-    pe(installer.read_bytes(), 0x14c, unsigned)
+    installer_data = installer.read_bytes()
+    pe(installer_data, 0x14c, unsigned)
+    assert has_group_icon(installer_data), 'installer has no icon resources'
     with tempfile.TemporaryDirectory(prefix='wallpaper-nsis-check-') as temp:
         subprocess.run([extractor, 'x', '-y', '-o' + temp, str(installer)], check=True, stdout=subprocess.DEVNULL)
         extracted = Path(temp)
@@ -100,6 +137,7 @@ for arch, machine in [('amd64', 0x8664), ('arm64', 0xaa64)]:
         assert len(candidates) == 1, 'Missing/ambiguous NSIS native payload'
         data = candidates[0].read_bytes()
         pe(data, machine, unsigned)
+        assert has_group_icon(data), 'wallpaperd.exe has no icon resources'
         same_payload(data, 'windows-' + arch)
         assert not list(extracted.rglob('mpv.exe')), 'Unexpected bundled mpv'
         for name in ['LICENSE', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
@@ -119,9 +157,12 @@ for arch, cpu in [('amd64', 0x1000007), ('arm64', 0x100000c)]:
         same_payload(data, 'darwin-' + arch)
         plist = plistlib.loads(archive.read('Wallpaper.app/Contents/Info.plist'))
         assert plist['CFBundleExecutable'] == 'wallpaperd'
+        assert plist['CFBundleIconFile'] == 'AppIcon.icns'
         assert plist['CFBundleShortVersionString'] == version.split('-')[0]
         assert plist['CFBundleVersion'] == version.split('-')[0]
         assert plist['LSUIElement'] is True
+        assert (archive.read('Wallpaper.app/Contents/Resources/AppIcon.icns') ==
+                Path('assets/icon/AppIcon.icns').read_bytes()), 'App icon differs'
         for name in ['LICENSE', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
             assert archive.read('Wallpaper.app/Contents/Resources/' + name) == (Path('dist/package-metadata') / name).read_bytes(), 'App metadata differs: ' + name
 print('PASS: exact asset set and checksum coverage, commit/version provenance, four payloads, architecture/permissions, metadata/notices, NSIS extraction; no bundled mpv.')

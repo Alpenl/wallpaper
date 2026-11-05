@@ -34,23 +34,85 @@ type Shell struct {
 	lastToolTip string
 }
 
-// Icon 生成托盘图标。
+// Icon 生成托盘图标：与应用图标一致的简化层叠壁纸卡片。
+// 托盘图标运行时绘制 32×32 PNG，不额外提交托盘专用二进制资源；应用/安装器/
+// macOS 图标资产见 assets/icon。8× 超采样让通知区域边缘平滑。
 func Icon() []byte {
-	img := image.NewNRGBA(image.Rect(0, 0, 32, 32))
-	for y := 0; y < 32; y++ {
-		for x := 0; x < 32; x++ {
-			in := x >= 3 && x < 29 && y >= 6 && y < 26
-			switch {
-			case in && y > 18-(x/4)%3:
-				img.Set(x, y, color.NRGBA{0x2b, 0x8a, 0xd8, 0xff})
-			case in:
-				img.Set(x, y, color.NRGBA{0xe8, 0xf1, 0xfb, 0xff})
+	const size, samples = 32, 8
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	bg := iconColor{11, 31, 56}
+	mid := iconColor{74, 159, 232}
+	front := iconColor{247, 247, 242}
+	ink := iconColor{18, 58, 140}
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			var sumR, sumG, sumB, sumA float64
+			for sy := 0; sy < samples; sy++ {
+				for sx := 0; sx < samples; sx++ {
+					px := float64(x) + (float64(sx)+0.5)/samples
+					py := float64(y) + (float64(sy)+0.5)/samples
+					c, a := iconSample(px, py, bg, mid, front, ink)
+					sumR += c.r * a
+					sumG += c.g * a
+					sumB += c.b * a
+					sumA += a
+				}
 			}
+			n := float64(samples * samples)
+			if sumA == 0 {
+				continue
+			}
+			img.SetNRGBA(x, y, color.NRGBA{
+				R: uint8(sumR/sumA + 0.5),
+				G: uint8(sumG/sumA + 0.5),
+				B: uint8(sumB/sumA + 0.5),
+				A: uint8(sumA/n*255 + 0.5),
+			})
 		}
 	}
 	var b bytes.Buffer
 	_ = png.Encode(&b, img)
 	return b.Bytes()
+}
+
+type iconColor struct{ r, g, b float64 }
+
+// iconSample 返回子像素的颜色与覆盖；图层从后到前：圆角底、浅蓝卡片、白卡、山与播放。
+func iconSample(x, y float64, bg, mid, front, ink iconColor) (iconColor, float64) {
+	mountain := inTriangle(x, y, 8, 18.5, 12, 11.8, 16, 18.5) ||
+		inTriangle(x, y, 14, 18.5, 18, 13.6, 24, 18.5) ||
+		(x >= 8 && x <= 24 && y >= 17.6 && y <= 18.8)
+	play := inTriangle(x, y, 14, 19.8, 14, 24.8, 21.2, 22.3)
+	switch {
+	case mountain || play:
+		return ink, 1
+	case inRoundedRect(x, y, 7, 7, 26, 26, 3):
+		return front, 1
+	case inRoundedRect(x, y, 4, 4, 27, 27, 4):
+		return mid, 1
+	case inRoundedRect(x, y, 2, 2, 30, 30, 6):
+		return bg, 1
+	}
+	return iconColor{}, 0
+}
+
+func inTriangle(x, y, ax, ay, bx, by, cx, cy float64) bool {
+	d1 := (x-bx)*(ay-by) - (ax-bx)*(y-by)
+	d2 := (x-cx)*(by-cy) - (bx-cx)*(y-cy)
+	d3 := (x-ax)*(cy-ay) - (cx-ax)*(y-ay)
+	hasNeg := d1 < 0 || d2 < 0 || d3 < 0
+	hasPos := d1 > 0 || d2 > 0 || d3 > 0
+	return !(hasNeg && hasPos)
+}
+
+func inRoundedRect(x, y, x0, y0, x1, y1, r float64) bool {
+	if x < x0 || x > x1 || y < y0 || y > y1 {
+		return false
+	}
+	cx := min(max(x, x0+r), x1-r)
+	cy := min(max(y, y0+r), y1-r)
+	dx, dy := x-cx, y-cy
+	return dx*dx+dy*dy <= r*r
 }
 
 type trayDisplayState struct {
