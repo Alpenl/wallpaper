@@ -79,9 +79,7 @@ func (a *App) PreparePackageReplacement(ctx context.Context, id string) error {
 		for _, s := range a.sortedScreens() {
 			if s.item != nil && s.item.ID == id {
 				a.closeScreen(s, false)
-				done := make(chan struct{})
-				s.ops <- func() { close(done) }
-				waits = append(waits, done)
+				waits = append(waits, s.ops.barrier())
 			}
 		}
 		queued <- waits
@@ -93,10 +91,14 @@ func (a *App) PreparePackageReplacement(ctx context.Context, id string) error {
 			case <-done:
 			case <-ctx.Done():
 				return ctx.Err()
+			case <-a.closing:
+				return context.Canceled
 			}
 		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-a.closing:
+		return context.Canceled
 	}
 }

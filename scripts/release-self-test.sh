@@ -97,7 +97,7 @@ else:
             self.assertIn('windows_signing=unsigned', info)
             self.assertIn('dirty=false', info)
             self.assertEqual(sum(line.startswith('module=') for line in info), 3)
-            self.assertEqual((shim / 'targets.log').read_text().splitlines(), ['windows/amd64', 'windows/arm64', 'darwin/amd64', 'darwin/arm64', 'linux/amd64'])
+            self.assertEqual((shim / 'targets.log').read_text().splitlines(), ['windows/amd64', 'windows/arm64', 'darwin/amd64', 'darwin/arm64'])
             notices = (root / 'dist/package-metadata/THIRD-PARTY-NOTICES.txt').read_text()
             for marker in ['Go license fixture', 'native license fixture', 'windows-native license fixture', 'darwin-arm-native license fixture', 'Nested notice fixture']:
                 self.assertIn(marker, notices)
@@ -122,5 +122,15 @@ else:
         self.assertIn('package_check_binary', windows)
         self.assertIn('package_check_binary', (scripts / 'package-macos.sh').read_text())
         self.assertIn('package_check_binary', (scripts / 'package-linux.sh').read_text())
+    def test_active_release_platforms(self):
+        release = (scripts / 'release.sh').read_text()
+        updates = (scripts / 'package-updates.sh').read_text()
+        verifier = (scripts / 'release-verify.sh').read_text()
+        self.assertNotIn('package-linux.sh', release)
+        self.assertNotIn('linux/amd64', release)
+        self.assertNotIn('linux-amd64', updates)
+        self.assertNotIn('linux-amd64', verifier)
+        for target in ['windows-amd64', 'windows-arm64', 'darwin-amd64', 'darwin-arm64']:
+            self.assertIn(target, updates)
 unittest.main(argv=['packaging-guards'], verbosity=2)
 PY

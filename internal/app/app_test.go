@@ -581,7 +581,7 @@ func TestResumeDebounceAndQueuedOperationAreNotPlaying(t *testing.T) {
 	eventually(t, "paused", func() bool { return e.a.View().Displays[0].Level == "L1" })
 	gate := make(chan struct{})
 	defer close(gate)
-	e.a.Do(func() { e.a.screens["A"].ops <- func() { <-gate } })
+	e.a.Do(func() { e.a.screens["A"].ops.enqueue(func() { <-gate }) })
 	e.a.SetPausedAll(false)
 	e.sync()
 	d := e.a.View().Displays[0]

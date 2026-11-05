@@ -15,7 +15,7 @@ func TestScreenCopiesWhileWorkerChangesLevel(t *testing.T) {
 	started, stop, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	e.a.Do(func() {
 		s := e.a.screens["A"]
-		s.ops <- func() {
+		s.ops.enqueue(func() {
 			defer close(done)
 			close(started)
 			for {
@@ -28,7 +28,7 @@ func TestScreenCopiesWhileWorkerChangesLevel(t *testing.T) {
 					runtime.Gosched()
 				}
 			}
-		}
+		})
 	})
 	<-started
 	defer func() { close(stop); <-done }()

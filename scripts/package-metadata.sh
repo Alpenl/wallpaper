@@ -25,7 +25,7 @@ if not go_version.startswith('go version go'):
 # The complete module graph includes upstream test-only modules that are not
 # downloaded or linked. Collect only command dependencies, unioned across every
 # published target so host-specific imports cannot omit a runtime's notices.
-targets = ['windows/amd64', 'windows/arm64', 'darwin/amd64', 'darwin/arm64', 'linux/amd64']
+targets = ['windows/amd64', 'windows/arm64', 'darwin/amd64', 'darwin/arm64']
 modules_by_path, decoder = {}, json.JSONDecoder()
 for target in targets:
     target_os, target_arch = target.split('/')
@@ -134,11 +134,7 @@ mixed-DPI, sleep/wake, and hardware-encoding behavior still requires real-device
 acceptance. The bundle declares macOS 12.0 as minimum, not a tested compatibility
 matrix.
 
-LINUX amd64
-Extract the .tar.gz and run ./wallpaperd in a graphical X11 session. Install mpv
-from the distribution's package manager for video playback; ffmpeg is optional
-for Linux-compatible transcoding. This is a limited X11 compatibility build,
-not complete Wayland/GNOME/KDE product support.
+Linux development and delivery are paused; this release targets Windows and macOS only.
 
 DATA AND CHECKSUMS
 Back up your existing Wallpaper configuration/library before testing. User data

@@ -11,7 +11,7 @@ root, version = Path(sys.argv[1]), sys.argv[2]
 base = 'Wallpaper-' + version
 expected = {base + '-windows-' + a + '-setup.exe' for a in ['amd64', 'arm64']}
 expected |= {base + '-macos-' + a + '.app.zip' for a in ['amd64', 'arm64']}
-expected |= {base + '-linux-amd64.tar.gz', 'BUILD-INFO.txt', 'RELEASE-NOTES.txt', 'SHA256SUMS'}
+expected |= {'BUILD-INFO.txt', 'RELEASE-NOTES.txt', 'SHA256SUMS'}
 if 'updater_signing=signed' in (root / 'BUILD-INFO.txt').read_text().splitlines():
     expected.add(base + '-updates.tar.gz')
 actual = {p.name for p in root.iterdir()}
@@ -124,23 +124,6 @@ for arch, cpu in [('amd64', 0x1000007), ('arm64', 0x100000c)]:
         assert plist['LSUIElement'] is True
         for name in ['LICENSE', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
             assert archive.read('Wallpaper.app/Contents/Resources/' + name) == (Path('dist/package-metadata') / name).read_bytes(), 'App metadata differs: ' + name
-with tarfile.open(root / (base + '-linux-amd64.tar.gz'), 'r:gz') as archive:
-    prefix = base + '-linux-amd64/'
-    names = [m.name for m in archive.getmembers()]
-    assert set(names) == {prefix + n for n in ['wallpaperd', 'LICENSE', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']}
-    assert len(names) == len(set(names))
-    for member in archive.getmembers():
-        assert member.isfile() and '..' not in PurePosixPath(member.name).parts, 'Unsafe tar member'
-    member = archive.getmember(prefix + 'wallpaperd')
-    assert member.mode & 0o111, 'Missing Linux executable permissions'
-    data = archive.extractfile(member).read()
-    assert data[:4] == b'\x7fELF' and data[4:6] == bytes([2, 1]) and struct.unpack_from('<H', data, 18)[0] == 62, 'Wrong Linux architecture'
-    same_payload(data, 'linux-amd64')
-    for name in ['LICENSE', 'RELEASE-NOTES.txt', 'BUILD-INFO.txt', 'THIRD-PARTY-NOTICES.txt']:
-        assert archive.extractfile(prefix + name).read() == (Path('dist/package-metadata') / name).read_bytes(), 'Linux metadata differs: ' + name
-if sys.platform == 'linux':
-    native_version = subprocess.check_output([str(Path('dist/linux-amd64/wallpaperd').resolve()), '-version'], text=True).strip()
-    assert re.fullmatch(r'wallpaperd ' + re.escape(version) + r' commit=\S+ commit_time=\S+ go=\S+ linux/amd64', native_version), 'Linux runtime version mismatch: ' + native_version
-print('PASS: exact asset set and checksum coverage, commit/version provenance, five payloads, architecture/permissions, metadata/notices, NSIS extraction; no bundled mpv.')
+print('PASS: exact asset set and checksum coverage, commit/version provenance, four payloads, architecture/permissions, metadata/notices, NSIS extraction; no bundled mpv.')
 print('Not tested: installation or Windows/macOS runtime behavior; Developer ID/notarization are not established by this check.')
 PY

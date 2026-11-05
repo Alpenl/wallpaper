@@ -152,7 +152,7 @@ type screen struct {
 	machCap        int // 状态机要求的限帧（电池 fps15 / 过热）
 	curCap         int // 已下发给渲染器的限帧
 	note           string
-	ops            chan func()
+	ops            *screenOps
 	quit           chan struct{}
 	watchStop      chan struct{}
 }
@@ -210,6 +210,7 @@ type App struct {
 	view     View
 	onChange []func()
 	stopped  chan struct{}
+	closing  chan struct{}
 }
 
 // New 创建编排器。
@@ -223,7 +224,7 @@ func New(d Deps) *App {
 	}
 	return &App{encoderInfo: encoderInfo, itemGeneration: map[string]uint64{}, removing: map[string]uint64{}, d: d, log: d.Log, screens: map[desktop.DisplayID]*screen{}, post: make(chan func(), 256),
 		global: map[visibility.Reason]bool{}, perDisp: map[desktop.DisplayID]visibility.Reason{}, battPct: -1,
-		transc: map[string]string{}, power: map[visibility.Reason]bool{}, stopped: make(chan struct{})}
+		transc: map[string]string{}, power: map[visibility.Reason]bool{}, stopped: make(chan struct{}), closing: make(chan struct{})}
 }
 
 func (a *App) now() time.Duration { return time.Since(a.t0) }
@@ -260,6 +261,12 @@ func (a *App) View() View {
 // Do 把 fn 投递到事件循环。
 func (a *App) Do(fn func()) {
 	select {
+	case <-a.closing:
+		return
+	default:
+	}
+	select {
+	case <-a.closing:
 	case a.post <- fn:
 	case <-a.stopped:
 	}
@@ -307,6 +314,12 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) shutdown() {
+	select {
+	case <-a.closing:
+		return
+	default:
+		close(a.closing)
+	}
 	a.sampleMetrics(time.Now())
 	a.importQueue = nil
 	a.transcodeQueue = nil
@@ -318,7 +331,20 @@ func (a *App) shutdown() {
 	for _, s := range a.screens {
 		a.closeScreen(s, true)
 	}
-	st.CleanShutdown = true
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	clean := true
+drain:
+	for _, s := range a.screens {
+		select {
+		case <-s.ops.done:
+		case <-deadline.C:
+			a.log.Warn("screen shutdown timed out")
+			clean = false
+			break drain
+		}
+	}
+	st.CleanShutdown = clean
 	st.Starts = nil
 	a.saveState()
 	a.reportShutdownPersistence(a.d.Store.FlushAll())
@@ -372,10 +398,10 @@ func (a *App) syncDisplays() {
 		if _, ok := a.screens[id]; ok {
 			continue
 		}
-		s := &screen{worker: &screenWorker{}, canvas: canvas, n: a.nextN, d: want[id], ops: make(chan func(), 64), quit: make(chan struct{})}
+		s := &screen{worker: &screenWorker{}, canvas: canvas, n: a.nextN, d: want[id], ops: newScreenOps(), quit: make(chan struct{})}
 		a.nextN++
 		// screen 拥有串行 worker；closeScreen 关闭 quit 后退出。
-		go worker(s.ops, s.quit)
+		go s.ops.run(s.quit)
 		a.screens[id] = s
 		a.ctl.AddDisplay(a.now(), s.n)
 		if a.d.Store.Assign.OptionsFor(string(id)).Paused {
@@ -483,24 +509,6 @@ func (a *App) labelOf(s *screen) string {
 	return DisplayName("", s.d.Name, 0)
 }
 
-func worker(ops <-chan func(), quit <-chan struct{}) {
-	for {
-		select {
-		case op := <-ops:
-			op()
-		case <-quit:
-			for {
-				select {
-				case op := <-ops:
-					op()
-				default:
-					return
-				}
-			}
-		}
-	}
-}
-
 func (a *App) assignItem(s *screen) {
 	id := a.assignmentFor(s)
 	s.item = nil
@@ -524,6 +532,9 @@ func (a *App) assignItem(s *screen) {
 
 // startScreen 在 delay 后启动渲染器（结果回到事件循环）。
 func (a *App) startScreen(s *screen, delay time.Duration) {
+	if !s.ops.accepting() {
+		return
+	}
 	if s.levelExhausted {
 		s.levelFailures, s.levelExhausted = 0, false
 	}
@@ -536,12 +547,13 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 		}
 	}
 	if s.item == nil {
-		_ = s.surf.SetVisible(false) // 没有分配壁纸：露出系统壁纸
+		surf := s.surf
+		s.ops.enqueue(func() { _ = surf.SetVisible(false) })
 		return
 	}
 	if s.r != nil {
 		old := s.r
-		s.ops <- func() { _ = old.Close() }
+		s.ops.cleanup(func() { _ = old.Close() })
 	}
 	s.gen++
 	gen := s.gen
@@ -571,7 +583,7 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 	s.note = note
 	surf := s.surf
 	launch := func() {
-		s.ops <- func() {
+		s.ops.enqueue(func() {
 			if level < visibility.L4 {
 				_ = surf.SetVisible(true)
 			}
@@ -589,7 +601,7 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 				}
 			}
 			a.Do(func() { a.onStarted(s, gen, r, level, err) })
-		}
+		})
 	}
 	if delay > 0 {
 		time.AfterFunc(delay, func() {
@@ -606,7 +618,6 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 
 func (a *App) onStarted(s *screen, gen int, r render.Renderer, loadedLevel visibility.Level, err error) {
 	if s.gen != gen {
-		_ = r.Close() // 已被取代
 		return
 	}
 	m := a.ctl.Display(s.n)
@@ -614,6 +625,7 @@ func (a *App) onStarted(s *screen, gen int, r render.Renderer, loadedLevel visib
 	if err != nil {
 		a.log.Error("renderer start failed", "display", s.d.ID, "err", err)
 		a.lastErr = "渲染器启动失败: " + err.Error()
+		s.ops.cleanup(func() { _ = r.Close() })
 		s.r = nil
 		if m.State() == visibility.StateRecovering {
 			m.RestartFailed(t)
@@ -692,7 +704,7 @@ func (a *App) applyCap(s *screen) {
 	}
 	s.curCap = want
 	gen := s.gen
-	s.ops <- func() {
+	s.ops.replaceLast("fps", func() {
 		err := r.SetFPSCap(want)
 		a.Do(func() {
 			if s.gen != gen {
@@ -708,7 +720,7 @@ func (a *App) applyCap(s *screen) {
 				_, s.note = a.playbackOptions(s, r)
 			}
 		})
-	}
+	})
 }
 
 func (a *App) onDone(s *screen, gen int, err error) {
@@ -727,6 +739,18 @@ func (a *App) onDone(s *screen, gen int, err error) {
 
 func (a *App) runActions() {
 	for _, s := range a.sortedScreens() {
+		if !s.ops.accepting() {
+			if machine := a.ctl.Display(s.n); machine != nil {
+				machine.Drain()
+			}
+			if s.r != nil {
+				a.closeScreen(s, false)
+			}
+			s.levelExhausted = true
+			s.levelNote = "渲染操作积压过多，已停用此屏动态壁纸，请重启应用"
+			a.lastErr = s.levelNote
+			continue
+		}
 		m := a.ctl.Display(s.n)
 		if m == nil {
 			continue
@@ -770,7 +794,7 @@ func (a *App) runActions() {
 				a.log.Info("restart scheduled", "display", s.d.ID, "in", d.String(), "n", s.crashes)
 				if s.r != nil {
 					old := s.r
-					s.ops <- func() { _ = old.Close() }
+					s.ops.cleanup(func() { _ = old.Close() })
 					s.r = nil
 				}
 				a.startScreen(s, d)
@@ -781,7 +805,7 @@ func (a *App) runActions() {
 				a.closeScreen(s, false)
 				if s.surf != nil {
 					surf := s.surf
-					s.ops <- func() { _ = surf.SetVisible(false) }
+					s.ops.enqueue(func() { _ = surf.SetVisible(false) })
 				}
 			case visibility.ActDestroy:
 			}
@@ -866,7 +890,7 @@ func (a *App) signal(r visibility.Reason, disp desktop.DisplayID, on bool, src s
 	for _, screen := range a.sortedScreens() {
 		if updater, ok := screen.r.(render.SignalPolicyUpdater); ok {
 			blocked := a.signalsBlocked(screen)
-			screen.ops <- func() { _ = updater.BlockSignals(blocked) }
+			screen.ops.enqueue(func() { _ = updater.BlockSignals(blocked) })
 		}
 	}
 	effective := on
@@ -917,7 +941,7 @@ func (a *App) reattachAll(why string) {
 		if s.surf != nil {
 			surf := s.surf
 			s.surf = nil
-			s.ops <- func() { _ = surf.Close() }
+			s.ops.cleanup(func() { _ = surf.Close() })
 		}
 	}
 	back := []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
@@ -928,7 +952,7 @@ func (a *App) reattachAll(why string) {
 func (a *App) reattachAttempt() {
 	failed := false
 	for _, s := range a.sortedScreens() {
-		if s.surf != nil {
+		if s.surf != nil || !s.ops.accepting() {
 			continue
 		}
 		surf, err := a.createSurface(s)
@@ -1176,7 +1200,7 @@ func (a *App) assign(display, itemID string) {
 			}
 			if now == "" && s.surf != nil {
 				surf := s.surf
-				s.ops <- func() { _ = surf.SetVisible(false) }
+				s.ops.enqueue(func() { _ = surf.SetVisible(false) })
 				continue
 			}
 			if a.ctl.Display(s.n).Level() < visibility.L4 {
@@ -1405,7 +1429,14 @@ func (a *App) Remove(itemID string) {
 			if s.item != nil && s.item.ID == itemID {
 				a.closeScreen(s, false)
 				wait.Add(1)
-				s.ops <- func() { wait.Done() }
+				done := s.ops.barrier()
+				go func() {
+					defer wait.Done()
+					select {
+					case <-done:
+					case <-a.closing:
+					}
+				}()
 			}
 		}
 		// App 拥有删除等待器；编码与屏幕操作释放后投递删除并退出。
@@ -1473,7 +1504,7 @@ func (a *App) removeItemNow(itemID string, generation uint64) {
 			s.item = nil
 			if s.surf != nil {
 				surf := s.surf
-				s.ops <- func() { _ = surf.SetVisible(false) }
+				s.ops.enqueue(func() { _ = surf.SetVisible(false) })
 			}
 		}
 	}

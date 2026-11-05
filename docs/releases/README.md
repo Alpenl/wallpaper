@@ -1,5 +1,15 @@
 # Tag releases
 
+As of 2026-11-04, active development, acceptance and release preparation target
+Windows and macOS only. Linux development is paused. Existing Linux code,
+compatibility checks and historical packaging scripts remain for reference;
+they are not a Linux support or release commitment. Re-enabling Linux delivery
+requires a separate scope decision.
+
+The release entrypoint builds/packages only the four Windows/macOS targets,
+including update feeds, dependency notices and asset verification. Linux remains
+in compatibility CI only; its standalone packaging script is not invoked by releases.
+
 Push an existing `vMAJOR.MINOR.PATCH` tag (optionally `-rc.1` or another SemVer
 prerelease suffix), or dispatch Release with that tag. Tags must resolve to a
 commit reachable from `origin/master`; lightweight and annotated tags work.

@@ -8,7 +8,7 @@ chmod 700 "$scratch"
 printf '%s' "$WPAPP_UPDATE_KEY" > "$scratch/update.key"
 printf '%s' "$WPAPP_UPDATE_PUB" > "$scratch/update.pub"
 go build -o "$scratch/wpupdate" ./cmd/wpupdate
-for target in windows-amd64 windows-arm64 darwin-amd64 darwin-arm64 linux-amd64; do
+for target in windows-amd64 windows-arm64 darwin-amd64 darwin-arm64; do
   mkdir -p "$scratch/payload/$target"
   binary=wallpaperd
   case "$target" in

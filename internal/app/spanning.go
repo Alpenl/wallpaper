@@ -123,7 +123,7 @@ func (a *App) installSystemWallpaper(s *screen) {
 	host, id, itemID := a.d.Host, s.d.ID, s.item.ID
 	canvas, viewport, pixels, fit := s.canvas, s.d.Bounds, s.d.PixelSize(), a.displayOptions(s).Fit
 	cache := filepath.Join(a.d.Store.Paths.Cache, itemID)
-	s.ops <- func() {
+	s.ops.enqueue(func() {
 		select {
 		case <-s.quit:
 			return
@@ -154,7 +154,7 @@ func (a *App) installSystemWallpaper(s *screen) {
 				})
 			}
 		}
-	}
+	})
 }
 
 // One display owns shared resume history and optional audio. Physical display
