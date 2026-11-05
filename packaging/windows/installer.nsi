@@ -1,6 +1,6 @@
 ; Windows 安装器（D-06：NSIS）。按用户安装到 %LOCALAPPDATA%\Programs\Wallpaper，不需要管理员权限。
-; makensis -DVERSION=0.1.0 -DARCH=amd64 -DSRC=dist/windows-amd64 -DOUT=dist/Wallpaper-0.1.0-windows-amd64-setup.exe packaging/windows/installer.nsi
-; SRC 下需要 wallpaperd.exe 和发布/依赖许可说明。本轮不捆绑 mpv。
+; makensis -DVERSION=0.1.0 -DARCH=amd64 -DSRC=dist/windows-amd64/ -DOUT=dist/Wallpaper-0.1.0-windows-amd64-setup.exe packaging/windows/installer.nsi
+; SRC 必须以路径分隔符结尾（package-windows.sh 会按平台追加）；SRC 下需要 wallpaperd.exe 和发布/依赖许可说明。本轮不捆绑 mpv。
 Unicode true
 !ifndef VERSION
   !define VERSION "0.0.0"
@@ -27,7 +27,7 @@ Unicode true
   !error "icon not found: ${ICON} (pass -DICON=<absolute path>)"
 !endif
 Icon "${ICON}"
-UnIcon "${ICON}"
+UninstallIcon "${ICON}"
 
 Name "${APPNAME} ${VERSION}"
 OutFile "${OUT}"
@@ -40,7 +40,7 @@ SetCompressor /SOLID lzma
 !define MUI_WELCOMEPAGE_TITLE "Wallpaper ${VERSION} (${ARCH})"
 !define MUI_WELCOMEPAGE_TEXT "Native ${ARCH} application. Use the installer matching your Windows architecture.$\r$\n$\r$\nThis developer release does not bundle mpv. Default video playback requires a separately installed mpv; set its executable path in Playback & Performance, under Decode & render.$\r$\n$\r$\nRead RELEASE-NOTES.txt in the install folder for signing, runtime and validation limits."
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_LICENSE "${SRC}/LICENSE"
+!insertmacro MUI_PAGE_LICENSE "${SRC}LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN "$INSTDIR\wallpaperd.exe"
@@ -54,11 +54,11 @@ Section "Install"
   ; 升级时先结束正在运行的实例（mpv 子进程在 Job Object 里，会一起结束）
   nsExec::Exec 'taskkill /F /IM wallpaperd.exe'
   SetOutPath "$INSTDIR"
-  File "${SRC}/wallpaperd.exe"
-  File "${SRC}/RELEASE-NOTES.txt"
-  File "${SRC}/BUILD-INFO.txt"
-  File "${SRC}/THIRD-PARTY-NOTICES.txt"
-  File "${SRC}/LICENSE"
+  File "${SRC}wallpaperd.exe"
+  File "${SRC}RELEASE-NOTES.txt"
+  File "${SRC}BUILD-INFO.txt"
+  File "${SRC}THIRD-PARTY-NOTICES.txt"
+  File "${SRC}LICENSE"
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\uninstall.exe"
   CreateShortCut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\wallpaperd.exe" "" "$INSTDIR\wallpaperd.exe" 0

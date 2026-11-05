@@ -118,3 +118,12 @@ sceneprobe 是只读本地离线特征报告，不是 WE scene 播放能力，�
 - 限制：本机没有 `makensis`，NSIS 安装器未实际构建或运行；未在真实资源管理器、任务栏或 Finder 中验收图标外观；macOS `iconutil`、签名与公证未运行；race 测试因本机无 cgo 未运行，`gofmt` 对 CRLF 工作区中的 `internal/ui/shell.go` 报告整文件差异，属于行尾格式而非代码格式问题。真实图标外观与安装行为仍以对应平台的原始验收记录为准。
 
 基线：`9f09dbd`。本次提交同时包含同一工作区中先前未提交的文档、流程和图标改动，没有逐项重跑这些历史改动的完整验证。
+
+## 2026-11-05 | Windows 安装器本地构建兼容修复
+
+- 目的：在本机用 NSIS 3.13 实际构建安装器时，`UnIcon` 不是有效命令，且传给 `makensis.exe` 的 `SRC`/`OUT` 是 Git Bash 的 `/c/...` 路径、`File` 又拒绝 `C:\...\dir/file.exe` 混合分隔符，导致两个架构都无法打包；修复后本地 Windows 构建和原有 Linux 构建路径都能工作。
+- 改动：`packaging/windows/installer.nsi` 把 `UnIcon` 改为 `UninstallIcon`，所有 `${SRC}/文件名` 改为 `${SRC}文件名`，并在头部说明 `SRC` 必须以平台路径分隔符结尾；`scripts/package-windows.sh` 给 `SRC` 追加平台分隔符，存在 `cygpath` 时同时转换 `ICON`、`SRC`、`OUT` 为 Windows 路径。Linux 无 `cygpath` 时仍使用 `$src/` 和原 POSIX 路径。
+- 验证：用 NSIS 3.13 构建出 `0.3.5-local.1` 的 amd64/arm64 安装器；7-Zip 26.05 解包成功，载荷 `wallpaperd.exe` 与 `dist/windows-*` 构建产物逐字节一致，元数据文件一致，未捆绑 mpv；安装器为 x86 GUI bootstrap，载荷分别为 amd64/arm64，均含 `RT_GROUP_ICON`；从安装器和解包出的卸载器实际提取到 32×32 图标。产物 SHA-256：amd64 `348886e3e2278b0364bf72fa51172217c8cd5c9eb3ef60a4bffd9712ecb5ea74`，arm64 `5ebf37caf1d851b5accb3f90d93193c6e5724998386cf38b25c3f05bc197231b`。
+- 限制：安装器未实际执行安装或卸载，快捷方式、注册表、覆盖升级和卸载清理未做运行验证；安装器未签名，SmartScreen 会警告；未在 Linux/CI 重新运行 `package-windows.sh`；本次只改打包脚本和 NSIS 脚本，未重跑 Go 测试。上述安装器构建于本提交之前，内嵌的 `BUILD-INFO.txt` 记录 `dirty=true`，不代表本次提交后的干净构建。
+
+基线：`49a4e32`。
