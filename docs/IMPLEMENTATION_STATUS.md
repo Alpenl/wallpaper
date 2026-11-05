@@ -188,3 +188,11 @@ Windows hosted UI 用例已改为点击布局框的稳定无障碍标签“选�
 - 其余功能保持 present/unknown；shader/script 可由索引路径观察。script_count 计数 scene.json 中任意深度的 script 键（包含对象属性和数组内嵌属性；不依赖脚本值类型或是否为空），不计索引条目。脚本正文不检查、不输出、不执行；JSON 解码仍受既有字节/深度/节点预算限制。脚本行为和资源内部功能保持未知。
 - 报告 ≤64 KiB（含换行），每个名称列表 ≤64 项、单标签 ≤256 字节；标签或报告超预算会省略并设置 truncated、partial 和 reason，计数保留。父进程限制 10 秒、stdout 64 KiB、stderr 16 KiB，超限 kill 并 reap，拒绝异常退出、重复/多个 JSON、字段缺失、未知字段、版本不符及非法范围。failed 报告输出后 CLI 非零退出；partial 仍为成功的有限探测。
 - helper 使用 128 MiB Go 软内存限制及读取预算；这是崩溃隔离，**不是安全沙箱或 OS 硬内存限制**。合成 PKGV、test-binary helper 回归及 macOS 上真实 CLI 的文件/目录/失败退出流程已验证；真实 WE 包覆盖率和 Windows/Linux 实际 CLI 运行仍需验证，不提交真实 WE 素材。
+
+2026-11-05 输出预算回归：修复匿名嵌入 `bytes.Buffer` 导致 `ReadFrom` 提升、绕过
+自定义 `Write` 限额的问题。新增真实管道 `io.Copy`、两路恰好限额、超限错误，以及
+合法报告加超限 stderr、超限后驻留子进程提前终止/回收测试。旧实现失败，修复后
+Windows/amd64（Go 1.27.3）聚焦回归和 Linux/amd64 测试二进制在 WSL Ubuntu 26.04
+实际执行均重复 10 次通过；没有把 JSON 校验失败当作输出预算生效证据。
+本轮仅验证 helper 输出边界，不代表真实素材覆盖率、桌面运行或 OS 沙箱验收。
+Windows race 检测因缺少 `gcc` 无法构建，未将该项标记为通过。

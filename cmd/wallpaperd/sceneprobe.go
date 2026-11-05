@@ -52,7 +52,8 @@ func runSceneProbe(input string) int {
 }
 
 type probeOutput struct {
-	bytes.Buffer
+	// 使用具名字段，避免 ReadFrom 提升后绕过 Write 的预算检查。
+	buffer   bytes.Buffer
 	limit    int
 	overflow bool
 	kill     func()
@@ -60,18 +61,18 @@ type probeOutput struct {
 
 func (w *probeOutput) Write(p []byte) (int, error) {
 	n := len(p)
-	left := w.limit - w.Len()
+	left := w.limit - w.buffer.Len()
 	if n > left {
-		_, _ = w.Buffer.Write(p[:left])
+		_, _ = w.buffer.Write(p[:left])
 		w.overflow = true
 		w.kill()
 		return n, io.ErrShortWrite
 	}
-	return w.Buffer.Write(p)
+	return w.buffer.Write(p)
 }
 
-// exec owns and joins the stdout/stderr copy goroutines. Each has its own bounded
-// buffer. Overflow kills the process immediately; Run always waits/reaps it.
+// exec 负责等待 stdout/stderr 的复制协程，两路输出使用独立的有界缓冲区。
+// 超限立即终止子进程，Run 始终等待并回收它。
 func superviseSceneProbe(cmd *exec.Cmd) (wescene.Report, error) {
 	kill := func() {
 		if cmd.Process != nil {
@@ -90,5 +91,5 @@ func superviseSceneProbe(cmd *exec.Cmd) (wescene.Report, error) {
 	if err != nil {
 		return wescene.Report{}, fmt.Errorf("sceneprobe helper failed: %w", err)
 	}
-	return wescene.ValidateReport(out.Bytes())
+	return wescene.ValidateReport(out.buffer.Bytes())
 }
