@@ -6,9 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 const ChildLogLimit = 2 << 20
+
+// Windows can briefly keep the previous child's stderr handle open while the
+// replacement renderer starts. Retry a transient sharing violation instead of
+// failing the whole renderer for a diagnostic log rotation.
+const (
+	childLogRotateAttempts = 40
+	childLogRotateDelay    = 50 * time.Millisecond
+)
 
 // RotateChildLog retains exactly one previous launch, never rotating live files.
 func RotateChildLog(path string) error {
@@ -23,7 +32,13 @@ func RotateChildLog(path string) error {
 	if err := os.Remove(path + ".1"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.Rename(path, path+".1")
+	for attempt := 1; ; attempt++ {
+		err := os.Rename(path, path+".1")
+		if err == nil || !retryableChildLogRename(err) || attempt >= childLogRotateAttempts {
+			return err
+		}
+		time.Sleep(childLogRotateDelay)
+	}
 }
 
 // ChildLog consumes without waiting for disk I/O. Its sole worker drains on Close.
@@ -39,10 +54,14 @@ type ChildLog struct {
 }
 
 func NewChildLog(path string) (*ChildLog, error) {
-	if err := RotateChildLog(path); err != nil {
-		return nil, err
+	// A diagnostic log must never prevent a renderer from starting. If the
+	// previous handle is still open after the bounded retry, append instead of
+	// truncating or failing; the next rotation will move the combined file.
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	if err := RotateChildLog(path); err == nil {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(path, flags, 0600)
 	if err != nil {
 		return nil, err
 	}

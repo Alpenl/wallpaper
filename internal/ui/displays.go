@@ -125,7 +125,10 @@ func (s *Settings) displays(c *ui.Context, v app.View) {
 		card(c.Key("advanced"), "多显示器高级选项", "", func() {
 			settingRow(c, "布局方式", "跨屏模式按真实坐标裁切同一画布；保留独立模式设置，可随时切回", func() {
 				segmentGroup(c.Key("layout-mode"), func() {
-					if segment(c.Key("independent"), "独立显示器", v.Layout != "span").Clicked() && v.Layout == "span" {
+					// A saved span preference can temporarily fall back to the
+					// independent view when the host/topology cannot form a canvas.
+					// Clicking independent must still clear that saved preference.
+					if segment(c.Key("independent"), "独立显示器", v.Layout != "span").Clicked() {
 						s.ctl.SetLayout("independent", "")
 					}
 					if segment(c.Key("span"), "跨屏拼接", v.Layout == "span").Disabled(!v.Capabilities.Spanning).Clicked() && v.Layout != "span" {

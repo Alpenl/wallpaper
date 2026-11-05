@@ -247,7 +247,10 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	var stderr *telemetry.ChildLog
 	if o.LogFile != "" {
 		if err := telemetry.RotateChildLog(o.LogFile); err != nil {
-			return err
+			// The main mpv log is diagnostic; a stale handle must not fail playback.
+			if o.Log != nil {
+				o.Log("child_log_rotate", "path", o.LogFile, "err", err)
+			}
 		}
 		stderr, err = telemetry.NewChildLog(strings.TrimSuffix(o.LogFile, ".log") + "-stderr.log")
 		if err != nil {

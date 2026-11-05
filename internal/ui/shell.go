@@ -318,6 +318,23 @@ func (sh *Shell) Start(openWindow bool) error {
 		}
 		return ps
 	}
+	sh.S.PickExecutable = func(title string) (string, error) {
+		sh.mu.Lock()
+		w := sh.win
+		sh.mu.Unlock()
+		opts := mygo.OpenDialogOptions{Parent: w, Title: title}
+		if runtime.GOOS == "windows" {
+			opts.Filters = []mygo.FileFilter{{Name: translate(sh.S.view0().Config.UI.Lang, "可执行文件"), Extensions: []string{"exe"}}}
+		}
+		ps, err := mygo.Dialog.Open(opts)
+		if err != nil {
+			return "", err
+		}
+		if len(ps) == 0 {
+			return "", nil
+		}
+		return ps[0], nil
+	}
 	v := sh.S.view0()
 	t, err := mygo.NewTray(mygo.TrayOptions{ID: "wallpaperd", Icon: trayIcon(), IconIsTemplate: runtime.GOOS == "darwin", ToolTip: trayToolTip(v), Menu: sh.menu(v)})
 	if err != nil {

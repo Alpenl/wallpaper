@@ -121,7 +121,10 @@ func (s *Settings) perf(c *ui.Context, v app.View) {
 					s.ffmpeg, s.ffInit = cfg.Render.FFmpegPath, true
 				}
 				settingRow(c, "ffmpeg 路径", "留空使用默认编码器（macOS 优先系统 AVFoundation）；保存后重新检测", func() {
-					ui.TextInput(c.Key("ff"), &s.ffmpeg).Placeholder(tr(c, "编码器可执行文件路径")).Width(260)
+					ui.TextInput(c.Key("ff"), &s.ffmpeg).Placeholder(tr(c, "编码器可执行文件路径")).Width(240)
+					if softButton(c.Key("ffbrowse"), "浏览 ffmpeg…").Disabled(s.PickExecutable == nil).Clicked() {
+						s.browseFFmpegPath(c)
+					}
 					if softButton(c.Key("ffsave"), "保存").Disabled(s.ffmpeg == cfg.Render.FFmpegPath).Clicked() {
 						p := strings.TrimSpace(s.ffmpeg)
 						s.set(func(x *config.Config) { x.Render.FFmpegPath = p })
@@ -172,7 +175,10 @@ func (s *Settings) mpvPathEditor(c *ui.Context, cfg config.Config) {
 		}
 	}
 	settingRow(c, "mpv 路径", "留空自动查找；保存后按当前暂停与电源状态重新加载壁纸", func() {
-		ui.TextInput(c.Key("mpv-path"), &s.mpvPath).Placeholder(tr(c, "mpv 可执行文件路径")).Label(tr(c, "mpv 可执行文件路径")).Width(230)
+		ui.TextInput(c.Key("mpv-path"), &s.mpvPath).Placeholder(tr(c, "mpv 可执行文件路径")).Label(tr(c, "mpv 可执行文件路径")).Width(220)
+		if softButton(c.Key("mpv-browse"), "浏览 mpv…").Disabled(s.PickExecutable == nil).Clicked() {
+			s.browseMpvPath(c)
+		}
 		if softButton(c.Key("mpv-save"), "保存 mpv 路径").Disabled(strings.TrimSpace(s.mpvPath) == cfg.Render.MpvPath).Clicked() {
 			if s.saveMpvPath() {
 				c.Toast(tr(c, "mpv 路径已提交，播放结果以显示器状态为准"))
@@ -185,6 +191,35 @@ func (s *Settings) mpvPathEditor(c *ui.Context, cfg config.Config) {
 		text(c, "找不到可执行的 mpv，请检查路径和文件权限。").FontSize(12).TextColor(c.Theme().Danger).Wrap()
 		ui.Text(c, s.mpvPathError).FontSize(12).TextColor(c.Theme().TextMuted).Wrap()
 	}
+}
+
+func (s *Settings) browseMpvPath(c *ui.Context) {
+	p, err := s.PickExecutable(tr(c, "选择 mpv 可执行文件"))
+	if err != nil {
+		s.mpvPathError = tr(c, "文件选择失败：") + err.Error()
+		return
+	}
+	if p == "" {
+		return
+	}
+	s.mpvPath = p
+	if s.saveMpvPath() {
+		c.Toast(tr(c, "mpv 路径已提交，播放结果以显示器状态为准"))
+	}
+}
+
+func (s *Settings) browseFFmpegPath(c *ui.Context) {
+	p, err := s.PickExecutable(tr(c, "选择编码器可执行文件"))
+	if err != nil {
+		c.Toast(tr(c, "文件选择失败：") + err.Error())
+		return
+	}
+	if p == "" {
+		return
+	}
+	s.ffmpeg = p
+	s.set(func(x *config.Config) { x.Render.FFmpegPath = p })
+	c.Toast(tr(c, "编码器路径已提交，检测结果以状态为准"))
 }
 
 func (s *Settings) saveMpvPath() bool {

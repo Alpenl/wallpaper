@@ -80,6 +80,40 @@ func TestMpvPathEditorInitialValidation(t *testing.T) {
 	}
 }
 
+func TestExecutablePathBrowsersSubmitSelections(t *testing.T) {
+	ctl, s, tt := newUI(t, "windows")
+	const mpvPath = `G:\mpv\mpv.exe`
+	const ffmpegPath = `G:\ffmpeg\bin\ffmpeg.exe`
+	var titles []string
+	s.PickExecutable = func(title string) (string, error) {
+		titles = append(titles, title)
+		if strings.Contains(title, "mpv") {
+			return mpvPath, nil
+		}
+		return ffmpegPath, nil
+	}
+	tt.SetSize(1120, 2200)
+	s.SetPage("playback")
+	tt.Frame()
+	click(t, tt, "浏览 mpv…")
+	if got := ctl.View().Config.Render.MpvPath; got != mpvPath {
+		t.Fatalf("mpv browse saved %q, want %q", got, mpvPath)
+	}
+	click(t, tt, "浏览 ffmpeg…")
+	if got := ctl.View().Config.Render.FFmpegPath; got != ffmpegPath {
+		t.Fatalf("ffmpeg browse saved %q, want %q", got, ffmpegPath)
+	}
+	if len(titles) != 2 || !strings.Contains(titles[0], "mpv") || titles[1] != "选择编码器可执行文件" {
+		t.Fatalf("unexpected picker titles: %v", titles)
+	}
+	// Cancelling the native dialog leaves the submitted path unchanged.
+	s.PickExecutable = func(string) (string, error) { return "", nil }
+	click(t, tt, "浏览 mpv…")
+	if got := ctl.View().Config.Render.MpvPath; got != mpvPath {
+		t.Fatalf("cancel changed mpv path: %q", got)
+	}
+}
+
 func TestMpvPathEditorWithoutValidator(t *testing.T) {
 	ctl, s, tt := newUI(t, "windows")
 	ctl.UpdateConfig(func(c *config.Config) { c.Render.MpvPath = "configured-mpv" })

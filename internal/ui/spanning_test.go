@@ -23,6 +23,21 @@ func TestSpanningControlsPreserveIndependentAssignments(t *testing.T) {
 	}
 	must(t, tt, "复制到所有显示器")
 }
+func TestIndependentLayoutClickIsAlwaysRouted(t *testing.T) {
+	ctl, _, tt := newUI(t, "windows")
+	// The saved preference may be span while the effective view falls back to
+	// independent. The independent segment must still clear that preference.
+	ctl.V.Layout = "independent"
+	ctl.V.LayoutNote = "跨屏画布暂不可用"
+	tt.SetSize(1400, 1800)
+	click(t, tt, "显示器")
+	must(t, tt, "独立显示器", "跨屏画布暂不可用")
+	click(t, tt, "独立显示器")
+	if len(ctl.Layouts) != 1 || ctl.Layouts[0] != "independent" {
+		t.Fatalf("independent click was not routed: %v", ctl.Layouts)
+	}
+}
+
 func TestSpanningControlsExplainUnsupportedHost(t *testing.T) {
 	ctl, _, tt := newUI(t, "linux")
 	ctl.V.Capabilities.Spanning = false

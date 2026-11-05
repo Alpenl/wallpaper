@@ -67,6 +67,43 @@ func TestChildLogRotation(t *testing.T) {
 	}
 }
 
+func TestChildLogRotationWaitsForTransientWindowsLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "child.log")
+	if err := os.WriteFile(path, []byte("previous"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(120 * time.Millisecond)
+		_ = f.Close()
+		close(released)
+	}()
+	defer func() {
+		select {
+		case <-released:
+		default:
+			_ = f.Close()
+		}
+	}()
+	start := time.Now()
+	if err := RotateChildLog(path); err != nil {
+		t.Fatalf("rotation failed while the old handle closed: %v", err)
+	}
+	<-released
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Fatalf("rotated file missing: %v", err)
+	}
+	// On Windows the rename must have waited for the lock to clear; on Unix it
+	// succeeds immediately and this only documents that the test is not blocked.
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("rotation retry exceeded its bound")
+	}
+}
+
 type failingChildSink struct{}
 
 func (failingChildSink) Write([]byte) (int, error) { return 0, os.ErrPermission }

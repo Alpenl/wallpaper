@@ -93,6 +93,57 @@ func TestSpanningPreservesIndependentAssignmentsAndPause(t *testing.T) {
 		t.Fatalf("lost independent options: %+v", v.Displays)
 	}
 }
+func TestSpanningExitKeepsVisibleItemForUnassignedDisplay(t *testing.T) {
+	e, _ := spanningEnv(t)
+	// Simulate a display that had no independent wallpaper (and no default)
+	// before entering span, such as after importing one wallpaper and applying
+	// it only to the selected screen.
+	e.a.Do(func() {
+		delete(e.store.Assign.Displays, "B")
+		e.store.Assign.Default = ""
+	})
+	e.a.SetLayout("span", "x")
+	eventually(t, "span on both screens", func() bool {
+		v := e.a.View()
+		return v.Layout == "span" && v.Displays[0].ItemID == "x" && v.Displays[1].ItemID == "x"
+	})
+	e.a.SetLayout("independent", "")
+	eventually(t, "unassigned screen keeps the visible span item", func() bool {
+		v := e.a.View()
+		return v.Layout == "independent" && v.Displays[0].ItemID == "x" && v.Displays[1].ItemID == "x"
+	})
+	done := make(chan error, 1)
+	e.a.Do(func() { done <- e.store.AssignSaver.Flush() })
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var saved config.Assignments
+	if err := config.Load(e.store.AssignSaver.Path, config.AssignmentsVersion, nil, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Layout != "independent" || saved.Displays["A"] != "x" || saved.Displays["B"] != "x" {
+		t.Fatalf("span exit lost the visible wallpaper: %+v", saved)
+	}
+}
+
+func TestSpanningExitKeepsDefaultForUnassignedDisplay(t *testing.T) {
+	e, _ := spanningEnv(t)
+	e.a.Do(func() {
+		delete(e.store.Assign.Displays, "B")
+		e.store.Assign.Default = "y"
+	})
+	e.a.SetLayout("span", "x")
+	eventually(t, "span on both screens", func() bool {
+		v := e.a.View()
+		return v.Layout == "span" && v.Displays[1].ItemID == "x"
+	})
+	e.a.SetLayout("independent", "")
+	eventually(t, "default restored instead of pinning span item", func() bool {
+		v := e.a.View()
+		return v.Layout == "independent" && v.Displays[0].ItemID == "x" && v.Displays[1].ItemID == "y"
+	})
+}
+
 func TestSpanningHotplugRebuildsEveryCanvasAndReattaches(t *testing.T) {
 	e, h := spanningEnv(t)
 	e.a.SetLayout("span", "x")

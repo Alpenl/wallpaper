@@ -25,6 +25,7 @@ type Ctl struct {
 	Assigns            []string // "显示器=壁纸"，"*" 表示所有显示器
 	Removed            []string
 	Transc             []string
+	Layouts            []string // layout requests received by SetLayout
 	Nexts              int
 	ExitSafe           bool
 	independent        []app.DisplayView
@@ -235,6 +236,7 @@ func (f *Ctl) ClearCache()     {}
 func (f *Ctl) SetLayout(layout, itemID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.Layouts = append(f.Layouts, layout)
 	if layout == "span" && f.V.Capabilities.Spanning {
 		if f.V.Layout != "span" {
 			f.independent = append([]app.DisplayView(nil), f.V.Displays...)

@@ -72,6 +72,11 @@ func (a *App) SetLayout(layout, itemID string) {
 			a.lastErr = "未知显示器布局"
 			return
 		}
+		// Capture the active canvas before changing the preference. Displays
+		// without their own assignment and without a default would otherwise
+		// go blank when the visible cross-screen wallpaper disappears.
+		preserveSpan := layout == "independent" && a.d.Store.Assign.Layout == "span" && a.spanning()
+		spanItem := a.d.Store.Assign.SpanItem
 		if layout == "span" {
 			if !a.d.Host.Caps().Spanning {
 				a.lastErr = "当前桌面宿主不支持跨屏画布"
@@ -99,6 +104,16 @@ func (a *App) SetLayout(layout, itemID string) {
 			a.d.Store.Assign.SpanOptions.Normalize()
 		}
 		a.d.Store.Assign.Layout = layout
+		if preserveSpan && spanItem != "" && a.d.Store.Library.Find(spanItem) != nil && a.d.Store.Assign.Default == "" {
+			if a.d.Store.Assign.Displays == nil {
+				a.d.Store.Assign.Displays = map[string]string{}
+			}
+			for _, d := range a.d.Host.Displays() {
+				if _, ok := a.d.Store.Assign.Displays[string(d.ID)]; !ok {
+					a.d.Store.Assign.Displays[string(d.ID)] = spanItem
+				}
+			}
+		}
 		a.saveAssign()
 		a.syncDisplays()
 		if layout == "span" {

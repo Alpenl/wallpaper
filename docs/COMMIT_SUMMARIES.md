@@ -141,3 +141,12 @@ sceneprobe 是只读本地离线特征报告，不是 WE scene 播放能力，�
 - 改动：以 --no-ff --no-commit 合并 master 的 49a4e32、530ac41；解决 COMMIT_SUMMARIES.md 的 add/add 冲突并保留本分支既有条目；自动合并 README、docs/README、docs/ENGINEERING、docs/VALIDATION、internal/ui/shell.go 等，修正 README 中仍把离线 scene 探测当作当前能力的表述；应用图标、ICO/ICNS/.syso、托盘图标、NSIS Icon/DisplayIcon、cygpath 路径处理与提交总结工具随合并进入本分支；另为中文 Windows 下的 makensis 补 UTF-8 BOM，避免源文件编码报错。Web/Shader/响应式输入/scene 探测的删除保持不变。
 - 验证：go test -timeout 240s ./...、go vet -unsafeptr=false ./...、CGO_ENABLED=0 go build ./... 通过；python scripts/check-docs.py 通过（48 个 Markdown、426 个本地链接）；python scripts/check-icons.py 通过（9 个 Windows 帧、ICNS 11 元素、双架构 .syso）；合并后尚未重建安装器。
 - 限制：合并只同步 master 的两个提交，不等于 master 已接受 de-scope；安装器与真机验收需在合并提交后用新版本重建；未运行 race 与安装/卸载验收。
+
+## 2026-11-05 | 修复日志轮转、跨屏还原与可执行文件选择
+
+- 目的：消除跨屏/独立切换时 mpv 诊断日志轮转失败导致的“渲染器启动失败”，修复从跨屏切回独立后没有独立分配的屏变空的问题，并让 mpv/ffmpeg 路径可以直接通过系统文件选择器设置。
+- 改动：`RotateChildLog` 在 Windows 遇到 `ERROR_ACCESS_DENIED`/`ERROR_SHARING_VIOLATION`/`ERROR_LOCK_VIOLATION` 时有界重试（40 次、每次 50ms）；`NewChildLog` 轮转失败改为追加写入，mpv 主日志轮转失败只记录诊断日志；新增 Windows/非 Windows 平台判定与“旧句柄仍打开时轮转”的回归测试。`SetLayout` 从跨屏切回独立时，把当前跨屏壁纸写入既无单独分配又无默认壁纸的屏，已有独立设置或默认壁纸的屏仍按原设置恢复；UI 在保存的跨屏偏好因拓扑暂时回退到独立视图时，仍把“独立显示器”点击转发给控制器。新增 `PickExecutable` 钩子和 `mygo.Dialog.Open` 原生可执行文件选择器，Playback & Performance 页的 mpv/ffmpeg 行增加“浏览 mpv…”“浏览 ffmpeg…”按钮，选中后自动提交；补充中英文案、uidemo 记录与回归测试，并更新 `docs/SPANNING.md`。
+- 验证：`go test -timeout 300s ./...` 全部通过（app 18.214s、mpv 7.011s、telemetry 1.539s、ui 8.134s）；`go vet -unsafeptr=false ./...`、`CGO_ENABLED=0 go build ./...` 通过；`python scripts/check-docs.py` 通过（48 个 Markdown、426 个本地链接），`python scripts/check-icons.py` 通过；`gofmt -l` 对改动文件无输出。基于当前工作区构建并静默安装 `0.3.5-local.4`，安装后的 `wallpaperd.exe` 与 `dist/windows-amd64/wallpaperd.exe` SHA-256 均为 `01da47ece5b2857b529d585d1cabe0689414e20989893411d070047bffa2cdfe`；启动日志显示两块屏均正常渲染，未再出现日志 rename 错误，应用随后从托盘退出。
+- 限制：未在真实设置窗口手动点选原生文件对话框，UI 测试使用注入的假选择器；跨屏切回独立仅由 app 测试覆盖，未在当前双屏拓扑上重新手动复现；本提交未运行 race 测试；安装器未签名，且其构建元数据记录 `dirty=true`；提交后的干净构建、真机跨屏/热插拔和安装/卸载验收仍需另行执行。
+
+基线：`36801a2`。

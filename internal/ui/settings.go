@@ -60,6 +60,7 @@ type UpdateInfo struct {
 type Hooks struct {
 	PickFiles        func() []string
 	PickFolder       func() string
+	PickExecutable   func(title string) (string, error)
 	SetLanguage      func(string)
 	SetLaunchAtLogin func(bool) error
 	ExportDiag       func() (string, error) // F-16：返回 zip 路径
