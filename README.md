@@ -4,7 +4,7 @@
 
 > **实现基线**：主分支 `master` 的 `2710033ef169852bd7c4a1b5c063d29f3f3e89fd`。`ui` 分支只提供 [React 设计稿](https://github.com/Alpenl/wallpaper/tree/5f00d334cd32412291964d228fad4f3b9461cc7b/web)，不作为应用代码或产品运行入口；正式界面只能使用原生 MyGo。
 
-跨平台动态壁纸桌面应用：Go + MyGo 原生设置界面，Windows 使用 mpv/可选 Media Foundation，macOS 使用 AVFoundation。**2026-11-04 范围决定：当前只开发和验收 Windows、macOS，暂停 Linux 开发；已有 X11 代码和兼容检查保留，不代表 Linux 支持或发布承诺，恢复需另行决定。** 发布版本由 release tag 注入；普通构建为 `dev`，不参与自动更新排序。发布范围、安装依赖和验证限制见 [版本说明](docs/releases/README.md)。
+跨平台动态壁纸桌面应用：Go + MyGo 原生设置界面，Windows 使用 mpv/可选 Media Foundation，macOS 使用 AVFoundation。**2026-11-05 产品定位：只做图片与视频壁纸；Web 壁纸、Shader、音频/鼠标响应式输入和 WE scene 探测已从产品范围移除，相关代码与示例不再随应用提供（见 [D-16](docs/design/DECISIONS_PENDING.md)）。** **2026-11-04 范围决定：当前只开发和验收 Windows、macOS，暂停 Linux 开发；已有 X11 代码和兼容检查保留，不代表 Linux 支持或发布承诺，恢复需另行决定。** 发布版本由 release tag 注入；普通构建为 `dev`，不参与自动更新排序。发布范围、安装依赖和验证限制见 [版本说明](docs/releases/README.md)。
 
 本轮按 UI 设计稿将原生设置重组为七页，补充每屏播放/暂停、原生空间跨屏、UTC 周暂停统计、macOS 原生隔离转码、应用规则、批量导入、元数据检索、存储管理和双语控件。研究文档已区分当前实现、验收目标和历史证据。**源码完成、自动化通过、真机验收和公开发布是四件不同的事。** 当前范围/缺口见 [实现验收矩阵](docs/IMPLEMENTATION_STATUS.md)，本轮实跑结果见 [验证记录](docs/VALIDATION.md)。
 
@@ -83,7 +83,7 @@ Windows/macOS 打包和签名钩子在 [`scripts/`](scripts/) 与 [`packaging/`]
 ## 明确的边界
 
 - Windows/macOS 真机挂载、混合 DPI、睡眠/TDR、硬解、功耗、自启和签名发行需分别验收，云端编译或模拟 UI 不可代替。
-- Web/Shader 壁纸引擎、在线工坊/画廊/云同步、商店发行等未闭环项在 [F-* 矩阵](docs/IMPLEMENTATION_STATUS.md) 明列；不把占位按钮或本地示例当完成。
+- Web/Shader 壁纸引擎、响应式输入和 WE scene 探测已按 D-16 移除，不属于待办；在线工坊/画廊/云同步、商店发行等未闭环项仍在 [F-* 矩阵](docs/IMPLEMENTATION_STATUS.md) 明列；不把占位按钮或本地示例当完成。
 - Linux 不是完整 Wayland/GNOME/KDE 产品支持。研究扩展和 D-Bus 原型也不代表已经系统集成。
 - 当前生产配置强制不启用远程遥测。本周指标只记录本地动态壁纸已确认的 L0–L4 时长；暂停时长不是实测或估算节电量，不能用来证明硬解/功耗达标。早期 opt-in 研究构想不覆盖当前隐私行为。
 - 历史文档中的外部价格、系统/SDK 版本、许可证和市场数字未在本轮重新核验。法律内容不是法律意见。

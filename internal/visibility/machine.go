@@ -16,8 +16,8 @@ type Level int
 
 const (
 	L0 Level = iota // Running
-	L1              // Paused：视频 pause / Web IsVisible=false / Shader 停 present
-	L2              // Frozen：仅 Web 有意义（TrySuspend）；视频与 Shader 跳过
+	L1              // Paused：渲染器暂停
+	L2              // 保留级别（原 Web 冻结）；当前渲染器不会产生
 	L3              // Released：停止播放、保留进程（mpv --idle），记录位置
 	L4              // Snapshot：结束渲染进程，显示截图
 )
@@ -69,15 +69,6 @@ var reasonScope = map[Reason]Scope{Fullscreen: ScopeDisplay, Covered: ScopeDispl
 	Remote: ScopeGlobal, Battery: ScopeGlobal, BatterySaver: ScopeGlobal, ThermalSerious: ScopeGlobal, ThermalCritical: ScopeGlobal,
 	DisplayOff: ScopeBoth, Suspend: ScopeGlobal, User: ScopeBoth, Screensaver: ScopeGlobal, LowBattery: ScopeGlobal}
 
-// Kind 是壁纸类型，决定 L2 是否存在。
-type Kind int
-
-const (
-	Video Kind = iota
-	Web
-	Shader
-)
-
 // BatteryPolicy 对应 7.4 的 batteryPolicy。
 type BatteryPolicy int
 
@@ -89,10 +80,9 @@ const (
 
 // Config 是 7.4 的参数。零值不可用，请用 DefaultConfig。
 type Config struct {
-	Kind               Kind
 	ResumeDebounce     time.Duration
 	CoverEnterDebounce time.Duration
-	T12, T23, T34      time.Duration // 自“离开 L0”起累计计时
+	T23, T34           time.Duration // 自“离开 L0”起累计计时
 	BatteryPolicy      BatteryPolicy
 	SnapshotEvery      time.Duration // 进入暂停前截帧的最小间隔（7.3 末段）
 	CrashWindow        time.Duration // 7.3：10 分钟内
@@ -100,14 +90,10 @@ type Config struct {
 	ThermalFPS         int
 }
 
-func DefaultConfig(k Kind) Config {
-	c := Config{Kind: k, ResumeDebounce: 300 * time.Millisecond, CoverEnterDebounce: 150 * time.Millisecond,
-		T12: 2 * time.Second, T23: 60 * time.Second, T34: 10 * time.Minute, BatteryPolicy: BatteryPause,
+func DefaultConfig() Config {
+	return Config{ResumeDebounce: 300 * time.Millisecond, CoverEnterDebounce: 150 * time.Millisecond,
+		T23: 60 * time.Second, T34: 10 * time.Minute, BatteryPolicy: BatteryPause,
 		SnapshotEvery: 10 * time.Minute, CrashWindow: 10 * time.Minute, CrashLimit: 5, ThermalFPS: 15}
-	if k == Web {
-		c.T12 = 0
-	}
-	return c
 }
 
 // ActionKind 是下发给渲染器/平台层的指令。
@@ -116,7 +102,6 @@ type ActionKind int
 const (
 	ActCaptureFrame ActionKind = iota // 截一帧给 L3/L4/崩溃兜底
 	ActPause                          // → L1
-	ActFreeze                         // → L2（Web TrySuspend）
 	ActRelease                        // → L3（保存位置后 stop）
 	ActSnapshot                       // → L4（结束进程、显示截图）
 	ActResume                         // → L0；From 指出从哪一级恢复（≥L3 需要重新 load + seek）
@@ -128,7 +113,7 @@ const (
 	ActDestroy                        // 显示器移除
 )
 
-var actNames = [...]string{"CaptureFrame", "Pause", "Freeze", "Release", "Snapshot", "Resume", "FPSCap", "HealthCheck",
+var actNames = [...]string{"CaptureFrame", "Pause", "Release", "Snapshot", "Resume", "FPSCap", "HealthCheck",
 	"Restart", "RestartedAt", "Fail", "Destroy"}
 
 func (k ActionKind) String() string { return actNames[k] }
@@ -252,17 +237,8 @@ func (m *Machine) escalated() Level {
 		return L4
 	case d >= m.cfg.T23:
 		return L3
-	case m.cfg.Kind == Web && d >= m.cfg.T12:
-		return L2
 	}
 	return L1
-}
-
-func (m *Machine) skipL2(l Level) Level {
-	if l == L2 && m.cfg.Kind != Web {
-		return L1
-	}
-	return l
 }
 
 // set 由 Controller 调用（已做范围校验）。
@@ -326,7 +302,7 @@ func (m *Machine) nextDeadline() (time.Duration, bool) {
 		ds = append(ds, m.resumeAt)
 	}
 	if m.level > L0 && m.eff&Suspend == 0 {
-		for _, t := range []time.Duration{m.cfg.T12, m.cfg.T23, m.cfg.T34} {
+		for _, t := range []time.Duration{m.cfg.T23, m.cfg.T34} {
 			if d := m.pausedAt + t; d > m.now {
 				ds = append(ds, d)
 			}
@@ -365,7 +341,7 @@ func (m *Machine) evaluate() {
 		m.resumeArm = false
 		if fl >= L1 {
 			m.pausedAt = m.now
-			target := m.skipL2(maxL(fl, m.escalated()))
+			target := maxL(fl, m.escalated())
 			if !m.capped || m.now-m.lastCap >= m.cfg.SnapshotEvery {
 				m.capped, m.lastCap = true, m.now
 				m.emit(ActCaptureFrame, L0)
@@ -396,7 +372,7 @@ func (m *Machine) evaluate() {
 	if m.eff&Suspend != 0 {
 		esc = L1 // 睡眠中不按时间升级
 	}
-	if t := m.skipL2(maxL(fl, esc)); t > m.level {
+	if t := maxL(fl, esc); t > m.level {
 		m.goTo(t)
 	}
 }
@@ -409,8 +385,6 @@ func (m *Machine) goTo(t Level) {
 	switch t {
 	case L1:
 		m.emit(ActPause, t)
-	case L2:
-		m.emit(ActFreeze, t)
 	case L3:
 		m.emit(ActRelease, t)
 	case L4:
@@ -608,6 +582,3 @@ func (c *Controller) NextDeadline() (time.Duration, bool) {
 
 // IDs 返回已登记显示器的编号（升序）。
 func (c *Controller) IDs() []int { return c.ids() }
-
-// SetKind preserves policy signals/timers while changing the renderer type.
-func (m *Machine) SetKind(k Kind) { m.cfg.Kind = k; m.cfg.T12 = DefaultConfig(k).T12 }

@@ -1,6 +1,6 @@
 # 16 配置、持久化、日志与遥测
 
-> **设计基线说明**：下文保留原 schema 与遥测设计。本轮配置/库/分配/状态均已升级 schema 2，新增每屏控制、应用规则、媒体元数据、跨屏选项和 UTC 周指标；当前生产代码仍强制关闭遥测。实际字段与迁移见 [`internal/config/files.go`](../../internal/config/files.go) 和 [当前实现矩阵](../IMPLEMENTATION_STATUS.md)，本章样例不是最新字段全集。
+> **设计基线说明**：下文保留原 schema 与遥测设计。当前 `config.json` / `state.json` 为 schema 2，`assignments.json` 为 schema 3，`library.json` 为 schema 5；新增每屏控制、应用规则、媒体元数据、跨屏选项和 UTC 周指标；当前生产代码仍强制关闭遥测。实际字段与迁移见 [`internal/config/files.go`](../../internal/config/files.go) 和 [当前实现矩阵](../IMPLEMENTATION_STATUS.md)，本章样例不是最新字段全集。
 
 ## 16.1 目录布局
 | 用途 | Windows | macOS 直接分发版 | macOS MAS 版 |
@@ -22,7 +22,7 @@
 
 ```json
 // config.json（示例，schemaVersion 是整数，只增不减）
-{ "schemaVersion": 1,
+{ "schemaVersion": 2,
   "perf": {"profile": "balanced", "fpsCap": 30, "renderScale": 0.75},
   "pause": {"batteryPolicy": "pause", "lowBatteryPct": 20, "resumeDebounceMs": 300},
   "startup": {"launchAtLogin": true},
@@ -36,6 +36,7 @@
 - **原子写**：先写 `x.json.tmp`，`fsync`，再 `os.Rename` 覆盖原文件。Go 的 `os.Rename` 在 Windows 上用 `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` 实现，可以覆盖已有文件【源码】Go 1.27.3 `internal/syscall/windows/syscall_windows.go:366` `Rename → MoveFileEx(from, to, MOVEFILE_REPLACE_EXISTING)`。保留一份 `x.json.bak`（上一个能正常解析的版本），主文件解析失败时回退到它。
 - **写节流**：同一个文件 1 s 内的多次修改合并成一次写入【推断】。
 - **迁移**：读取时如果 `schemaVersion < 当前版本`，依次执行 `migrate_N_to_N+1`，执行前先备份为 `x.json.v<N>`；如果 `schemaVersion > 当前版本`（用户降级了应用），以**只读方式**加载已知字段，并且不回写，防止丢失新版本的数据【推断】。
+- **D-16 例外**：`library.json` 低于 schema 5 时**不迁移**。启动时忽略旧索引，把库与 `assignments.json` 从空开始并立即写回，不处理旧壁纸目录和磁盘文件。
 - **显示器标识**：
   - Windows 用 `QueryDisplayConfig` + `DisplayConfigGetDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME)` 拿到 `monitorDevicePath`，取哈希作为 ID【文档】；
   - macOS 用 `CGDisplayCreateUUIDFromDisplayID`【文档】；
@@ -51,7 +52,7 @@
   1. 不记录其他应用的窗口标题。遮挡探针只需要矩形；进程名也只记录类别（`fullscreen_app`），不记录具体名字。
   2. 用户素材的路径和文件名只记录 `sha256(path)[:8]`。
   3. 不记录用户名和主目录；路径写进日志前，把主目录替换成 `~`。
-  4. 不记录 IP 或网络内容（Web 壁纸的 console 日志默认不收集，只在诊断模式下保留前 200 条）。
+  4. 不记录 IP 或网络内容；已移除的 Web 壁纸 console 日志不再适用。
 
 ## 16.5 本地指标（始终开启，只保存在本地，不上传）
 

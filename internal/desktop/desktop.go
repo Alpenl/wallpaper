@@ -101,7 +101,7 @@ type Surface interface {
 
 // Caps 是平台能力。
 type Caps struct {
-	Video, Web, Shader, PerDisplay, ExternalSurfaceOnly bool
+	Video, PerDisplay, ExternalSurfaceOnly bool
 	// ForegroundApp means the host can report foreground executable identities.
 	// A particular sample can still be unavailable (for example a protected process).
 	ForegroundApp bool

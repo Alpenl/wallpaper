@@ -33,9 +33,9 @@ func find(as []Action, k ActionKind) (Action, bool) {
 	return Action{}, false
 }
 
-func newCtl(t *testing.T, k Kind) (*Controller, *Machine) {
+func newCtl(t *testing.T) (*Controller, *Machine) {
 	t.Helper()
-	c := NewController(DefaultConfig(k))
+	c := NewController(DefaultConfig())
 	return c, c.AddDisplay(0, 0)
 }
 
@@ -51,7 +51,7 @@ func must(t *testing.T, err error) {
 // 向量 1：Covered 0→1→0→1 间隔 100 ms。v1.1 澄清：进入去抖 150 ms，100 ms 的抖动不会进入暂停；
 // 最后一次变 1 并稳定 150 ms 后进入 L1。之后变 0，300 ms 内不恢复，满 300 ms 才恢复。
 func TestVector1CoveredFlap(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(100*ms, Covered, 0, true))
 	must(t, c.Set(200*ms, Covered, 0, false))
 	must(t, c.Set(300*ms, Covered, 0, true))
@@ -75,7 +75,7 @@ func TestVector1CoveredFlap(t *testing.T) {
 }
 
 func TestVector1ResumeExactly300(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Covered, 0, true))
 	c.Advance(150 * ms)
 	must(t, c.Set(1000*ms, Covered, 0, false))
@@ -94,7 +94,7 @@ func TestVector1ResumeExactly300(t *testing.T) {
 }
 
 func TestResumeCancelledByReturn(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Fullscreen, 0, true))
 	must(t, c.Set(1000*ms, Fullscreen, 0, false))
 	must(t, c.Set(1200*ms, Fullscreen, 0, true)) // 恢复计时中又回来
@@ -107,7 +107,7 @@ func TestResumeCancelledByReturn(t *testing.T) {
 // 向量 2（v1.1 修正）：Locked 的下限是 L3，所以锁屏立即进入 L3（不必等 t23）；
 // 解锁后 300 ms 回到 L0，Resume.From=L3 → 驱动层重新 load 并 seek 到保存位置。
 func TestVector2Locked(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Locked, -1, true))
 	as := m.Drain()
 	if m.Level() != L3 || !has(as, ActRelease) || has(as, ActPause) {
@@ -130,7 +130,7 @@ func TestVector2Locked(t *testing.T) {
 
 // 向量 3：User 暂停 + 全屏退出 → 保持 L1。
 func TestVector3UserSticky(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Fullscreen, 0, true))
 	must(t, c.Set(10*ms, User, -1, true))
 	must(t, c.Set(1000*ms, Fullscreen, 0, false))
@@ -142,7 +142,7 @@ func TestVector3UserSticky(t *testing.T) {
 
 // 向量 4：渲染器在 L3 崩溃 → Recovering → 重启后仍在 L3，不开始播放。
 func TestVector4CrashAtL3(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Locked, -1, true))
 	m.Drain()
 	m.RendererDone(time.Second)
@@ -159,7 +159,7 @@ func TestVector4CrashAtL3(t *testing.T) {
 
 // 向量 5：LowBattery → L4；接上电源（Battery 与 LowBattery 同时清除）→ L0。
 func TestVector5LowBattery(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Battery, -1, true))
 	must(t, c.Set(time.Second, LowBattery, -1, true))
 	if m.Level() != L4 || !has(m.Drain(), ActSnapshot) {
@@ -178,7 +178,7 @@ func TestVector5LowBattery(t *testing.T) {
 
 // 规则：暂停中级别只升不降。LowBattery 解除但 Battery 仍在 → 保持 L4，不回落到 L1。
 func TestNoDowngradeWhilePaused(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Battery, -1, true))
 	must(t, c.Set(0, LowBattery, -1, true))
 	must(t, c.Set(time.Second, LowBattery, -1, false))
@@ -188,9 +188,9 @@ func TestNoDowngradeWhilePaused(t *testing.T) {
 	}
 }
 
-// 计时升级：视频跳过 L2：L1 → t23 → L3 → t34 → L4，计时自离开 L0 起累计。
-func TestEscalationVideo(t *testing.T) {
-	c, m := newCtl(t, Video)
+// 计时升级：L1 → t23 → L3 → t34 → L4，计时自离开 L0 起累计。
+func TestEscalation(t *testing.T) {
+	c, m := newCtl(t)
 	must(t, c.Set(0, Fullscreen, 0, true))
 	c.Advance(59 * time.Second)
 	if m.Level() != L1 {
@@ -200,38 +200,14 @@ func TestEscalationVideo(t *testing.T) {
 	as := m.Drain()
 	r, _ := find(as, ActRelease)
 	s, _ := find(as, ActSnapshot)
-	if has(as, ActFreeze) || r.At != 60*time.Second || s.At != 10*time.Minute || m.Level() != L4 {
+	if r.At != 60*time.Second || s.At != 10*time.Minute || m.Level() != L4 {
 		t.Fatalf("升级时间不对: %v", as)
-	}
-}
-
-// Web：t12=0，进入暂停即 L2（L1=IsVisible=false 由 L2 前置完成，见 v1.1）。
-func TestEscalationWeb(t *testing.T) {
-	c, m := newCtl(t, Web)
-	must(t, c.Set(0, Fullscreen, 0, true))
-	if m.Level() != L2 || !has(m.Drain(), ActFreeze) {
-		t.Fatalf("Web 应立即 L2，got %v", m.Level())
-	}
-}
-
-func TestEscalationWebDelayed(t *testing.T) {
-	cfg := DefaultConfig(Web)
-	cfg.T12 = 2 * time.Second
-	c := NewController(cfg)
-	m := c.AddDisplay(0, 0)
-	must(t, c.Set(0, Fullscreen, 0, true))
-	if m.Level() != L1 {
-		t.Fatal("t12 前应 L1")
-	}
-	c.Advance(2 * time.Second)
-	if m.Level() != L2 {
-		t.Fatal("t12 后应 L2")
 	}
 }
 
 // ThermalSerious：不暂停，只限 15 fps；与 Battery(fps15 策略) 叠加仍为 15；清除后取消。
 func TestThermalSeriousCapsOnly(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, ThermalSerious, -1, true))
 	as := m.Drain()
 	if m.Level() != L0 || m.FPSCap() != 15 || !has(as, ActFPSCap) {
@@ -253,7 +229,7 @@ func TestBatteryPolicies(t *testing.T) {
 		level Level
 		fps   int
 	}{{BatteryPause, L1, 0}, {BatteryFPS15, L0, 15}, {BatteryIgnore, L0, 0}} {
-		cfg := DefaultConfig(Video)
+		cfg := DefaultConfig()
 		cfg.BatteryPolicy = tc.p
 		c := NewController(cfg)
 		m := c.AddDisplay(0, 0)
@@ -266,7 +242,7 @@ func TestBatteryPolicies(t *testing.T) {
 
 // 按显示器判定：屏 0 全屏，屏 1 照常播放（7.1 原则 1、4）。
 func TestPerDisplayIsolation(t *testing.T) {
-	c := NewController(DefaultConfig(Video))
+	c := NewController(DefaultConfig())
 	m0, m1 := c.AddDisplay(0, 0), c.AddDisplay(0, 1)
 	must(t, c.Set(0, Fullscreen, 0, true))
 	if m0.Level() != L1 || m1.Level() != L0 {
@@ -280,7 +256,7 @@ func TestPerDisplayIsolation(t *testing.T) {
 
 // 新接入的显示器继承当前全局原因。
 func TestAddDisplayInheritsGlobal(t *testing.T) {
-	c := NewController(DefaultConfig(Video))
+	c := NewController(DefaultConfig())
 	c.AddDisplay(0, 0)
 	must(t, c.Set(0, User, -1, true))
 	m := c.AddDisplay(time.Second, 1)
@@ -291,7 +267,7 @@ func TestAddDisplayInheritsGlobal(t *testing.T) {
 
 // DisplayOff/User 可同时有全局和显示器来源：任一为开即为开。
 func TestDualScopeReason(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, User, 0, true))
 	must(t, c.Set(0, User, -1, true))
 	must(t, c.Set(time.Second, User, 0, false)) // 全局仍开
@@ -313,7 +289,7 @@ func TestDualScopeReason(t *testing.T) {
 }
 
 func TestScopeErrors(t *testing.T) {
-	c, _ := newCtl(t, Video)
+	c, _ := newCtl(t)
 	if c.Set(0, Covered, -1, true) == nil {
 		t.Error("Covered 不能是全局")
 	}
@@ -330,7 +306,7 @@ func TestScopeErrors(t *testing.T) {
 
 // Suspend 解除时先发 HealthCheck，再按去抖恢复；Suspend 下限 L3。
 func TestSuspendHealthCheck(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Suspend, -1, true))
 	if m.Level() != L3 {
 		t.Fatal("Suspend 应 L3")
@@ -346,7 +322,7 @@ func TestSuspendHealthCheck(t *testing.T) {
 
 // 唤醒后停在锁屏：睡眠时长不计入升级计时（否则唤醒瞬间就会补升 L4、杀进程）。
 func TestSuspendThenLockedNoCatchUp(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Locked, -1, true))
 	must(t, c.Set(time.Minute, Suspend, -1, true))
 	must(t, c.Set(9*time.Hour, Suspend, -1, false))
@@ -366,7 +342,7 @@ func TestSuspendThenLockedNoCatchUp(t *testing.T) {
 
 // L4 时进程是我们结束的：Done() 不算崩溃。
 func TestDoneAtL4NotCrash(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, LowBattery, -1, true))
 	m.Drain()
 	m.RendererDone(time.Second)
@@ -377,7 +353,7 @@ func TestDoneAtL4NotCrash(t *testing.T) {
 
 // 10 分钟内 5 次崩溃 → Failed；窗口外的旧崩溃不计；Retry 清零。
 func TestCrashLimit(t *testing.T) {
-	_, m := newCtl(t, Video)
+	_, m := newCtl(t)
 	m.RendererDone(0)
 	m.RestartOK(1 * time.Second)
 	for i := 1; i <= 3; i++ { // 共 4 次（都在 10 分钟内）
@@ -404,7 +380,7 @@ func TestCrashLimit(t *testing.T) {
 
 // Recovering 期间原因变化：不对渲染器下指令，只记目标级别；重启成功按最新级别就位。
 func TestRecoveringTracksTarget(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	m.RendererDone(0)
 	m.Drain()
 	must(t, c.Set(time.Second, Fullscreen, 0, true))
@@ -438,7 +414,7 @@ func TestRecoveringTracksTarget(t *testing.T) {
 
 // 截帧：10 分钟内第二次进入暂停不重复截帧。
 func TestCaptureFrameThrottle(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Fullscreen, 0, true))
 	must(t, c.Set(time.Second, Fullscreen, 0, false))
 	must(t, c.Set(2*time.Second, Fullscreen, 0, true))
@@ -459,7 +435,7 @@ func TestCaptureFrameThrottle(t *testing.T) {
 }
 
 func TestDisplayRemoved(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	c.RemoveDisplay(time.Second, 0)
 	c.RemoveDisplay(time.Second, 0) // 幂等
 	c.RemoveDisplay(time.Second, 7) // 不存在
@@ -476,7 +452,7 @@ func TestDisplayRemoved(t *testing.T) {
 
 // 同一时刻多原因、重复上报幂等、时间倒退 panic。
 func TestIdempotentAndClock(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Fullscreen, 0, true))
 	must(t, c.Set(0, Fullscreen, 0, true))
 	if n := len(m.Drain()); n != 2 { // CaptureFrame + Pause
@@ -492,7 +468,7 @@ func TestIdempotentAndClock(t *testing.T) {
 
 // 恢复后再暂停：升级计时重新从 0 开始。
 func TestEscalationResetsAfterResume(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Fullscreen, 0, true))
 	must(t, c.Set(50*time.Second, Fullscreen, 0, false))
 	c.Advance(51 * time.Second)
@@ -505,7 +481,7 @@ func TestEscalationResetsAfterResume(t *testing.T) {
 
 // 同一次 Advance 跨越多个截止时间时按时间顺序处理：遮挡去抖完成 → 稍后 t23。
 func TestAdvanceOrdering(t *testing.T) {
-	c, m := newCtl(t, Video)
+	c, m := newCtl(t)
 	must(t, c.Set(0, Covered, 0, true))
 	c.Advance(2 * time.Minute)
 	as := m.Drain()
@@ -521,17 +497,17 @@ func TestStringers(t *testing.T) {
 		ActResume.String() != "Resume" || (Action{Kind: ActPause, Level: L1}).String() == "" {
 		t.Fatal("stringer")
 	}
-	if NewMachine(DefaultConfig(Video)).Effective() != 0 {
+	if NewMachine(DefaultConfig()).Effective() != 0 {
 		t.Fatal()
 	}
-	if c := NewController(DefaultConfig(Video)); c.Display(0) != nil {
+	if c := NewController(DefaultConfig()); c.Display(0) != nil {
 		t.Fatal()
 	}
 }
 
 // 平台层用 NextDeadline 设一次性定时器：空闲时没有截止时间，遮挡时为去抖完成时刻，暂停后为恢复/升级时刻。
 func TestNextDeadline(t *testing.T) {
-	c := NewController(DefaultConfig(Video))
+	c := NewController(DefaultConfig())
 	c.AddDisplay(0, 0)
 	c.AddDisplay(0, 1)
 	if _, ok := c.NextDeadline(); ok {
@@ -542,8 +518,8 @@ func TestNextDeadline(t *testing.T) {
 		t.Fatalf("应为去抖完成 150ms, got %v %v", d, ok)
 	}
 	c.Advance(150 * ms)
-	if d, _ := c.NextDeadline(); d != 150*ms+2*time.Second {
-		t.Fatalf("暂停后下一个应为 t12 检查点, got %v", d)
+	if d, _ := c.NextDeadline(); d != 150*ms+60*time.Second {
+		t.Fatalf("暂停后下一个应为 t23 检查点, got %v", d)
 	}
 	must(t, c.Set(time.Second, Covered, 1, false))
 	if d, _ := c.NextDeadline(); d != 1300*ms {

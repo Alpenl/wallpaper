@@ -1,6 +1,6 @@
 # 11 分发、签名、更新、许可证
 
-> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
+> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。**2026-11-05：Web/Shader 引擎已按 D-16 移除，`wp-webhost` 与 Web 壁纸审核项不再属于当前打包/签名范围。**
 
 > 涉及许可证和专利的结论都**不是法律意见**，上线前必须由律师复核。
 
@@ -11,14 +11,14 @@
 | 桌面挂载（Progman/WorkerW 子窗口） | 没有限制 | full-trust 桌面应用（`runFullTrust`）调用的是普通 Win32 API，**没有找到文档说明会被限制**；Lively 有 Store 版，可以作为侧面证据（我没有核对它的打包清单） | 【推断】；需要在 MSIX 包里做一次实测（W-T8） |
 | 开机自启 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | `windows.startupTask` 扩展：用户必须先手动启动一次应用才会生效；用户在任务管理器里禁用后，应用**不能用代码重新启用** | 【文档】MS Learn desktop-to-uwp-extensions、StartupTask 类 |
 | 数据目录 | 原样 | AppData 的写入被重定向到包私有位置，卸载时一起删除 | 【文档】desktop-to-uwp-behind-the-scenes |
-| 子进程 mpv.exe / wp-webhost.exe | 原样 | 包内的 exe 可以作为子进程运行，继承包身份【推断】 | |
+| 子进程 mpv.exe / 转码 helper | 原样 | 包内的 exe 可以作为子进程运行，继承包身份【推断】 | |
 | 更新 | MyGo 内置的签名增量更新 | Store 自动更新，或者用 App Installer 文件 | 【文档】 |
 | SmartScreen | 依赖签名身份积累信誉，新版本仍可能弹警告 | Store 安装的应用由微软重新签名，**不会出现 SmartScreen 警告** | 【文档】MS Learn smartscreen-reputation |
 
 ## 11.2 Windows 代码签名与 SmartScreen
 - 2024 年起，EV 证书**不再自动获得 SmartScreen 信誉**，和 OV 证书一样需要靠下载量积累；信誉来自文件哈希和发布者证书两方面，用同一个签名身份持续发布，可以把发布者信誉带到后续版本【文档】MS Learn “Current status of Windows app distribution features”、“SmartScreen reputation”。
 - 推荐的签名服务是 Azure **Artifact Signing**（原名 Trusted Signing），约 $9.99/月，不需要硬件令牌，可以接 CI。**地区限制**：组织需要在美国、加拿大、欧盟或英国；个人开发者目前只限美国和加拿大。其他地区只能用 OV 证书【文档】MS Learn code-signing-options。
-- 所有 PE 文件都要签名（主程序、wp-webhost、wp-transcode、mpv.exe、FFmpeg dll），并加时间戳【推断】。
+- 所有 PE 文件都要签名（主程序、wp-transcode、mpv.exe、FFmpeg dll），并加时间戳【推断】。
 
 ## 11.3 macOS
 | 维度 | 直接分发（Developer ID） | Mac App Store | 依据 |
@@ -27,12 +27,12 @@
 | 登录项 | `SMAppService.mainApp.register()`（macOS 13+），需要用户批准；崩溃自动拉起可以用 `SMAppService.agent(plistName:)` 注册 KeepAlive 的 LaunchAgent | 只用 `mainApp`，并且在 UI 里由用户主动开启；**不能未经同意自动启动** | 【文档】SMAppService；App Review 2.4.5(iii) |
 | 更新 | MyGo 内置更新器，或 Sparkle 2。Sparkle 只有在沙盒应用里才需要 Installer XPC（`SUEnableInstallerLauncherService`）加上 mach-lookup 临时例外；直接分发版不开沙盒，所以不需要 | **只能**通过 App Store 更新 | 【文档】Sparkle sandboxing；App Review 2.4.5(vii) |
 | 锁屏动态壁纸（替换 Aerial 文件） | 实验功能，需要管理员权限（macOS 14–15）| **不可行**（沙盒限制，且不能提权，2.4.5(v)） | 【文档】LiveDesk README；App Review |
-| 下载额外代码 | 可以 | 不能下载或安装 “改变应用功能的额外代码或资源”（2.4.5(iv)）。Web 壁纸包里的 JS 是否算在内，**尚不明确**：壁纸内容属于用户数据，并且运行在 WebKit 沙盒里，倾向于认为可以接受，但存在审核风险 | 【文档】App Review；【推断】Q-D3 |
+| 下载额外代码 | 可以 | 不能下载或安装 “改变应用功能的额外代码或资源”（2.4.5(iv)）。Web 壁纸包里的 JS 是否算在内，**尚不明确**；Web 壁纸已按 D-16 移除，Q-D3 随之失效，此项仅作历史依据 | 【文档】App Review；【推断】Q-D3 |
 | 素材访问 | 任意路径 | 通过打开面板选择，或者使用 security-scoped bookmark；导入时把文件复制进容器，之后不再依赖原路径 | 【文档】App Sandbox |
 | 转码 helper | 普通子进程 | 必须嵌在 bundle 里，带 `com.apple.security.inherit` 继承沙盒 | 【文档】App Sandbox（嵌入的 helper 工具） |
 | FFmpeg/libavformat（用于 WebM 解复用） | 动态链接的 dylib，用同一个 Team ID 签名 | 同左；整个应用必须是自包含的单一 bundle（2.4.5(ii)） | 【文档】 |
 
-**MVP 决策（ADR-006）**：macOS 先做直接分发版（功能完整、更新快）；MAS 版作为第二阶段，砍掉锁屏和 KeepAlive，Web 壁纸默认禁止网络权限。
+**MVP 决策（ADR-006）**：macOS 先做直接分发版（功能完整、更新快）；MAS 版作为第二阶段，砍掉锁屏和 KeepAlive。Web 壁纸已按 D-16 移除，不再涉及网络权限策略。
 
 ## 11.4 mpv / libmpv 许可证
 - 默认是 GPLv2+。用 `-Dgpl=false` 构建可以排除只有 GPL 授权的文件，结果为 LGPLv2.1+；但这个开关 “本身不构成 LGPL 授权”，需要自己核对每个文件的授权。LGPL 模式会禁用 X11 VO、vdpau 等，而且官方**不推荐用 LGPL 模式构建 CLI**【文档】mpv Copyright。

@@ -74,18 +74,9 @@ func (a *App) SetItemProps(itemID string, props config.ItemProps) {
 			return
 		}
 		props.Normalize()
-		if it.Type == "web" || it.Type == "shader" {
-			var err error
-			props.WebValues, err = canonicalProperties(it.PropertyDefs, props.WebValues)
-			if err != nil {
-				a.lastErr = err.Error()
-				return
-			}
-		}
 		if it.Props == props {
 			return
 		}
-		oldProps := it.Props
 		it.Props = props
 		a.saveLibrary()
 		for _, s := range a.sortedScreens() {
@@ -93,31 +84,6 @@ func (a *App) SetItemProps(itemID string, props config.ItemProps) {
 				continue
 			}
 			s.item.Props = props
-			if it.Type == "shader" {
-				if !s.started {
-					a.restartPlayback(s)
-					continue
-				}
-				a.applyCap(s)
-				if oldProps.ShaderScale != props.ShaderScale && !a.updateScreenPlayback(s) {
-					a.restartPlayback(s)
-					continue
-				}
-			}
-			if updater, ok := s.r.(render.PropertyUpdater); ok && s.started {
-				gen := s.gen
-				s.ops.enqueue(func() {
-					err := updater.UpdateProperties(props.WebValues)
-					if err != nil {
-						a.Do(func() {
-							if s.gen == gen {
-								a.lastErr = err.Error()
-							}
-						})
-					}
-				})
-				continue
-			}
 			if !a.updateScreenPlayback(s) {
 				a.restartPlayback(s)
 			}
@@ -170,12 +136,6 @@ func (a *App) playbackOptions(s *screen, r render.Renderer) (render.PlaybackOpti
 	c := a.d.Store.Config
 	pb := a.effectivePlayback(s)
 	p := render.PlaybackOptions{Fit: pb.Fit, Speed: pb.Speed, Muted: pb.Muted, Volume: pb.Volume, Scale: c.Perf.RenderScale}
-	if s.item != nil && s.item.Type == "shader" {
-		p.Scale = s.item.Props.ShaderScale
-		if p.Scale == 0 {
-			p.Scale = .75
-		}
-	}
 	if !s.canvas.Empty() && s != a.spanLeader() {
 		p.Muted = true
 	}
@@ -269,11 +229,6 @@ func (a *App) checkpointPositions() {
 }
 
 func cloneView(v View) View {
-	if v.NetworkConsent != nil {
-		copy := *v.NetworkConsent
-		copy.Hosts = append([]string(nil), copy.Hosts...)
-		v.NetworkConsent = &copy
-	}
 	v.Config = v.Config.Clone()
 	v.Renditions = append([]RenditionView(nil), v.Renditions...)
 	v.Displays = append([]DisplayView(nil), v.Displays...)

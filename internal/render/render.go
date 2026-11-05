@@ -6,7 +6,6 @@ package render
 import (
 	"errors"
 	"fmt"
-	"image"
 	"math"
 
 	"wpapp/internal/desktop"
@@ -15,17 +14,9 @@ import (
 
 // Item 是要播放的壁纸。
 type Item struct {
-	AudioEnabled, InputEnabled bool
-	SignalsBlocked             bool
-	Viewport                   image.Rectangle
-	PackageDir                 string
-	FPSCap                     int
-	NetworkGranted             bool
-	Properties                 string
-	ID                         string
-	Path                       string // 入口文件绝对路径（已校验在包目录内）
-	Kind                       string // video | image | web | shader
-	Start                      float64
+	ID    string
+	Path  string // 入口文件绝对路径（已校验在包目录内）
+	Start float64
 }
 
 // Stats 是渲染统计。
@@ -140,9 +131,3 @@ var ErrUnsupported = errors.New("render: unsupported")
 type SourceUpdater interface {
 	UpdateSource(Item, visibility.Level) error
 }
-
-// PropertyUpdater applies validated JSON values without reloading the renderer.
-type PropertyUpdater interface{ UpdateProperties(string) error }
-
-// SignalPolicyUpdater applies privacy blocking even when playback pause is disabled.
-type SignalPolicyUpdater interface{ BlockSignals(bool) error }

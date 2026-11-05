@@ -7,10 +7,10 @@
 1. F-03：独立/跨屏往返保存；双/三屏负坐标、横竖屏/错位/混合 DPI、同屏数换位/缩放、主屏切换、热插拔、Explorer/Space/睡眠恢复；视频及静态首帧的裁切接缝。保持按屏暂停，不以逐帧同步作已实现能力。见 [空间跨屏](../../SPANNING.md)。
 2. F-07/08：mac 无 ffmpeg 时用原生隔离 helper；Win 可选 ffmpeg 必须有 h264_mf。选主屏物理尺寸及 1080p/1440p/2160p，检查 H.264/30fps/无音轨/偶数边界/首 IDR/GOP；测非整数帧率、旋转/竖屏、透明 GIF/disposal/末帧、取消、编码器不可用/资源上限/失败保留旧输出。avconvert 的有限回退不能关闭严格 AC。当前按屏多 rendition/cover 缓存仍需实现。
 3. F-17：真实 L0–L4 与后端确认一致，跨 UTC 周一、重启、睡眠、断屏、失败和系统时钟调整不虚增；核对 state schema 2 的摘要指标。暂停时长不是节电量；MF/AVF 的 unknown 硬解状态不能冒称成功。
-4. F-18：mpv/MF/AVF 支持能力分别测试 fit/fill/stretch、0.25–4 倍速度、暂停时修改、不重载保位置、L3/L4 恢复、失败反馈及 ≤200 ms 实际时延。以 [当前矩阵](../../IMPLEMENTATION_STATUS.md) 的最终源码接口为准；Web 属性仍依赖未实现 F-12。
+4. F-18：mpv/MF/AVF 支持能力分别测试 fit/fill/stretch、0.25–4 倍速度、暂停时修改、不重载保位置、L3/L4 恢复、失败反馈及 ≤200 ms 实际时延。以 [当前矩阵](../../IMPLEMENTATION_STATUS.md) 的最终源码接口为准；Web 属性已随 F-12 移除。
 
 
-> **这是测试计划，不是测试结果。** 本轮执行情况见 [验证记录](../../VALIDATION.md)。这里的 `wpproto` 参数属于研究原型，不直接等同于 `wallpaperd`。原文提及的 `bench/webview/webgl_test.html` 未包含在当前 checkout 中，Web 基准执行前需先补齐并记录来源，不能声称按原素材复现。
+> **这是测试计划，不是测试结果。** 本轮执行情况见 [验证记录](../../VALIDATION.md)。这里的 `wpproto` 参数属于研究原型，不直接等同于 `wallpaperd`。`bench/webview/webgl_test.html` 仍保留为历史资产；**Web/Shader 基准与阶段 4 已按 D-16 撤销，不再执行。**
 
 > 用法：按“阶段”顺序跑；每项都写明用什么工具、通过标准、结果会关闭 14 章的哪个问题。原型二进制需从 `prototype/` 源码构建（`bin/` 不入 Git），采集脚本在 `bench/`。结果请连同日志（`-log` 输出）、`windows_capture.ps1` / `macos_powermetrics.sh` 的 CSV、录屏一起回传。
 > 本清单里的阈值都来自 17 章 F-xx / PB-xx，属于【推断，目标】，首轮数据后修订。
@@ -29,7 +29,7 @@
 | L-2 | 同上 | Ubuntu 25.10 / 26.04（GNOME 49/50 Wayland） | Hanabi 路线 + D-Bus 接口 |
 | L-3 | 同上 | Kubuntu 或 KDE neon（Plasma 6，Wayland） | KDE 插件、VA-API |
 
-素材：同一组片源（4K30 H.264、1440p30 H.264、3 s 短循环片，用 06 章参数转码），以及 `bench/webview/webgl_test.html`。
+素材：同一组片源（4K30 H.264、1440p30 H.264、3 s 短循环片，用 06 章参数转码）；历史 Web 基准素材已撤销。
 
 ## 2. 运行顺序与关闭的问题
 **阶段 0：冒烟（每台机器 10 分钟）**
@@ -62,7 +62,7 @@
 | 3.4 | W-T10 步骤 6–7：判定开销与各级别开销（两个后端） | `PROBE_COST` 平均 < 1 ms；L3/L4 的内存与 GPU 释放量有记录 | 07 §7.6、Q-V2 |
 | 3.3 | 开专注模式 | 记录有无可用信号 | Q-W4 |
 
-**阶段 4：Web 壁纸（W-A、M-A）**
+**阶段 4：Web 壁纸（W-A、M-A）— 已按 D-16 撤销，不再执行**
 | # | 操作 | 通过标准 | 关闭 |
 |---|---|---|---|
 | 4.1 | `webgl_test.html` 在 WebView2 与 WKWebView 中各跑 10 分钟 | 记录 GPU、功耗、内存 | Q-B2、PB-web |

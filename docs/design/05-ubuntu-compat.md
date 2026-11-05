@@ -78,4 +78,4 @@ mutter **没有** wlr-layer-shell，普通客户端无法把自己放到壁纸�
 ## 5.7 对架构的要求（回写 02 章）
 - `Caps.ExternalSurfaceOnly`：GNOME Wayland（由扩展托管）和 KDE（由插件托管）时为 true。此时 `Renderer` 只是一个远程控制代理，`SetLevel` 可能只支持 L0/L1。
 - `Host.Events()` 的事件来源可能是扩展或插件发来的 D-Bus 信号，而不是本地探针。
-- 包格式（10 章）在 Linux 上只支持 video 和 image；web 类型需要 WebKitGTK 宿主，以后再做。
+- 包格式（10 章）只支持 video 和 image；web 类型已随 D-16 移出产品范围，不再计划。

@@ -8,7 +8,7 @@
 //   - 暂停规则（F-04）、电源与电池（F-05：电池策略含 15 fps 档、低电量阈值、macOS 低电量模式 / 过热）
 //   - 外观（浅色 / 深色 / 跟随系统、强调色）、启动与更新（F-10、F-15 增量更新与回滚）、诊断（F-16）、关于
 //
-// 本地能力连接真实控制器；网页 / Shader / 创意工坊在能力说明中明确标注边界。
+// 本地能力连接真实控制器；创意工坊等在线能力在说明中明确标注边界。
 // 视图函数与 MyGo 窗口 / 托盘分离，可以用 ui.NewTester 测试和截图（settings_test.go、cmd/uishots）。
 package ui
 
@@ -29,10 +29,6 @@ import (
 // Controller 是视图对编排器的依赖（*app.App 满足）。
 type Controller interface {
 	View() app.View
-	ResolveSignalConsent(bool)
-	RevokeSignal(string, string)
-	ResolveNetworkConsent(bool)
-	RevokeNetwork(string)
 	SetPausedAll(bool)
 	Assign(display, itemID string) // 单块屏；display 为空 = 只改默认壁纸
 	AssignAll(itemID string)       // 所有显示器（清除单独设置）
@@ -105,10 +101,8 @@ const (
 
 // Settings 是设置窗口的状态（只在 MyGo 主线程上读写；snap 和 upd 例外，加锁）。
 type Settings struct {
-	webDrafts    map[string]*string
-	webDraftBase map[string]string
-	ctl          Controller
-	GOOS         string
+	ctl  Controller
+	GOOS string
 	Hooks
 	Info Info
 	// Invalidate 由 Shell 设置：后台任务完成后请求重绘。
@@ -266,8 +260,6 @@ func (s *Settings) View(c *ui.Context) {
 		s.frame(c, v)
 	})
 	s.firstRun(c, v)
-	s.networkDialog(c, v)
-	s.signalDialog(c, v)
 }
 
 // frame 是窗口内容：标题与标签、页面、底部操作栏。
@@ -474,14 +466,6 @@ func (s *Settings) filtered(v app.View) []config.Item {
 			}
 		case 2:
 			if it.Type != "image" {
-				continue
-			}
-		case 4:
-			if it.Type != "web" {
-				continue
-			}
-		case 5:
-			if it.Type != "shader" {
 				continue
 			}
 		case 3:

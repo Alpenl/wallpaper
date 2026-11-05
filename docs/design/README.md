@@ -1,6 +1,6 @@
 # 跨平台高性能动态壁纸 —— 设计文档
 
-> **文档角色：设计与研究历史。** 第 20 轮（2026-10-21）的 ADR、研究结论与实验记录在下文保留；其中“已采纳”“已实测”“下一步”属于该轮上下文，不等于本轮产品全部实现或验收。当前入口见 [文档导航](../README.md)、[实现矩阵](../IMPLEMENTATION_STATUS.md)、[本轮验证](../VALIDATION.md)；迭代记录见 [CHANGELOG.md](CHANGELOG.md)。
+> **文档角色：设计与研究历史。** 第 20 轮（2026-10-21）的 ADR、研究结论与实验记录在下文保留；其中“已采纳”“已实测”“下一步”属于该轮上下文，不等于本轮产品全部实现或验收。**2026-11-05 产品定位（D-16 / ADR-011）：只做图片与视频壁纸；Web/Shader 引擎、响应式输入与 WE scene 探测已移除，相关 ADR、章节及示例只作历史依据。** 当前入口见 [文档导航](../README.md)、[实现矩阵](../IMPLEMENTATION_STATUS.md)、[本轮验证](../VALIDATION.md)；迭代记录见 [CHANGELOG.md](CHANGELOG.md)。
 > 平台优先级：**MVP 先做 Windows 和 macOS**；Ubuntu（GNOME X11/Wayland、KDE）只作为架构兼容参考。性能是首要目标。
 > 依据标注：**【源码】** = 已 clone 并读过的代码；**【文档】** = 官方或项目文档；**【实测】** = 本 box 或第三方的测量；**【推断】** = 未经验证；【issue】= issue 或讨论帖。许可证和专利相关内容一律**不是法律意见**。
 > 旧文档保留未删：`docs/research/wallpaper_research.md`、`dynamic_wallpaper_tech_research.md`、`dynamic_wallpaper_feasibility.md`。
@@ -12,12 +12,13 @@
 | 002 | Windows 视频用 mpv 子进程（第 14 轮起 Windows 部分为**暂定**，与 MF Media Engine 渲染器 A/B，见下方备选方案）（`d3d11va` + `gpu-next/d3d11`，`--wid`）；macOS 用 AVQueuePlayer + AVPlayerLooper + AVPlayerLayer，放在进程内 | 已采纳 | 进程隔离，不需要 cgo；mac 上 mpv `--wid` 不可用【文档/issue】 | W-T3 发现 mpv 硬解不稳定 → 换 MF | 06 |
 | 003 | 性能的关键在**导入时转码**：目标分辨率、30fps、无音轨、系统编码器（MF/VT），产物按显示器缓存 | 已采纳 | 4K30 软解要 0.51–0.70 核，回读还要多 19–41%【实测】；缩放是 GPU 的主要可控开销【实测，Fresco】 | — | 06 |
 | 004 | mpv.exe 作为独立的 GPL 程序分发，只通过 IPC 和命令行通信；附源码要约。产品不分发 GPL 编码器（libx264） | 暂定，待律师确认 | FSF FAQ（聚合）；Lively 的先例；FFmpeg legal【文档】 | 律师否决 → 改用 MF 播放器或 LGPL libmpv | 11 |
-| 005 | Web 壁纸用系统 WebView（WebView2/WKWebView），不捆绑 CEF；暂停用 `IsVisible=false` + `TrySuspend`，不用调试器冻结 | 已采纳 | 官方 API【文档】；WebKit 内存比 Chromium 少 70–140 MiB（box 参考数据）【实测】 | B-T2 发现 TrySuspend 无效 | 08 |
+| 005 | Web 壁纸用系统 WebView（WebView2/WKWebView），不捆绑 CEF；暂停用 `IsVisible=false` + `TrySuspend`，不用调试器冻结 | **已撤销**（D-16，2026-11-05） | 官方 API【文档】；WebKit 内存比 Chromium 少 70–140 MiB（box 参考数据）【实测】 | Web 壁纸引擎已从产品移除 | 08 |
 | 006 | 分发：Windows 先做 NSIS 按用户安装 + 签名（Artifact Signing/OV），Store MSIX 放第二阶段；macOS 先做 Developer ID 直接分发版，MAS 版放第二阶段且功能裁剪 | 已采纳 | EV 不再自动获得 SmartScreen 信誉；Store 应用不弹警告；MAS 2.4.5 的限制【文档】 | — | 11 |
 | 007 | 暂停：多个原因取 OR、按显示器判定、快停慢启、L1–L4 分级；macOS 遮挡不能只靠 `occlusionState` | 已采纳 | mpvpaper、Lively、Wallnetic【源码】 | — | 07 |
 | 008 | 进程监管：Windows 用 Job Object（KILL_ON_JOB_CLOSE）代替 watchdog 进程；渲染器按退避规则重启；健康检查覆盖 “卡住但没退出” 的情况；用系统壁纸截图兜底 | 已采纳 | MS 文档、mpv #3469【文档/issue】 | — | 02 |
-| 009 | 壁纸包 v0：zip + manifest（JSON Schema）；不支持可执行文件类壁纸；Web 包默认禁网，权限需要声明并经用户同意 | 已采纳 | 安全性；Go zip 默认不拒绝不安全路径【源码】 | — | 10 |
+| 009 | 壁纸包 v0：zip + manifest（JSON Schema）；不支持可执行文件类壁纸；类型只保留 video/image | 已采纳（Web 权限部分已撤销） | 安全性；Go zip 默认不拒绝不安全路径【源码】 | — | 10 |
 | 010 | 遥测默认关闭（opt-in），只上报聚合统计；日志异步写、可丢弃、不记录窗口标题和素材路径 | 已采纳 | 隐私优先 | — | 16 |
+| 011 | 产品范围收敛：只做图片/视频壁纸；移除 Web/Shader 引擎、音频/鼠标响应式输入和 WE scene 探测 | 已采纳（2026-11-05） | 产品定位调整；减少不可验收的引擎面与安全/审核负担 | 新的产品范围决策 | 02、08、10、17 |
 
 
 ## ADR 备选方案与否决理由（第 14 轮反向审阅）
@@ -35,7 +36,7 @@
   - 仍然存在的代价：要自己写循环无缝、缩放、帧同步、TDR 恢复（mpv 已有）；Go 调 COM 无 cgo 的工作量与稳定性未验证【推断】。
   - **结论：ADR-002 Windows 部分由“已采纳”降为“暂定”**。MVP 继续用 mpv 起步（原型已就绪），但把 “MF Media Engine 渲染器” 列为 A/B 候选，用 W-T3 的同片源对比 CPU/GPU/内存/循环点后定型；若两者性能相当，则倾向 MF（消除 GPL 依赖）。新增 Q-W10。
 - 备选 B（Windows）：LGPL 构建的 libmpv 进程内嵌入。否决：需要 cgo 或 purego 加载 DLL，崩溃会带倒主进程，违背 ADR-008 的隔离【推断】。
-- 备选 C（macOS）：**Metal 自渲染**（`AVPlayerItemVideoOutput` → `CVMetalTextureCache` → 自己的 Metal pass）。否决：对纯视频播放，AVPlayerLayer 交给系统合成，VT 解码出的 IOSurface 可直接被合成器使用，自渲染只会多一次我们自己的绘制 pass 和一个常驻渲染循环，没有可预期的性能收益【推断，依据 AVFoundation 文档的架构描述】。Metal 自渲染只在需要特效/着色器叠加时才有意义——这部分已经由 Shader 壁纸（F-14）覆盖。
+- 备选 C（macOS）：**Metal 自渲染**（`AVPlayerItemVideoOutput` → `CVMetalTextureCache` → 自己的 Metal pass）。否决：对纯视频播放，AVPlayerLayer 交给系统合成，VT 解码出的 IOSurface 可直接被合成器使用，自渲染只会多一次我们自己的绘制 pass 和一个常驻渲染循环，没有可预期的性能收益【推断，依据 AVFoundation 文档的架构描述】。Metal 自渲染只在需要特效/着色器叠加时才有意义——原 Shader 壁纸（F-14）曾覆盖该场景，现已随 D-16 移除。
 - 备选 D（macOS）：`AVSampleBufferDisplayLayer` + 自己解复用。只在需要 AVFoundation 不支持的容器（WebM，Q-M4）时才考虑；因 ADR-003 统一转 MP4/H.264，MVP 不需要。
 - 推翻条件更新：W-T3 显示 MF 不差于 mpv → Windows 改 MF；M3 显示 AVPlayerLayer 循环点有可见停顿 → 评估 D。
 
@@ -45,7 +46,8 @@
 **ADR-004（mpv.exe 作为独立 GPL 程序分发）**
 - 备选：MF 渲染器（见 ADR-002 备选 A）——这是消除该风险最直接的方案。结论：保持“暂定”，并把 Q-L1 的优先级与 Q-W10 绑定：若 W-T3 后改用 MF，Q-L1 自动关闭（非法律意见）。
 
-**ADR-005（系统 WebView）**
+**ADR-005（系统 WebView）— 已撤销（Web 壁纸移除）**
+> 以下论证仅作历史依据，不再适用于当前产品。
 - 备选 A：捆绑 CEF。否决：体积大、内存比 WebKit 高 70–140 MiB（box 参考）【实测】，更新责任转到我们。
 - 备选 B：Web 壁纸离屏渲染后作为纹理合成。否决：WebView2 的离屏/合成控制器路径复杂度高，且无法减少 Chromium 本身的开销【推断】。维持。
 
@@ -90,7 +92,7 @@
 | Windows 渲染器选型 | **Q-W10**（mpv 与 MF A/B，决定 ADR-002/004）、Q-W12（MF 循环与统计）、Q-PB1（PB-video 首个真值） |
 | 暂停与信号 | Q-V1（状态机 + 信号源真机行为）、Q-V2（判定开销）、Q-W4（专注模式）、Q-M6（CGWindowList 开销） |
 | macOS | Q-M1（窗口层级）、Q-T1（powermetrics 格式） |
-| 视频与 Web | Q-D2（循环点）、Q-B2、Q-B3、Q-S1 |
+| 视频与 Web | Q-D2（循环点）；Q-B2、Q-B3、Q-S1 已随 D-16 失效 |
 | 打包 | Q-W7（MSIX）、Q-W8（WER 重启） |
 | Linux 参考 | Q-L4、Q-L5、Q-L7 |
 | 原型本身 | Q-P1（Windows/macOS 从未在真机运行） |
@@ -100,7 +102,7 @@
 - ADR-006：W-T8 通过后是否把 MSIX 提到首发。
 - Q-W3（每个虚拟桌面一张壁纸，依赖未公开接口）、Q-M3（mac 锁屏动态壁纸，只有非公开路径）：做不做、放在哪个分发渠道。
 - Q-M4：WebM 解复用选 libavformat（LGPL）还是 BSD 实现（也牵涉律师）。
-- Q-D3：Mac App Store 版是否保留 Web 壁纸（审核 2.4.5 风险）。
+- Q-D3：Mac App Store 版是否保留 Web 壁纸（审核 2.4.5 风险）——已随 D-16 失效。
 - Q-W2：是否投入 DComp visual 方案（只有在 W-T3 显示合成开销明显时才值得）。
 
 **要靠律师的（以下均不是法律意见）**
@@ -120,7 +122,7 @@
 | 05 | [Ubuntu / Linux 兼容](05-ubuntu-compat.md) | GNOME 46–50 的 X11/Wayland、Hanabi、KDE 插件、无 cgo 库 |
 | 06 | [视频管线与编码规范](06-video-pipeline.md) | 硬解、零拷贝、转码参数 |
 | 07 | [暂停与省电状态机](07-pause-power-state-machine.md) | 信号源、优先级、分级暂停 |
-| 08 | [网页与 Shader 壁纸](08-web-shader.md) | WebView、冻结、帧率控制 |
+| 08 | [网页与 Shader 壁纸](08-web-shader.md)（历史，已冻结） | WebView、冻结、帧率控制；功能已按 D-16 移除 |
 | 09 | [多显示器 / DPI / HDR](09-multimonitor-dpi-hdr.md) | 坐标、热插拔、HDR |
 | 10 | [壁纸包格式 v0](10-package-format.md) | schema、安全、Lively/WE 导入 |
 | 11 | [分发、签名、更新、许可证](11-distribution-licensing.md) | NSIS/MSIX、SmartScreen、公证、MAS 差异 |
@@ -135,7 +137,7 @@
 - 克隆的仓库在研究机本地（未入库）：lively、mpvpaper、linux-wallpaperengine、gnome-ext-hanabi、hidamari、komorebi、Fresco、LuminWallpaper、openwallpaper、mygo、Plash（只有 README）。
 - **真机测试原型**：[prototype/](prototype/README.md)，包括 Windows、macOS、Linux-X11 三个平台的源码（`bin/` 预编译产物不入 Git）（全部 `CGO_ENABLED=0`）；README 里有和 TEST_PLAN 的对应表。早期的 MyGo 骨架 `docs/research/wpproto_src/` 保留。
 - 基准与测试包：`bench/`（sw_decode_bench.sh、webview/、windows_capture.ps1、macos_powermetrics.sh、TEST_PLAN.md）。
-- 包格式 schema：`schema/manifest.v0.schema.json`，附两个示例。
+- 包格式 schema：`schema/manifest.v0.schema.json`，附视频示例（Web 示例已随 D-16 移除）。
 - 文档备份：研究机上的本地备份 r6（未入库）（第 6 轮后）、研究机上的本地备份 r9（未入库）（第 9 轮后）。
 
 ## 第 13–15 轮新增

@@ -14,14 +14,13 @@ const goodManifest = `{"format":"wpk","schema":0,"id":"3f2b8c1e-9a7d-4e2f-8b1a-0
  "entry":"content/loop.mp4","title":{"en":"Misty Lake","zh-CN":"雾湖"},"video":{"codec":"h264"},"future":{"x":1}}`
 
 func TestExamplesFromDocs(t *testing.T) {
-	for _, f := range []string{"example.video.json", "example.web.json"} {
-		b, err := os.ReadFile(filepath.Join("testdata", f))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := Parse(b); err != nil {
-			t.Fatal(f, err)
-		}
+	f := "example.video.json"
+	b, err := os.ReadFile(filepath.Join("testdata", f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(b); err != nil {
+		t.Fatal(f, err)
 	}
 }
 
@@ -75,26 +74,6 @@ func TestManifestRules(t *testing.T) {
 	}
 	if _, err := Parse(bytes.Repeat([]byte(" "), MaxManifest+1)); err == nil {
 		t.Error("超过 256 KiB 应被拒绝")
-	}
-	props := []string{
-		`{"key":"1bad","type":"bool","default":true}`,
-		`{"key":"s","type":"slider","default":1}`,
-		`{"key":"b","type":"bool","default":"x"}`,
-		`{"key":"c","type":"color","default":"red"}`,
-		`{"key":"o","type":"select","default":"a"}`,
-		`{"key":"t","type":"text","default":1}`,
-		`{"key":"z","type":"weird","default":1}`,
-		`{"key":"n","type":"bool"}`,
-	}
-	for _, p := range props {
-		s := strings.Replace(goodManifest, `"future"`, `"properties":[`+p+`],"future"`, 1)
-		if _, err := Parse([]byte(s)); err == nil {
-			t.Errorf("属性 %s 应被拒绝", p)
-		}
-	}
-	okp := `[{"key":"s","type":"slider","min":0,"max":2,"default":1},{"key":"c","type":"color","default":"#aabbcc"},{"key":"o","type":"select","default":"a","options":[{"value":"a"}]},{"key":"t","type":"text","default":"x"},{"key":"b","type":"bool","default":false}]`
-	if _, err := Parse([]byte(strings.Replace(goodManifest, `"future"`, `"properties":`+okp+`,"future"`, 1))); err != nil {
-		t.Error(err)
 	}
 }
 

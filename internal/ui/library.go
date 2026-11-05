@@ -12,7 +12,7 @@ import (
 	"wpapp/internal/config"
 )
 
-var typeNames = map[string]string{"video": "视频", "image": "图片", "web": "网页", "shader": "Shader"}
+var typeNames = map[string]string{"video": "视频", "image": "图片"}
 var originNames = map[string]string{"native": "本应用壁纸包", "lively": "Lively 导入", "we": "Wallpaper Engine 导入", "file": "本地文件"}
 
 var (
@@ -21,7 +21,7 @@ var (
 	fitLabels = []string{"填充", "适应", "拉伸"}
 )
 
-var filterLabels = []string{"全部", "视频", "图片", "建议转码", "网页", "Shader"}
+var filterLabels = []string{"全部", "视频", "图片", "建议转码"}
 
 func (s *Settings) importFiles() {
 	if s.PickFiles == nil {
@@ -134,12 +134,9 @@ func (s *Settings) toolbar(c *ui.Context, v app.View, narrow bool) {
 				n := 0
 				for _, it := range v.Library {
 					switch {
-					case i == 0, i == 1 && it.Type == "video", i == 2 && it.Type == "image", i == 3 && it.Transcode == "recommended", i == 4 && it.Type == "web", i == 5 && it.Type == "shader":
+					case i == 0, i == 1 && it.Type == "video", i == 2 && it.Type == "image", i == 3 && it.Transcode == "recommended":
 						n++
 					}
-				}
-				if i >= 4 && n == 0 {
-					continue
 				}
 				if m.Item(fmt.Sprintf("%s %d", tr(c, l), n)).Checked(s.filter == i).Chosen() {
 					s.filter = i
@@ -190,7 +187,7 @@ func (s *Settings) emptyLibrary(c *ui.Context, v app.View) {
 		ui.Box(c).Absolute().Left(0).Right(0).Top(0).Height(260).LinearGradient(ui.LinearGradient{From: t.Accent.Alpha(glow), To: ui.Transparent, Angle: 180}).Children(func() {})
 		overline(c, tr(c, "开始使用"))
 		heading(c, tr(c, "把视频、GIF 或图片拖到这里"), 26)
-		text(c, "支持视频、图片、.glsl / .frag Shader、.wpk、Lively 壁纸包和 Wallpaper Engine 本地壁纸").FontSize(13).TextColor(t.TextMuted)
+		text(c, "支持视频、图片、.wpk、Lively 壁纸包和 Wallpaper Engine 本地视频壁纸").FontSize(13).TextColor(t.TextMuted)
 		ui.Row(c).Gap(10).Padding(14, 0, 0, 0).Children(func() {
 			if accentButton(c.Key("imp2"), "选择文件…").Disabled(s.PickFiles == nil).Clicked() {
 				s.importFiles()
@@ -440,10 +437,6 @@ func propRow(c *ui.Context, key, label, sub string, last bool, control func()) {
 
 // groupProps 是“属性”：声音、音量、播放速度、填充都随壁纸保存，应用到任何显示器都生效。
 func (s *Settings) groupProps(c *ui.Context, v app.View, it config.Item) {
-	if it.Type == "web" || it.Type == "shader" {
-		s.webProps(c, v, it)
-		return
-	}
 	t := c.Theme()
 	props := it.Props
 	setProps := func(fn func(p *config.ItemProps)) {

@@ -245,7 +245,7 @@ func (a *App) updateRendition(s *screen) bool {
 		return false
 	}
 	gen := s.gen
-	it := render.Item{ID: s.item.ID, Kind: s.item.Type, Path: path, Start: s.r.Stats().Pos}
+	it := render.Item{ID: s.item.ID, Path: path, Start: s.r.Stats().Pos}
 	level := a.ctl.Display(s.n).Level()
 	s.ops.enqueue(func() {
 		err := updater.UpdateSource(it, level)

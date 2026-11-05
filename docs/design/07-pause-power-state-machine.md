@@ -1,6 +1,6 @@
 # 07 暂停与省电状态机（完整规格 v1.1；v1.1 的修订见 7.8，可运行实现见 `visibility/`）
 
-> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
+> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。**2026-11-05：Web/Shader 渲染路径已按 D-16 移除；L2 保留为历史级别但当前渲染器不会产生，下文相关动作与测试名仅作历史依据。**
 
 ## 7.1 原则
 1. **多个原因取 OR，按显示器判定**。每个 Reason 占一位，分全局和按显示器两类；某块显示器的有效原因集合 = 全局原因 ∪ 该显示器自己的原因。只有当 “目标级别” 变化时才向渲染器下发命令（参照 mpvpaper `update_mpv_pause_state`，`src/main.c:284-307`【源码】）。
@@ -33,9 +33,9 @@
 
 | 当前 | 事件 / 条件 | 下一个 | 动作 |
 |---|---|---|---|
-| L0 | **下限 ≥ L1 的**有效原因非空（v1.1：只限帧的原因不触发暂停），并且通过 7.5 的去抖 | `max(下限, L1)` | 视频：mpv `pause=yes` / AVPlayer `rate=0`；Web：`IsVisible=false`，再 `TrySuspend`（v1.1：`TrySuspend` 移到 L2，见 7.8 #3）；Shader：停止 present |
-| L1 | 在 L1 持续 `t12` | L2 | Web：已在 L1 做过 TrySuspend，无额外动作；视频：无（L2 对视频不起作用，直接按时间升到 L3）|
-| L1/L2 | 持续 `t23`，或者下限 ≥ L3 | L3 | mpv `stop`，保留进程（`--idle=yes`）；AVPlayer `replaceCurrentItem(nil)`；Web：结束宿主进程，显示截图 |
+| L0 | **下限 ≥ L1 的**有效原因非空（v1.1：只限帧的原因不触发暂停），并且通过 7.5 的去抖 | `max(下限, L1)` | 视频：mpv `pause=yes` / AVPlayer `rate=0`（Web `TrySuspend` 与 Shader 停止 present 已随 D-16 移除） |
+| L1 | 在 L1 持续 `t12` | L2 | 视频：无动作（L2 对视频不起作用，直接按时间升到 L3）；L2 为保留级别，当前渲染器不会产生 |
+| L1/L2 | 持续 `t23`，或者下限 ≥ L3 | L3 | mpv `stop`，保留进程（`--idle=yes`）；AVPlayer `replaceCurrentItem(nil)` |
 | L3 | 持续 `t34`，或者下限 = L4 | L4 | 结束播放进程，显示截图（`render/image`） |
 | L1–L4 | 有效原因变空，并且稳定 `resumeDebounce` | L0 | 按级别逆序恢复；L3/L4 恢复需要重新 `load` 并 seek 到保存的 `time-pos` |
 | 任意 | 渲染器 `Done()` | Recovering | supervisor 退避重启（02 章 2.4） |
@@ -55,7 +55,7 @@
 | `winPollFallback` | 1000 ms | WinEventHook 漏掉事件时的兜底轮询；Lively 用 500 ms 定时器【源码】|
 | `coverThreshold` | 未覆盖 tile ≤ 5% 视为被遮挡 | 与 Lively 一致：未覆盖 tile 比例 ≤ 0.05 就判定为遮挡；另外，任一窗口最大化（`IsZoomed`）或单个窗口覆盖 ≥ 95% 时直接判定为遮挡【源码】`Lively.Common/Helpers/WindowUtil.cs:13-63`，默认值在 `SettingsModel.cs:169-173` |
 | `tile` (Win 网格) | 50 px | Lively 的默认值【源码】 |
-| `t12` | 2 s（Web 立即） | |
+| `t12` | 2 s（历史 Web 曾为立即，已随 D-16 失效） | |
 | `t23` | 60 s | |
 | `t34` | 10 min | |
 | `batteryPolicy` | `pause` / `fps15` / `ignore`，默认 `pause` | |
@@ -95,7 +95,7 @@
 |---|---|---|---|
 | 1 | 向量 1 与 `coverEnterDebounce=150ms` 冲突：100 ms 抖动下“快停”无法成立 | 进入去抖按原因计算；抖动期间不暂停，稳定后进入 | `TestVector1*` |
 | 2 | 向量 2 写“超过 t23 才 L3”，与 7.2 的 Locked 下限 L3 矛盾 | 下限立即生效 | `TestVector2Locked` |
-| 3 | L2 对视频、Web、Shader 都没有动作（Web 的 TrySuspend 已在 L1 做了） | **Web：L1 = `IsVisible=false`，L2 = `TrySuspend`**（t12 默认 0，所以实际上紧接着执行）；视频和 Shader 跳过 L2 | `TestEscalationWeb*`、`TestEscalationVideo` |
+| 3 | L2 对视频、Web、Shader 都没有动作（Web 的 TrySuspend 已在 L1 做了） | **历史规则**：Web 的 L1/L2 动作已随 D-16 移除；当前视频跳过 L2，L2 保留但不会产生 | `TestEscalationVideo`（`TestEscalationWeb*` 为历史） |
 | 4 | t12/t23/t34 从哪里起算没写 | 都从“离开 L0”起累计；恢复到 L0 后清零 | `TestEscalationVideo`、`TestEscalationResetsAfterResume` |
 | 5 | 原因部分解除时（例如 LowBattery 解除但 Battery 仍在）级别是否回落没写 | 暂停中**只升不降**，只有原因全清才恢复到 L0（回落到 L1 要重新加载视频，只为了再暂停，不划算） | `TestNoDowngradeWhilePaused` |
 | 6 | ThermalSerious、Battery(`fps15`) 让“有效原因非空”，按原文会进入暂停 | 这两种只发 `FPSCap`，不暂停 | `TestThermalSeriousCapsOnly`、`TestBatteryPolicies` |

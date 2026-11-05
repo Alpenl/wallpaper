@@ -409,10 +409,6 @@ func (s *Settings) look(c *ui.Context, v app.View) {
 			settingRow(c, "关闭窗口后继续运行", "关闭设置窗口不会退出壁纸，退出请使用托盘菜单", func() { chip(c, "始终启用", t.TextMuted) })
 		})
 
-		card(c.Key("reactive"), "壁纸交互", "需在导入时单独授权；默认关闭", func() {
-			s.switchRow(c, "audio-reactive", "音频响应", "系统音频仅在隔离渲染进程中处理", cfg.Privacy.AudioReactive, func(c *config.Config, on bool) { c.Privacy.AudioReactive = on })
-			s.switchRow(c, "mouse-input", "鼠标交互", "仅传递桌面上的鼠标位置和按钮", cfg.Privacy.MouseInput, func(c *config.Config, on bool) { c.Privacy.MouseInput = on })
-		})
 		s.storageCard(c, v)
 
 	})

@@ -96,11 +96,9 @@ type Power struct {
 
 // View 是 UI 用的整体快照。
 type View struct {
-	SignalConsent  *SignalConsent
-	NetworkConsent *NetworkConsent
-	Renditions     []RenditionView
-	Layout         string // effective independent | span
-	LayoutNote     string // unsupported saved preference/topology
+	Renditions []RenditionView
+	Layout     string // effective independent | span
+	LayoutNote string // unsupported saved preference/topology
 
 	ImportQueued     int
 	Capabilities     desktop.Caps
@@ -159,10 +157,6 @@ type screen struct {
 
 // App 是编排器。
 type App struct {
-	signalConsent  *SignalConsent
-	signalAnswer   chan bool
-	networkConsent *NetworkConsent
-	networkAnswer  chan bool
 	itemGeneration map[string]uint64
 	removing       map[string]uint64
 	d              Deps
@@ -231,7 +225,7 @@ func (a *App) now() time.Duration { return time.Since(a.t0) }
 
 // VisConfig 把 config.json 的暂停策略映射到 07 章状态机参数。
 func VisConfig(c config.Config) visibility.Config {
-	vc := visibility.DefaultConfig(visibility.Video)
+	vc := visibility.DefaultConfig()
 	switch c.Pause.BatteryPolicy {
 	case "fps15":
 		vc.BatteryPolicy = visibility.BatteryFPS15
@@ -516,15 +510,6 @@ func (a *App) assignItem(s *screen) {
 		if it := a.d.Store.Library.Find(id); it != nil {
 			cp := *it
 			s.item = &cp
-			if m := a.ctl.Display(s.n); m != nil {
-				kind := visibility.Video
-				if cp.Type == "web" {
-					kind = visibility.Web
-				} else if cp.Type == "shader" {
-					kind = visibility.Shader
-				}
-				m.SetKind(kind)
-			}
 		}
 	}
 	a.installSystemWallpaper(s)
@@ -569,9 +554,8 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 	s.watchStop = make(chan struct{})
 	s.r, s.started, s.metricsReady = r, false, false
 	s.levelPending = 0
-	it := render.Item{PackageDir: s.item.Dir, ID: s.item.ID, Kind: s.item.Type, Path: a.renditionPath(s, true),
-		SignalsBlocked: a.signalsBlocked(s), AudioEnabled: signalGrant(s.item, a.d.Store.Config, "audio"), InputEnabled: signalGrant(s.item, a.d.Store.Config, "input"), Viewport: s.d.Bounds,
-		Start: a.d.Store.State.Positions[a.positionKey(s)], NetworkGranted: s.item.NetworkGranted, FPSCap: a.screenFPSCap(s), Properties: s.item.Props.WebValues}
+	it := render.Item{ID: s.item.ID, Path: a.renditionPath(s, true),
+		Start: a.d.Store.State.Positions[a.positionKey(s)]}
 	if !a.d.Store.Config.Render.ResumePosition {
 		it.Start = 0
 	}
@@ -684,12 +668,6 @@ func (a *App) screenFPSCap(s *screen) int {
 	if profile := a.d.Store.Assign.OptionsFor(string(s.d.ID)).Profile; profile != "" {
 		cfg.Perf.Profile = profile
 	}
-	if s.item != nil && s.item.Type == "shader" {
-		cfg.Perf.FPSCap = s.item.Props.ShaderFPS
-		if cfg.Perf.FPSCap == 0 {
-			cfg.Perf.FPSCap = 30
-		}
-	}
 	want := EffectiveCap(ProfileCap(cfg), s.machCap)
 	if a.foregroundAction == "saver" {
 		want = EffectiveCap(want, 15)
@@ -763,8 +741,6 @@ func (a *App) runActions() {
 				// 首帧截图在导入时已生成并设为系统壁纸（2.5），这里不再每次截帧
 			case visibility.ActPause:
 				a.applyLevel(s, visibility.L1)
-			case visibility.ActFreeze:
-				a.applyLevel(s, visibility.L2)
 			case visibility.ActRelease:
 				a.applyLevel(s, visibility.L3)
 			case visibility.ActSnapshot:
@@ -886,12 +862,6 @@ func (a *App) signal(r visibility.Reason, disp desktop.DisplayID, on bool, src s
 		}
 	} else {
 		a.global[r] = on
-	}
-	for _, screen := range a.sortedScreens() {
-		if updater, ok := screen.r.(render.SignalPolicyUpdater); ok {
-			blocked := a.signalsBlocked(screen)
-			screen.ops.enqueue(func() { _ = updater.BlockSignals(blocked) })
-		}
 	}
 	effective := on
 	if idx >= 0 {
@@ -1038,7 +1008,7 @@ func levelName(m *visibility.Machine) (string, string) {
 func (a *App) publish() {
 	a.consumePersistenceError()
 	a.sampleMetrics(time.Now())
-	v := View{SignalConsent: a.signalConsent, NetworkConsent: a.networkConsent, ImportQueued: len(a.importQueue), Config: a.d.Store.Config.Clone(), Capabilities: a.d.Host.Caps(), Paths: a.d.Store.Paths, Storage: a.storage, ForegroundAction: a.foregroundAction, PausedAll: a.pausedAll, SafeMode: a.d.SafeMode, Importing: a.importing,
+	v := View{ImportQueued: len(a.importQueue), Config: a.d.Store.Config.Clone(), Capabilities: a.d.Host.Caps(), Paths: a.d.Store.Paths, Storage: a.storage, ForegroundAction: a.foregroundAction, PausedAll: a.pausedAll, SafeMode: a.d.SafeMode, Importing: a.importing,
 		LastImport: a.lastImp, LastError: a.lastErr, ReadOnly: a.d.Store.ReadOnlyWarn,
 		Library: append([]config.Item(nil), a.d.Store.Library.Items...), HasEncoder: a.d.Transcode != nil, Encoder: a.encoderInfo, Default: a.d.Store.Assign.Default,
 		Power:       Power{OnBattery: a.onBattery, Percent: a.battPct, Saver: a.power[visibility.BatterySaver]},
@@ -1615,11 +1585,8 @@ func (a *App) UpdateConfig(fn func(*config.Config)) {
 			}
 		}
 		playbackChanged := c.Render.WindowsBackend != old.Render.WindowsBackend || c.Render.MpvPath != old.Render.MpvPath || c.Render.Hwdec != old.Render.Hwdec || c.Render.Muted != old.Render.Muted || c.Render.ResumePosition != old.Render.ResumePosition || c.Perf.RenderScale != old.Perf.RenderScale
-		if c.Privacy.AudioReactive != old.Privacy.AudioReactive || c.Privacy.MouseInput != old.Privacy.MouseInput || playbackChanged {
+		if playbackChanged {
 			for _, s := range a.sortedScreens() {
-				if !playbackChanged && (s.item == nil || (s.item.Type != "shader" && s.item.Type != "web")) {
-					continue
-				}
 				if c.Render.WindowsBackend != old.Render.WindowsBackend {
 					a.installSystemWallpaper(s)
 				}
@@ -1651,10 +1618,7 @@ func (a *App) rebuildMachines() {
 	a.ctl = visibility.NewController(VisConfig(a.d.Store.Config))
 	a.updateLowBattery()
 	for _, s := range a.sortedScreens() {
-		m := a.ctl.AddDisplay(now, s.n)
-		if s.item != nil && s.item.Type == "web" {
-			m.SetKind(visibility.Web)
-		}
+		a.ctl.AddDisplay(now, s.n)
 	}
 	for r, on := range a.global {
 		if on {

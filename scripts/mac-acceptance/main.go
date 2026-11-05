@@ -122,7 +122,7 @@ func scenario(video string, observe time.Duration, cycles int) (err error) {
 	defer func() { err = errors.Join(err, surface.Close()) }()
 	r := avf.New()
 	defer func() { err = errors.Join(err, r.Close()) }()
-	if err = r.Load(render.Item{Path: video, Kind: "video"}, surface, false); err != nil {
+	if err = r.Load(render.Item{Path: video}, surface, false); err != nil {
 		return err
 	}
 	if observe > 0 {
@@ -204,7 +204,7 @@ func scenario(video string, observe time.Duration, cycles int) (err error) {
 // Settled paused samples distinguish accurate seeking from the cached Start value.
 func checkExactSeek(r *avf.Renderer, surface desktop.Surface, video string) error {
 	for _, start := range []float64{13.2, 38.15, 599} {
-		if err := r.Load(render.Item{Path: video, Kind: "video", Start: start}, surface, true); err != nil {
+		if err := r.Load(render.Item{Path: video, Start: start}, surface, true); err != nil {
 			return err
 		}
 		if err := wait(r, 4*time.Second); err != nil {
@@ -233,7 +233,7 @@ func checkExactSeek(r *avf.Renderer, surface desktop.Surface, video string) erro
 	if err := emit(map[string]any{"stage": "loop_boundary", "loops": r.Stats().Loops, "pos": r.Stats().Pos}); err != nil {
 		return err
 	}
-	return r.Load(render.Item{Path: video, Kind: "video"}, surface, false)
+	return r.Load(render.Item{Path: video}, surface, false)
 }
 
 // These assertions inspect the actual native layer tree, not cached playback time.

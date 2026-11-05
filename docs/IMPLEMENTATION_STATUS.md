@@ -14,7 +14,7 @@
 
 - 唯一正式应用路径：[`cmd/wallpaperd`](../cmd/wallpaperd/) → [`internal/ui`](../internal/ui/) → [`internal/app`](../internal/app/) → 平台宿主/渲染器。导入、设置持久化和桌面控制都在原生产品中实现。
 - [UI 分支的 React 设计稿](https://github.com/Alpenl/wallpaper/tree/5f00d334cd32412291964d228fad4f3b9461cc7b/web) 仅参考七页布局、视觉和信息架构；主分支工作区没有 `web/`，不复制设计稿代码、不嵌入 MyGo、不接 Go 后端。
-- 原生 UI 必须自行完成所有行为验收，不能以 React 原型能点击、能展示页面作为原生功能完成的证据。网页/Shader 壁纸引擎是另一个功能范围，与 React 设置设计稿无关。
+- 原生 UI 必须自行完成所有行为验收，不能以 React 原型能点击、能展示页面作为原生功能完成的证据。网页/Shader 壁纸引擎已按 2026-11-05 产品定位移除，与 React 设置设计稿无关。
 
 ## 七页实施计划与验收（UI-*）
 
@@ -48,22 +48,22 @@
 | F-08 | 静态系统壁纸/跨屏静态裁切已有；mac 原生 GIF 预检、透明/子矩形/帧延迟/disposal 合成后编码视频，Win/Linux 可用外部转码；mac GIF 导入接入原生路线 | [`nativeav/gif.go`](../internal/transcode/nativeav/gif.go)、[`importer`](../internal/importer/)、[`panorama`](../internal/render/panorama/) | GIF 合成纯 Go 测试与 Linux 真 ffmpeg 不能替代 mac 原生编码/播放；透明复杂 GIF、末帧、资源限额及静态 CPU 需真机；有限 avconvert 不支持 GIF |
 | F-09 | 原生托盘、菜单、窗口按需打开/关闭；Windows 左键打开库；安全模式提示/恢复、暂停状态 ToolTip、全局与按屏暂停（含 span）；同快照刷新；设置不使用 WebView | [`shell.go`](../internal/ui/shell.go) | 各系统托盘/退出/窗口重建；后台内存与菜单时延 |
 | F-10 | MyGo 自启桥接、默认关闭、首次询问已有 | [`cmd/wallpaperd`](../cmd/wallpaperd/)、[`config`](../internal/config/) | 真机登录后启动、禁用后撤销、失败回滚；不是网页开关 |
-| F-11 | Lively/WE video 与纯本地 web 导入；Web 属性转换；exe/scene/audio-reactive/远程入口拒绝；已有离线 scene 特征探测（`-sceneprobe`）；导入仍拒绝 | [`importer`](../internal/importer/)、[`wpk`](../internal/wpk/)、[`wescene`](../internal/wescene/) | 样例包、非法路径/不支持类型、安全解压；scene 探测含真实结构的合成包回归；用户提供 Windows 38 包基线（27 complete / 1 partial / 10 failed），本轮修复后真实包及跨平台运行待复测；不支持 scene/app 播放 |
-| F-12 | 独立 WebView2/WKWebView 子进程、来源隔离与请求/导航/权限策略、默认拒绝的导入同意对话框与撤销、五类属性持久化/实时注入、rAF 限帧及暂停/电池策略已接线；Linux 明确不支持播放 | [`render/web`](../internal/render/web/)、[`ui/web.go`](../internal/ui/web.go)、[`web-orbit`](../examples/web-orbit/) | 原生沙箱行为、Windows 截图覆盖/恢复、macOS 桌面层级/多屏与隐藏节流、B-T2/Q-B2 仍须真机验证；不能据单元测试标记安全/性能验收完成 |
+| F-11 | 只导入图片/视频：普通媒体、`.wpk`、Lively video/gif/picture、WE video；web/shader/Lively web/WE scene/app 一律返回不支持 | [`importer`](../internal/importer/)、[`wpk`](../internal/wpk/) | 样例包、非法路径/不支持类型、安全解压；不再包含 scene 探测或 web 属性转换 |
+| F-12 | **已移除（withdrawn）**：Web 壁纸引擎、WebView2/WKWebView 宿主、网络同意与 Web 属性不再属于产品范围 | D-16、ADR-011 | 不计划恢复；历史实现与验证记录仅作归档 |
 | F-13 | 本轮补作者/说明/标签/尺寸/时长/大小与预览主色索引；搜索覆盖名称/来源/作者/说明/标签/中英文颜色；网格/列表/缩略图已有 | [`library.go`](../internal/ui/library.go)、[`palette.go`](../internal/importer/palette.go)、[`search_test.go`](../internal/ui/search_test.go) | 16:09 以前的布局检查点，1000 条查询云端微基准约 1.18 ms，通过该检查点基准目标；不是端到端 UI/旧库完整索引或真机时延认证；UI-01 |
-| F-14 | 独立原生 Shader 子进程、GLSL → HLSL/MSL 转译、D3D11/Metal、离屏缩放、GPU 计时与自适应控制、导入和原生属性 UI 已接线；不使用 WebView；Linux 明确 unsupported | [`render/shader`](../internal/render/shader/)、[`shader-waves`](../examples/shader-waves/) | 真机画面、原生 GPU 帧预算与长期暂停恢复尚未验证；当前沙箱无 Metal device，GPU 测试跳过，不能以占位预览验收 |
+| F-14 | **已移除（withdrawn）**：Shader 引擎、GLSL→HLSL/MSL 转译与 GPU 宿主不再属于产品范围 | D-16、ADR-011 | 不计划恢复；历史实现与验证记录仅作归档 |
 | F-15 | 严格 SemVer（含数字 prerelease）排序、dev 不参与更新、下载/替换前拒绝非 schema 1；pending 状态机先持久化完整计划；逐文件原子 rename、主程序最后替换；启动 Recover→Boot→Cleanup，未完成事务幂等回滚，损坏记录保留并报错；故障注入覆盖替换/恢复每步；打包脚本随包保留自有代码 PolyForm Strict 1.0.0 LICENSE 与第三方声明；[标签 CI/CD](releases/README.md) 已接入三系统验证、五目标打包、可选签名与幂等发布；真实签名/更新服务仍待验证 | [`update`](../internal/update/)、[`packaging`](../packaging/)、[`scripts`](../scripts/) | D-02、更新源/公钥、实际签名及公证、安装卸载、mac 更新后签名完整性、三系统真实断电/运行中 exe 验证；主程序两次 rename 之间断电可能无法启动，须重新运行安装器 |
 | F-16 | 存储扫描逐项检查 App 取消且关闭后不回写；IPC 回复写入有 5 秒期限，序列化失败返回 E_INTERNAL 并记录日志；已接入 dispatch 前 Go crash 文件（启动清理旧空文件、保留最新 5 份非空报告并保护当前文件；-version 不安装）、child stderr/MF 文本 2 MiB 写入限额与启动 `.1` 轮换、helper PID/build、worker 转场 begin/end 和生命周期 IPC 分阶段日志、mpv warn 转发；mpv 原生 log-file 保留且仅启动轮换；本地日志、诊断包脱敏实现和测试已有；I/O 错误保留首错但允许后续写入，重开失败仅随刷写 tick 重试；正常退出无日志状态噪声；不上传遥测 | [`telemetry`](../internal/telemetry/) | 本轮脱敏测试、失败提示、各平台导出路径；日志性能 AC |
 | F-17 | 每屏 L0–L4、暂停原因、当前 UTC 周已确认动态运行时长/暂停时长已持久化；显示器指标键为 SHA-256 截断摘要；不估算能源 | [`app/metrics.go`](../internal/app/metrics.go)、[`config/metrics.go`](../internal/config/metrics.go)、[`ui/metrics_test.go`](../internal/ui/metrics_test.go) | mpv 展示报告的硬解状态；MF/AVF 仍标 unknown/未验证，不能从框架名推断硬解。真实睡眠/时钟/重启与 UI 一致性需平台验收，完整 F-17 未关闭 |
-| F-18 | 每屏 fit/speed、静音/降采样按能力接线；mpv/MF/AVF 支持 fit/speed 原位修改并保持暂停；MF 增加原生播放速率、位置采样/异步 seek 及 L3 恢复 | [`render.go`](../internal/render/render.go)、[`options.go`](../internal/app/options.go)、[`mf/playback.go`](../internal/render/mf/playback.go)、[`mf/engine_windows.go`](../internal/render/mf/engine_windows.go) | MF/AVF L3 恢复已有 #14 实测；其他原生路径与 ≤200 ms 时延仍未验；MF 不支持帧降采样，全局/不支持属性仍可重建；Web 属性已接入独立宿主，完整 AC 的原生时延仍未关闭 |
+| F-18 | 每屏 fit/speed、静音/降采样按能力接线；mpv/MF/AVF 支持 fit/speed 原位修改并保持暂停；MF 增加原生播放速率、位置采样/异步 seek 及 L3 恢复 | [`render.go`](../internal/render/render.go)、[`options.go`](../internal/app/options.go)、[`mf/playback.go`](../internal/render/mf/playback.go)、[`mf/engine_windows.go`](../internal/render/mf/engine_windows.go) | MF/AVF L3 恢复已有 #14 实测；其他原生路径与 ≤200 ms 时延仍未验；MF 不支持帧降采样，全局/不支持属性仍可重建；完整 AC 的原生时延仍未关闭 |
 | F-19 | 本轮接入可执行文件 basename 规则 pause/saver/ignore，Windows/macOS/X11 前台进程探针；ignore 只豁免全屏/遮挡，不能覆盖安全或手动暂停 | [`foreground.go`](../internal/desktop/foreground.go)、[`options.go`](../internal/app/options.go)、[`options_test.go`](../internal/app/options_test.go) | 前台而非“任意后台运行”语义；实际桌面会话探针/权限/误判验证；不可用时能力提示 |
 | F-20 | 未启用远程遥测；`Normalize` 强制 false，与早期 opt-in 设想不同 | [`config/files.go`](../internal/config/files.go)、D-15 | 若将来启用需独立产品/隐私/服务决策；不在本轮暗中增加 |
 | F-21 | 未提供已认证 MSIX/Store/MAS 发布物 | [分发设计](design/11-distribution-licensing.md) | D-06/D-12、账号/审核/签名、W-T8；不是本地构建能认证 |
-| F-22 | 隔离宿主 WASAPI / ScreenCaptureKit、Go FFT 128 log bins/RMS、平滑/限频、Shader uniform 与 Web 单向回调；导入同意/撤销/默认关闭总开关 | [`reactive`](../internal/reactive/)、[`shader`](../internal/render/shader/)、[`ui/reactive.go`](../internal/ui/reactive.go) | 纯 Go 与 UI 已测；WASAPI 原生设备、macOS TCC/采集、实际功耗及长期运行仍需真机；Linux unsupported |
+| F-22 | **已移除（withdrawn）**：音频响应式输入（WASAPI/ScreenCaptureKit、FFT、同意与撤销）随 Web/Shader 引擎移除 | D-16、ADR-011 | 不计划恢复；历史实现与验证记录仅作归档 |
 | F-23 | 未提供 macOS 锁屏 Aerial 替换；不调用非公开替换流程 | [macOS 设计](design/04-macos-desktop.md)、D-11 | 产品/安全/分发决定与真机实验；不能作为标准支持 |
 | F-24 | Linux X11 产品参考路径及 GNOME/D-Bus 实验代码保留；非全 Wayland/GNOME/KDE 发行支持 | [`desktop/linux`](../internal/desktop/linux/)、[Linux 设计](design/05-ubuntu-compat.md) | D-14、Q-L4/5/7、真实 Shell 会话联调；嵌套实验测试单列 |
 | F-25 | 原规划“以后”；未提供在线画廊、工坊、云同步、创作服务或包签名基础设施 | [包与分发设计](design/10-package-format.md) | 服务端、身份/内容授权、协议、签名/更新信任链及运维；本地示例不是服务 |
-| F-26 | 原生 Win 每帧轮询 / mac NSEvent 鼠标监视；桌面命中门控、iMouse、负坐标/混合 DPI/跨屏映射、L1+/原始全屏信号阻断、Web 单向回调 | [`reactive`](../internal/reactive/)、[`app/reactive.go`](../internal/app/reactive.go) | 纯 Go/应用/UI 测试；原生桌面命中、多屏、锁屏和睡眠仍需真机；Linux unsupported |
+| F-26 | **已移除（withdrawn）**：鼠标交互输入与 iMouse 随 Web/Shader 引擎移除 | D-16、ADR-011 | 不计划恢复；历史实现与验证记录仅作归档 |
 
 ## 本轮新增控制的实际支持范围
 
@@ -71,7 +71,7 @@
 
 | 控制 | mpv（Windows/Linux） | MF（Windows） | AVF（macOS） | 静态图 |
 |---|---|---|---|---|
-| crash / child / lifecycle 日志 | Go crash、2 MiB stderr、mpv warn 与转场/IPC 阶段；MF hello/build 与有界文本 | Go crash、web/shader PID/build、转场与有界 stderr | Go crash、mpv warn、转场/IPC 与有界 stderr | 纯 Go 回归含空文件清理、最新 5 份非空 crash 保留与当前文件保护；Windows MF、各平台原生 child/crash 行为仍需实机验证；Go crash 不等于 native dump，mpv log-file 无运行时硬限额 |
+| crash / child / lifecycle 日志 | Go crash、2 MiB stderr、mpv warn 与转场/IPC 阶段；MF hello/build 与有界文本 | Go crash、子进程 PID/build、转场与有界 stderr | Go crash、mpv warn、转场/IPC 与有界 stderr | 纯 Go 回归含空文件清理、最新 5 份非空 crash 保留与当前文件保护；Windows MF、各平台原生 child/crash 行为仍需实机验证；Go crash 不等于 native dump，mpv log-file 无运行时硬限额 |
 | 日志与配置故障恢复 | 共用纯 Go：日志瞬时错误后继续写；普通 .bak 失败仍保存主文件并报告；迁移备份失败仍中止 | 同左 | 同左 | 同左；故障注入回归覆盖，真实磁盘满/杀毒软件锁文件仍需各平台验证 |
 | 每屏 worker 状态隔离 | 独立指针；纯 Go 并发回归 | 同左 | 同左；L3 释放/恢复已有 #14 实测，真实每屏编排仍待验证 | 共用编排结构 |
 | fill / fit / stretch | 已接入，可原位调整 | 已接入：源裁切 / MF letterbox / 交换链 stretch，可原位调整 | 已接入，可原位调整 | 单屏自定义不支持；跨屏由图片裁切实现 |
@@ -105,39 +105,9 @@
 - 主色索引只读取本地静态预览：最多 16 MiB、16×1024² 像素，最多三组中英文色名；无效/超限/缺少预览时保留导入但不生成颜色索引，不能保证旧条目均有颜色。
 - 存储统计扫描实际库/缓存路径；清理只移除无引用缓存，不清空仍用于首帧/降级的有效预览。见 [`storage.go`](../internal/app/storage.go)。
 
-## Web 壁纸支持（F-12）
+## 已移除引擎（F-12 / F-14）
 
-| 能力 | Windows | macOS | Linux |
-|---|---|---|---|
-| 包导入/属性/同意 | `.wpk` 与 manifest 目录；Lively/WE 纯本地 HTML；共享 wpk 安全校验 | 同左 | 可管理/导入包，播放能力为 false |
-| 页面隔离 | `-webhost` + IPC v1；每包临时 user data folder；virtual host `<id>.wpk.invalid` | `-webhost` + IPC v1；独立桌面 NSWindow；`wpk://<id>/` + os.Root；nonPersistent data store | 不启动网页引擎 |
-| 网络与宿主权限 | 默认非来源请求 403；使用 `_22` filter 覆盖 document/worker；取消外部导航、新窗口和下载；设备权限拒绝；禁宿主对象/消息桥/devtools/菜单 | 未授权时编译 WKContentRuleList 阻断 http(s)/ws(s)；取消外部导航/新窗口/不可显示响应；拒绝媒体权限/文件选择；不注册消息桥 | 不适用 |
-| 暂停/限帧 | L1–L3 截取最后帧到 STATIC 子窗口，再隐藏 controller、TrySuspend；恢复移除截图；L4 退出进程 | L1–L3 隐藏 WKWebView；L4 退出进程；隐藏后的 CPU/rAF 节流强度待实测 | 不适用 |
-| WE scene 离线特征探测 | `-sceneprobe <项目目录或 scene.pkg>`；只读本地未加密 PKGV0001–0024；schema v2 general 标志/相机、other 对象及嵌套 script 计数；导入仍拒绝 | 同左 | 同左；无播放支持 |
-| 自定义属性 | slider/color/select/bool/text；JSON 编码单向 ExecuteScript；兼容 wpk/Lively/WE 回调；暂停期间保存更新，恢复重推 | 同左，evaluateJavaScript | 保存属性但不执行 |
-| 运行时边界 | 需要支持 `ICoreWebView2_22` 的 WebView2 Runtime；官方 loader 或 Evergreen client；缺少/过旧明确报能力错误 | 需要正常图形登录会话与 WebKit；透明背景要求 macOS 12+ | 明确 unsupported |
-
-联网仅在包声明 network 且本次导入用户明确同意后启用；声明域名用于同意对话框展示，不是授予权限本身，也不是允许后的域名白名单。拒绝仍导入离线包；撤销会关闭旧进程并以拒绝状态重建。替换包的所有文件先通过安全校验，再请求同意并排空旧渲染器，防止新内容沿用旧进程的授权。`audio-reactive`、WE 音频处理、可执行文件仍拒绝。
-
-验证：新增策略/导航/转义、host fake、导入示例/恶意目录、同意持久化/撤销、schema 迁移、UI Tester 和电池/实时属性测试。三平台 vet 与 CGO_ENABLED=0 构建通过。完整 `go test ./...` 在既有 `internal/update.TestIncrementalUpdateBootRollback` 的 httptest 本地监听处被当前沙箱拒绝（`listen tcp6 [::1]:0: bind: operation not permitted`）；其余包通过。macOS 子进程 smoke 已实际调用规则编译；图形会话不可访问（NSScreen 列表为空，系统 XPC connection invalid），因此页面显示、网络阻断、暂停效果未获真机证据。Windows 原生调用尚无本机执行证据。未实现 CPU/GPU 使用量看门狗；rAF cap 不等于限制任意 JavaScript、CSS 动画或视频帧率。
-
-## Shader 支持（F-14）
-
-| 能力 | Windows | macOS | Linux |
-|---|---|---|---|
-| 引擎隔离 | `-shaderhost` + IPC v1；纯 Go COM；桌面宿主 HWND 下创建子窗口 | `-shaderhost` + IPC v1；purego/objc；desktop/mac 创建进程自有桌面 NSWindow/NSView，挂 CAMetalLayer；不跨进程解引用 NSView 指针 | Capabilities 不提供 Shader；加载明确报 unsupported |
-| 原生 GPU | D3D11 SM 5.0；d3dcompiler_47.dll 运行时编译；flip-discard 双缓冲、waitable swapchain、全屏三角形 | Metal 运行时 newLibraryWithSource；全屏三角形；presentDrawable 与定时器限帧 | 未实现 GLX，不经 WebView 或视频后端回退 |
-| 分辨率/计时 | 0.5–1.0 离屏 render target + 线性采样放大；三组 timestamp/disjoint 查询 | 离屏 Metal texture + 线性采样放大；读取 command buffer GPUStartTime/GPUEndTime；按 backing 像素计算比例 | 可保存属性 |
-| 调度 | 默认 30 FPS、0.75 比例；每项 15/30/60 FPS 覆盖；电池/saver 仍取更严格上限；L1–L3 停呈现并冻结时间；L4 退出，支持位置检查点；宿主无心跳 5 秒由父进程终止并交给现有监管恢复 | 同左 | 不呈现 |
-| 属性/输入 | slider → float，color → RGB float3，bool → bool，select → 从 0 起的选项序号；显式 16 字节槽；iFrame 按 int32 位存储；iMouse、128 个音频 bin 与 RMS level 在授权/总开关/可见性全部通过后由原生采集更新，否则为零 | 相同布局；MSL 显式解包 | 保存属性，不执行 |
-| 导入/预览 | `.wpk`/manifest 目录及自动包装的 `.glsl`/`.frag`；发布包前验证两种转译；独立 helper 尝试离屏 GPU 缩略图，失败使用基于内容哈希的确定性占位图 | 同左 | 转译/管理包与生成占位图 |
-| UI | 有对应条目时显示网页/Shader 筛选；propRow 比例/FPS/用户属性；demo 与 uishots 包含两种侧栏 | 同左 | 同左，播放仍 unsupported |
-
-转译范围：mainImage 单 pass、float/int/bool 与 vec/ivec/bvec、方阵、列主序构造/矩阵尺寸转换、矩阵乘法及读取列、swizzle、函数 in/out/inout、const/全局变量、简单对象/函数宏与精度限定符。`mod` 使用独立 helper 保留 floor 语义及参数单次求值。`texture(iAudio, uv)` 返回预留零输入；尚无 iChannel 外部纹理资源、数组、结构体、include/条件预处理、多 pass 或矩阵列写入支持；这些输入报错，不静默转入其他引擎。select 的 uniform 是选项序号，不是任意字符串值。缩放到 0.5 后仍可能超过 4 ms，控制器不承诺所有素材都能满足预算。
-
-验证（2026-10-22）：19 组 GLSL → HLSL/MSL golden、错误/复杂度边界、uniform 对齐、假 GPU 自适应/暂停、帧策略零 Go 分配、mac 整数 objc 桥零 Go 分配、导入/非法替换、原生 UI、Shader 电池与实时控制、WebView 延迟启动/退出与 rendition 删除等待回归。`shadergpu` 测试已接入 CI；本次 macOS 返回 `no Metal device available` 而跳过，不能声称已编译/显示成功；本机也未安装独立 Metal 编译工具。Windows 原生调用仍待目标设备执行。完整驱动/API 路径的分配和 GPU 性能仍需真机测量。uishots 已生成并检查 Shader 侧栏，不能替代桌面渲染证据。
-
-本次三平台 vet 与要求的无 cgo 构建通过；`go test ./...` 的其余包通过，但既有 `internal/update.TestIncrementalUpdateBootRollback` 被沙箱阻止本地监听：`listen tcp6 [::1]:0: bind: operation not permitted`。没有修改该测试掩盖环境限制。Go 缓存放在 `/private/tmp/wpapp-f14-go-cache`，以避开默认缓存的沙箱访问拒绝。
+Web 壁纸（WebView2/WKWebView、网络同意、Web 属性）与 Shader 引擎（GLSL→HLSL/MSL、D3D11/Metal）已于 2026-11-05 按 D-16 / ADR-011 从产品移除，对应源码、示例、测试与界面入口不再随应用提供。实现细节与历史验证保留在 Git 历史及 [设计文档](design/08-web-shader.md)（已冻结）中，不代表当前能力。
 
 ## 发布支持
 
@@ -145,20 +115,20 @@
 |---|---|---|
 | 原生紧凑 UI | 隐藏系统标题文字并保留原生窗口按钮，使用 TitleBar insets 和拖动区域；壁纸库全高右栏、独立属性滚动与对齐的 38px 底栏，宽窗标题/工具栏合并；显示器与设置页保持全宽；响应式工具栏（820/900/1033/1280/1440px、断点两侧及缩放往返的空/有内容 Tester 回归）；默认深色、三层蓝紫底色与选中/主操作光晕；下拉筛选、32 项演示库、紧凑可关闭错误栏；缺编码器时自动按屏优化跳过，手动请求保留本地化提示 | Windows 真机标题栏拖动、最小化/最大化/关闭、混合 DPI；macOS/Linux 标题栏与桌面环境回退仍需真机验证，离屏截图不证明系统窗口行为 |
 | 构建身份与兼容 | CLI、启动头（含 PID）、About、诊断共用 buildinfo；commit time 与未知值明确；IPC major 常量；四类未来 config 写后字节保持；release 验证核对 VERSION | 原生 About 的目标设备展示；真实签名更新/安装、macOS 更新后签名完整性；生产 feed 启用前仍须修复更新事务与统一稳定启动确认 |
-| goroutine 生命周期 | 存储扫描/缓存清理取消与结果回写守卫；IPC 断连/回复写入期限与 marshal 错误回归；排除 MF engine 与 Windows web host 的生产 go 语句已审查归属 | 原生文件系统调用不可中断；Handler 须自行返回；真实设备关闭/管道释放仍需验证，两个排除文件由独立任务负责 |
+| goroutine 生命周期 | 存储扫描/缓存清理取消与结果回写守卫；IPC 断连/回复写入期限与 marshal 错误回归；排除 MF engine 的生产 go 语句已审查归属 | 原生文件系统调用不可中断；Handler 须自行返回；真实设备关闭/管道释放仍需验证，两个排除文件由独立任务负责 |
 | 标签发布 | 分支/PR CI；master 可达的 SemVer 标签触发；五目标包与 SHA256SUMS；自有代码采用 [PolyForm Strict 1.0.0](../LICENSE)，安装包及可选更新包携带 LICENSE 与第三方声明，NSIS 提供许可页；凭据缺失时明确标记未签名预发布；保留原始构建并续传 draft | GitHub hosted 三系统实际运行；真实 Windows/Apple 证书、公证与安装卸载；更新源部署及 macOS 更新后签名完整性。见 [发布说明](releases/README.md) |
 
 ## 配置与数据迁移
 
-当前 `config.json` / `state.json` 为 schema 2，`assignments.json` 为 schema 3，`library.json` 为 schema 4。库新增 Web 定义、每项 networkGranted 与 ItemProps.webValues；3→4 迁移保留原播放属性并强制网络默认拒绝。新增开关默认静音、启用位置记录、自动转码关闭、普通启动打开设置；转码分辨率默认 `display`。独立/跨屏布局、跨屏素材与选项保存在 assignments；本周指标保存在 state，而不是历史设计中的独立 metrics.json。旧配置迁移保留已有值并生成版本备份；高版本文件保持只读。每屏选项跟随稳定显示器 ID 迁移，指标使用独立的 SHA-256 前 16 字节十六进制键，不把硬件原始标识写入指标集合。
+当前 `config.json` / `state.json` 为 schema 2，`assignments.json` 为 schema 3，`library.json` 为 schema 5。不兼容旧库数据：低于 5 的 library 在启动时被忽略，库与分配从空开始，不迁移旧条目、不清理磁盘文件；`privacy` 只保留遥测字段。新增开关默认静音、启用位置记录、自动转码关闭、普通启动打开设置；转码分辨率默认 `display`。独立/跨屏布局、跨屏素材与选项保存在 assignments；本周指标保存在 state，而不是历史设计中的独立 metrics.json。旧配置迁移保留已有值并生成版本备份；高版本文件保持只读。每屏选项跟随稳定显示器 ID 迁移，指标使用独立的 SHA-256 前 16 字节十六进制键，不把硬件原始标识写入指标集合。
 
 来源：[`config/files.go`](../internal/config/files.go)、[`config/options_test.go`](../internal/config/options_test.go)、[`config/metrics_test.go`](../internal/config/metrics_test.go)。这不是回滚兼容性认证：旧程序读取更高 schema 的行为、迁移备份恢复和真实用户库升级需按 [验证记录](VALIDATION.md) 复核。
 
 ## 尚需区分的完成条件
 
 - **已有源码但缺目标平台证据**：Win/mac 宿主、空间跨屏、原生编解码与播放控制、电源/睡眠、性能预算、签名/公证及安装。不能只以云端测试关闭，也不应重新描述为“完全没有实现”。
-- **仍缺架构或产品实现**：F-14 的 Linux GLX 后端及超出已声明子集的 Shader 功能，F-25 在线服务/内容授权/信任链，以及其他矩阵明列未提供项。真机测试本身不能补齐这些代码。
-- **后续范围仍需确认**：F-12、F-14 已按本次任务扩展；原规格把 F-12/F-14 定为 v1、F-25 定为以后、F-22/F-26 已由本次任务明确授权扩展（见下表）。本轮补全不能默默改变原分期，也不代表用户已同意从“全部功能”中排除它们；扩展到完整 v1/roadmap 的范围仍待确认。
+- **仍缺架构或产品实现**：F-25 在线服务/内容授权/信任链，以及其他矩阵明列未提供项。真机测试本身不能补齐这些代码。
+- **已移除范围**：F-12、F-14、F-22、F-26 按 D-16/ADR-011 移除，不在待办或发布门槛内；恢复需要新的产品范围决策。
 
 ## 状态更新规则
 
@@ -166,22 +136,6 @@
 - 测试通过只能关闭对应覆盖范围，不能从 Linux 单元测试推出 Windows/macOS 合格。
 - 表中未提供项不是“静默完成”；保留缺口及最小闭环条件，交付时明确说明。
 - 不以新的 UI 工作自动批准 D-* 的发布主体、费用、签名证书、遥测、商店账号或线上服务。
-
-## F-22 / F-26 支持与验证边界
-
-| 能力 | Windows | macOS | Linux |
-|---|---|---|---|
-| 系统音频 | WASAPI 默认播放端点 loopback，purego COM，shader/web 子进程 | ScreenCaptureKit audio-only 输出，macOS 13+，purego objc；未授予 TCC 时明确报 unavailable，不自动请求 OS 授权 | unsupported |
-| 鼠标 | 每渲染帧轮询位置和鼠标按钮；桌面根窗口命中 | NSEvent mouse-only 全局 monitor；CGWindowList 点遮挡 | unsupported |
-| Shader | 128 log bins + RMS + iMouse，D3D11 cbuffer | 相同槽位、Metal constant buffer | 不渲染 |
-| Web 次级目标 | onAudio(Float32Array)、onInput 数值对象单向注入 | 同左 | 不渲染 |
-| 授权/停止 | 导入逐项默认拒绝、通用总开关默认关闭、侧栏撤销；L1+、原始全屏/遮挡、锁屏/睡眠/关屏关闭源 | 同左；TCC 是额外系统权限 | 可管理包与授权，不采集 |
-
-测试覆盖合成正弦频谱/RMS/平滑、限频、权限门控、fake source 生命周期、iMouse、负坐标/混合 DPI/跨屏映射、应用层总开关/撤销/全屏阻断和原生 UI 默认拒绝/撤销流程。平台原生接口仍需 Windows/macOS 真机采集、TCC、锁屏/睡眠、多显示器及功耗验收；交叉构建不能替代这些测试。安全限制见 [8.5](design/08-web-shader.md#85-f-22--f-26-原生输入新产品决策)。
-
-本次验证（2026-10-22）：使用 Go toolchain 自带 gofmt；`gofmt -l ./internal ./cmd` 无输出。`GOOS=windows/darwin/linux go vet -unsafeptr=false ./...` 分别通过；本机、Windows、Darwin 的 `CGO_ENABLED=0 go build ./cmd/...` 分别通过（`GOCACHE=/tmp/wallpaper-go-cache`）。`go test ./...` 已执行，只有 `internal/update.TestIncrementalUpdateBootRollback` 因沙箱拒绝 `[::1]:0` 本地监听而失败，其他包通过；没有为通过测试弱化或跳过这个用例。`go test -tags shadergpu ./internal/render/shader -run TestMetalGoldenCompilation -v` 因无 Metal device 跳过。
-
-Windows hosted UI 用例已改为点击布局框的稳定无障碍标签“选择显示器 2”，并额外断言选中 `d2`，保留复制后默认壁纸/两屏分配断言。本机 UI 测试通过；GitHub API 网络连接失败，不能读取 hosted 日志或确认 Windows runner 复跑结果。DPI 宿主线程在建窗前显式设为 Per-Monitor V2，防止指针坐标虚拟化。
 
 ## 紧凑原生 UI 验证（2026-10-22）
 
@@ -192,23 +146,6 @@ Windows hosted UI 用例已改为点击布局框的稳定无障碍标签“选�
 
 本轮恢复回归覆盖：应用层一次恢复失败重建及提示、持续失败上限、60 秒 L3 释放后恢复、300 ms 去抖及排队期间真实视图、MF seek 完成、mpv 换源与 file-loaded/暂停命令顺序。单元测试与跨平台编译不代表 Windows GPU/驱动真机通过；设备仍冻结时请提供 `%LOCALAPPDATA%\WallpaperApp\logs`。
 
-### WE scene 离线探测边界（F-11）
+### WE scene 离线探测（已移除）
 
-`wallpaperd -sceneprobe <项目目录或 scene.pkg>` 只输出特征报告，不表示 scene 兼容或可播放，不接入导入器/UI，也不提取、执行、复制或再分发素材。目录固定查找 `scene.pkg`；可选 `project.json` 若存在，必须是 `type: scene`（大小写不敏感，接受 `Scene`）。项目元数据和包内容均在 `-helper sceneprobe -in …` 子进程内读取。
-
-- 索引：仅接受 PKGV0001–0024，小端有符号 32 位字段；最多 10,000 项、单名称 1,024 字节、索引 4 MiB。名称按区分大小写的 slash 路径规范化，拒绝别名重复、路径逃逸、负值、越界及非空数据范围重叠；未知版本直接失败。
-- JSON：project.json ≤1 MiB、scene.json ≤16 MiB；最多 64 层、100,000 个 token 节点（包括键和容器），任意层重复键拒绝。只读 scene.json 和索引，不读 material/model 内容、纹理或 shader 正文。对象计数仅统计顶层 objects 中显式类型/标记；effects 统计 JSON 中 effects 数组的记录，名称取 name/file。material/model 引用及 models/、materials/ 路径仅按包内名称查找，未找到可能是 WE 内置资源，不等于素材损坏。
-- schema_version=2、parser_version="1"；complete 表示本轮有界结构探测完成，不表示所有功能均可判断。显式未知 type/kind、非法对象或 effects 形态标 partial；解析失败标 failed 并附原因。无类型键的对象计入 objects.other，不据此推断它是 group/null；其他对象计数为观察值，不保证识别资源或脚本中的功能。
-- 仅顶层 general 的 bloom、cameraparallax（报告 parallax）、camerashake 使用 on/off/property/unknown：布尔值直接记录 on/off；含 value 的对象记录 property，布尔当前值另存 bloom_value/parallax_value/camerashake_value，否则为 null；缺失或不识别形态为 unknown。显式 false 是文件事实 off。
-- camera：general.orthogonalprojection 含正整数 width/height 时为 ortho，camera_width/camera_height 范围 1–1048576；general 对象存在且投影缺失或 null 时为 perspective；否则 unknown，尺寸为 0。不从 fov 等辅助参数推断相机。
-- 其余功能保持 present/unknown；shader/script 可由索引路径观察。script_count 计数 scene.json 中任意深度的 script 键（包含对象属性和数组内嵌属性；不依赖脚本值类型或是否为空），不计索引条目。脚本正文不检查、不输出、不执行；JSON 解码仍受既有字节/深度/节点预算限制。脚本行为和资源内部功能保持未知。
-- 报告 ≤64 KiB（含换行），每个名称列表 ≤64 项、单标签 ≤256 字节；标签或报告超预算会省略并设置 truncated、partial 和 reason，计数保留。父进程限制 10 秒、stdout 64 KiB、stderr 16 KiB，超限 kill 并 reap，拒绝异常退出、重复/多个 JSON、字段缺失、未知字段、版本不符及非法范围。failed 报告输出后 CLI 非零退出；partial 仍为成功的有限探测。
-- helper 使用 128 MiB Go 软内存限制及读取预算；这是崩溃隔离，**不是安全沙箱或 OS 硬内存限制**。合成 PKGV、test-binary helper 回归及 macOS 上真实 CLI 的文件/目录/失败退出流程已验证；真实 WE 包覆盖率和 Windows/Linux 实际 CLI 运行仍需验证，不提交真实 WE 素材。
-
-2026-11-05 输出预算回归：修复匿名嵌入 `bytes.Buffer` 导致 `ReadFrom` 提升、绕过
-自定义 `Write` 限额的问题。新增真实管道 `io.Copy`、两路恰好限额、超限错误，以及
-合法报告加超限 stderr、超限后驻留子进程提前终止/回收测试。旧实现失败，修复后
-Windows/amd64（Go 1.27.3）聚焦回归和 Linux/amd64 测试二进制在 WSL Ubuntu 26.04
-实际执行均重复 10 次通过；没有把 JSON 校验失败当作输出预算生效证据。
-本轮仅验证 helper 输出边界，不代表真实素材覆盖率、桌面运行或 OS 沙箱验收。
-Windows race 检测因缺少 `gcc` 无法构建，未将该项标记为通过。
+`-sceneprobe`、`-helper sceneprobe` 与 `internal/wescene` 已随 D-16 移除；当前导入器只接受图片/视频，WE scene/app 与 Lively web 明确返回不支持。历史探测与输出预算验证仅保留在 Git 历史和 [验证记录](VALIDATION.md) 中。

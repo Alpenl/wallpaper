@@ -19,6 +19,9 @@ type Migration func(raw map[string]any) error
 // ErrNewerSchema 表示文件来自更新版本的应用：已按只读方式加载已知字段，不应回写（16.3）。
 var ErrNewerSchema = errors.New("config: file written by a newer app version; loaded read-only")
 
+// ErrOldSchema 表示文件来自更旧的 schema，本版本不迁移该文件。
+var ErrOldSchema = errors.New("config: older schema is not supported")
+
 // WriteAtomic：写 tmp → fsync → rename；成功后把旧主文件保留为 .bak（前提是它能解析）。
 func WriteAtomic(path string, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
@@ -61,36 +64,49 @@ func writeSync(path string, b []byte) error {
 	return f.Close()
 }
 
-// Load 读取 path 到 v。主文件缺失返回 os.ErrNotExist（v 保持默认值）；
-// 主文件损坏时回退到 .bak；schemaVersion 较旧时依次迁移（迁移前备份为 .v<N>）；较新时返回 ErrNewerSchema。
-func Load(path string, current int, migrations map[int]Migration, v any) error {
+// readConfigFile reads path, falling back to .bak only when the main file is
+// missing or invalid. Other read errors are returned so callers never mistake
+// a transient lock for an old or missing file.
+func readConfigFile(path string) ([]byte, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			if bb, e2 := os.ReadFile(path + ".bak"); e2 == nil && json.Valid(bb) {
-				b = bb
-			} else {
-				return os.ErrNotExist
+				return bb, nil
 			}
-		} else {
-			return err
+			return nil, os.ErrNotExist
 		}
+		return nil, err
 	}
 	if !json.Valid(b) {
 		bb, e2 := os.ReadFile(path + ".bak")
 		if e2 != nil || !json.Valid(bb) {
-			return fmt.Errorf("config: %s corrupt and no usable .bak", filepath.Base(path))
+			return nil, fmt.Errorf("config: %s corrupt and no usable .bak", filepath.Base(path))
 		}
-		b = bb
+		return bb, nil
+	}
+	return b, nil
+}
+
+func schemaVersionOf(raw map[string]any) int {
+	if f, ok := raw["schemaVersion"].(float64); ok {
+		return int(f)
+	}
+	return 0
+}
+
+// Load 读取 path 到 v。主文件缺失返回 os.ErrNotExist（v 保持默认值）；
+// 主文件损坏时回退到 .bak；schemaVersion 较旧时依次迁移（迁移前备份为 .v<N>）；较新时返回 ErrNewerSchema。
+func Load(path string, current int, migrations map[int]Migration, v any) error {
+	b, err := readConfigFile(path)
+	if err != nil {
+		return err
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
-	ver := 0
-	if f, ok := raw["schemaVersion"].(float64); ok {
-		ver = int(f)
-	}
+	ver := schemaVersionOf(raw)
 	newer := ver > current
 	if ver < current {
 		if err := writeSync(fmt.Sprintf("%s.v%d", path, ver), b); err != nil {
@@ -112,6 +128,31 @@ func Load(path string, current int, migrations map[int]Migration, v any) error {
 		return err
 	}
 	if newer {
+		return ErrNewerSchema
+	}
+	return nil
+}
+
+// LoadCurrent reads path into v only when it is at the current schema or newer.
+// Older files are not migrated: they return ErrOldSchema and leave v untouched.
+// Newer files are loaded and returned with ErrNewerSchema, like Load.
+func LoadCurrent(path string, current int, v any) error {
+	b, err := readConfigFile(path)
+	if err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	ver := schemaVersionOf(raw)
+	if ver < current {
+		return ErrOldSchema
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		return err
+	}
+	if ver > current {
 		return ErrNewerSchema
 	}
 	return nil

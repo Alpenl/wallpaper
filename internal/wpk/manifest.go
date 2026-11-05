@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"path"
 	"regexp"
 	"strings"
@@ -22,9 +21,6 @@ var (
 	reUUID   = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	reLang   = regexp.MustCompile(`^[a-z]{2}(-[A-Z][A-Za-z]{1,3})?$`)
 	reSemver = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
-	rePropK  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
-	reHost   = regexp.MustCompile(`^[a-z0-9.-]+$`)
-	reColor  = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 )
 
 // ErrNewerSchema：包的主版本比应用新，拒绝导入并提示升级。
@@ -67,36 +63,6 @@ type Video struct {
 	HasAudio    bool    `json:"hasAudio,omitempty"`
 }
 
-type Web struct {
-	Permissions  []string `json:"permissions,omitempty"`
-	NetworkAllow []string `json:"networkAllow,omitempty"`
-	FPSCap       int      `json:"fpsCap,omitempty"`
-	Transparent  bool     `json:"transparent,omitempty"`
-}
-
-type Shader struct {
-	Dialect string   `json:"dialect"`
-	Passes  []string `json:"passes,omitempty"`
-}
-
-type Prop struct {
-	MaxLength int               `json:"maxLength,omitempty"`
-	Key       string            `json:"key"`
-	Type      string            `json:"type"`
-	Label     I18n              `json:"label,omitempty"`
-	Default   json.RawMessage   `json:"default"`
-	Min       *float64          `json:"min,omitempty"`
-	Max       *float64          `json:"max,omitempty"`
-	Step      *float64          `json:"step,omitempty"`
-	Options   []json.RawMessage `json:"options,omitempty"`
-}
-
-type Perf struct {
-	MaxFPS         int     `json:"maxFps,omitempty"`
-	MinRenderScale float64 `json:"minRenderScale,omitempty"`
-	AllowBattery   *bool   `json:"allowBattery,omitempty"`
-}
-
 type Origin struct {
 	Kind string `json:"kind"`
 	Ref  string `json:"ref,omitempty"`
@@ -104,13 +70,12 @@ type Origin struct {
 
 // Manifest 是 manifest.json v0（10.3）。Raw 保留原始字节，再次导出时不丢失未知字段。
 type Manifest struct {
-	Permissions []string `json:"permissions,omitempty"`
 	Format      string   `json:"format"`
 	Schema      *int     `json:"schema"`
 	MinApp      string   `json:"minApp,omitempty"`
 	ID          string   `json:"id"`
 	Version     int      `json:"version"`
-	Type        string   `json:"type"`
+	Type        string   `json:"type"` // video | image
 	Entry       string   `json:"entry"`
 	Title       I18n     `json:"title"`
 	Description I18n     `json:"description,omitempty"`
@@ -118,10 +83,6 @@ type Manifest struct {
 	License     string   `json:"license,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
 	Video       *Video   `json:"video,omitempty"`
-	Web         *Web     `json:"web,omitempty"`
-	Shader      *Shader  `json:"shader,omitempty"`
-	Properties  []Prop   `json:"properties,omitempty"`
-	Perf        *Perf    `json:"perf,omitempty"`
 	Origin      *Origin  `json:"origin,omitempty"`
 	Raw         []byte   `json:"-"`
 }
@@ -164,14 +125,6 @@ func validI18n(t I18n, field string, required bool) error {
 
 // Validate 实现 schema 的全部约束（路径规则用 CheckPath）。
 func (m *Manifest) Validate() error {
-	seenPermissions := map[string]bool{}
-	for _, p := range m.Permissions {
-		if (m.Type != "shader" && m.Type != "web") || (p != "audio" && p != "input") || seenPermissions[p] {
-			return bad("bad permission %q", p)
-		}
-		seenPermissions[p] = true
-	}
-
 	if m.Format != "wpk" {
 		return bad("format must be \"wpk\"")
 	}
@@ -194,7 +147,7 @@ func (m *Manifest) Validate() error {
 		return bad("version must be >= 1")
 	}
 	switch m.Type {
-	case "video", "web", "shader", "image":
+	case "video", "image":
 	default:
 		return bad("unknown type %q", m.Type)
 	}
@@ -241,55 +194,6 @@ func (m *Manifest) Validate() error {
 		default:
 			return bad("unknown codec %q", v.Codec)
 		}
-	case "web":
-		if m.Web == nil {
-			return bad("web object required for type web")
-		}
-		seen := map[string]bool{}
-		for _, p := range m.Web.Permissions {
-			if p != "network" && p != "audio-reactive" && p != "audio" && p != "input" || seen[p] {
-				return bad("bad web permission %q", p)
-			}
-			seen[p] = true
-		}
-		if len(m.Web.NetworkAllow) > 32 {
-			return bad("too many networkAllow")
-		}
-		for _, h := range m.Web.NetworkAllow {
-			if !reHost.MatchString(h) {
-				return bad("bad host %q", h)
-			}
-		}
-		switch m.Web.FPSCap {
-		case 0, 15, 24, 30, 60:
-		default:
-			return bad("web.fpsCap must be 15/24/30/60")
-		}
-	case "shader":
-		if m.Shader == nil || m.Shader.Dialect != "shadertoy-glsl" || len(m.Shader.Passes) > 1 {
-			return bad("shader: dialect shadertoy-glsl, ≤1 pass")
-		}
-	}
-	if len(m.Properties) > 64 {
-		return bad("at most 64 properties")
-	}
-	keys := map[string]bool{}
-	for _, p := range m.Properties {
-		if keys[p.Key] {
-			return bad("duplicate property key %q", p.Key)
-		}
-		keys[p.Key] = true
-		if err := p.validate(); err != nil {
-			return err
-		}
-	}
-	if p := m.Perf; p != nil {
-		if p.MaxFPS != 0 && (p.MaxFPS < 1 || p.MaxFPS > 240) {
-			return bad("perf.maxFps out of range")
-		}
-		if p.MinRenderScale != 0 && (p.MinRenderScale < 0.25 || p.MinRenderScale > 1) {
-			return bad("perf.minRenderScale out of range")
-		}
 	}
 	if o := m.Origin; o != nil {
 		switch o.Kind {
@@ -301,75 +205,11 @@ func (m *Manifest) Validate() error {
 	return m.checkEntryExt()
 }
 
-func (p Prop) validate() error {
-	if !rePropK.MatchString(p.Key) {
-		return bad("property key %q invalid", p.Key)
-	}
-	if len(p.Default) == 0 {
-		return bad("property %s: default required", p.Key)
-	}
-	if err := validI18n(p.Label, "property label", false); err != nil {
-		return err
-	}
-	if p.MaxLength < 0 || p.MaxLength > 2000 {
-		return bad("invalid maxLength")
-	}
-	var d any
-	if err := json.Unmarshal(p.Default, &d); err != nil {
-		return bad("invalid property default")
-	}
-	switch p.Type {
-	case "slider":
-		if p.Min == nil || p.Max == nil {
-			return bad("slider %s: min/max required", p.Key)
-		}
-		if math.IsNaN(*p.Min) || math.IsInf(*p.Min, 0) || math.IsNaN(*p.Max) || math.IsInf(*p.Max, 0) || *p.Min > *p.Max || p.Step != nil && (math.IsNaN(*p.Step) || math.IsInf(*p.Step, 0) || *p.Step <= 0) {
-			return bad("invalid slider range/step")
-		}
-		if _, ok := d.(float64); !ok {
-			return bad("slider %s: default must be number", p.Key)
-		}
-	case "bool":
-		if _, ok := d.(bool); !ok {
-			return bad("bool %s: default must be boolean", p.Key)
-		}
-	case "select":
-		for _, o := range p.Options {
-			var option struct {
-				Value json.RawMessage `json:"value"`
-				Label I18n            `json:"label"`
-			}
-			if json.Unmarshal(o, &option) != nil || option.Value == nil {
-				return bad("select options require value")
-			}
-			if err := validI18n(option.Label, "option label", false); err != nil {
-				return err
-			}
-		}
-		if len(p.Options) == 0 {
-			return bad("select %s: options required", p.Key)
-		}
-	case "color":
-		if s, ok := d.(string); !ok || !reColor.MatchString(s) {
-			return bad("color %s: default must be #rrggbb", p.Key)
-		}
-	case "text":
-		if _, ok := d.(string); !ok {
-			return bad("text %s: default must be string", p.Key)
-		}
-	default:
-		return bad("property %s: unknown type %q", p.Key, p.Type)
-	}
-	return p.ValidateValue(p.Default)
-}
-
 // 入口扩展名与 type 匹配（10.4 语义校验）。
 // MVP 偏差：GIF 按 video 类型直接交给播放器（mpv 原生支持），没有先转成视频（F-08 原文要求转成视频）。
 var entryExts = map[string][]string{
-	"video":  {".mp4", ".mov", ".m4v", ".webm", ".gif"},
-	"image":  {".png", ".jpg", ".jpeg", ".webp", ".bmp"},
-	"web":    {".html", ".htm"},
-	"shader": {".glsl", ".frag"},
+	"video": {".mp4", ".mov", ".m4v", ".webm", ".gif"},
+	"image": {".png", ".jpg", ".jpeg", ".webp", ".bmp"},
 }
 
 func (m *Manifest) checkEntryExt() error {
@@ -394,20 +234,3 @@ func IsVideoExt(name string) bool {
 }
 
 func marshalManifest(m *Manifest) ([]byte, error) { return json.MarshalIndent(m, "", "  ") }
-
-// Declares checks native permissions and the legacy web permission location.
-func (m *Manifest) Declares(permission string) bool {
-	for _, p := range m.Permissions {
-		if p == permission {
-			return true
-		}
-	}
-	if m.Type == "web" && m.Web != nil {
-		for _, p := range m.Web.Permissions {
-			if p == permission {
-				return true
-			}
-		}
-	}
-	return false
-}

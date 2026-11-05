@@ -117,14 +117,14 @@ func TestImportLively(t *testing.T) {
 	if m.Author.Name != "a" || m.License != "MIT" || m.Origin.Kind != "lively" {
 		t.Fatalf("%+v", m)
 	}
-	// 名字形式 + zip
+	// 名字形式的 Web 类型：引擎已移除，必须拒绝而不是导入。
 	dir2 := t.TempDir()
 	writeLively(t, dir2, `"web"`, "index.html")
 	if err := os.WriteFile(filepath.Join(dir2, "index.html"), []byte("<!doctype html><title>Local</title>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := Import(context.Background(), dir2, o); err != nil || r.Item.Type != "web" {
-		t.Fatalf("web import: %v %v", r, err)
+	if r, err := Import(context.Background(), dir2, o); err == nil || r != nil {
+		t.Fatalf("web import should be rejected: %v %v", r, err)
 	}
 	dir3 := t.TempDir()
 	writeLively(t, dir3, "7", "../../etc/passwd")
@@ -144,7 +144,7 @@ func TestImportLively(t *testing.T) {
 	if err != nil || r.Item.Title != "Z" {
 		t.Fatal(err)
 	}
-	if ents, _ := os.ReadDir(o.Library); len(ents) != 3 {
+	if ents, _ := os.ReadDir(o.Library); len(ents) != 2 {
 		t.Fatal("临时解压目录应清理", ents)
 	}
 }
@@ -206,10 +206,10 @@ func TestUnsupportedWPKCannotReplaceExistingItem(t *testing.T) {
 	os.MkdirAll(dir, 0755)
 	keep := filepath.Join(dir, "keep")
 	os.WriteFile(keep, []byte("original"), 0600)
-	zp := filepath.Join(t.TempDir(), "web.wpk")
+	zp := filepath.Join(t.TempDir(), "app.wpk")
 	f, _ := os.Create(zp)
 	zw := zip.NewWriter(f)
-	for name, body := range map[string]string{"manifest.json": `{"format":"wpk","schema":1,"id":"` + id + `","version":1,"type":"web","entry":"index.html","title":{"en":"Web"},"web":{}}`, "preview.png": "PNG", "index.html": "<html/>"} {
+	for name, body := range map[string]string{"manifest.json": `{"format":"wpk","schema":0,"id":"` + id + `","version":1,"type":"app","entry":"content/app.exe","title":{"en":"App"}}`, "preview.png": "PNG", "content/app.exe": "MZ"} {
 		w, _ := zw.Create(name)
 		w.Write([]byte(body))
 	}

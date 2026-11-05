@@ -12,12 +12,12 @@
 | R6 | webm/VP9 素材 AVFoundation 解不了 | mac | 高 | 中 | WebKit bug 216652 | VT supplemental VP9 解码 + VT 重编码（06 章 6.6） | 缓解；Q-M4 |
 | R7 | mpv CLI 是 GPL，许可边界 | Win | 中 | 高 | mpv Copyright；FSF FAQ | 独立程序 + 源码要约（ADR-004）；律师复核 | 开放；Q-L1 |
 | R8 | H.264/HEVC 专利 | 全部 | 中 | 高 | ffmpeg legal；Via LA；Access Advance | 优先系统编解码器；律师评估 | 开放；Q-L2 |
-| R9 | WebView2 用调试器冻结进程导致不稳定 | Win | 中 | 中 | Lively 源码 | **改用 TrySuspend**（ADR-005） | 缓解；B-T2 |
+| R9 | WebView2 用调试器冻结进程导致不稳定 | Win | 中 | 中 | Lively 源码 | **已失效**：Web 引擎按 D-16 移除（原方案为改用 TrySuspend，ADR-005） | 关闭 |
 | R10 | purego 回调上限 | mac | 低 | 中 | MyGo 文档 | 启动时集中注册 | 缓解 |
 | R11 | 锁屏动态壁纸依赖非公开路径 | mac | 高 | 低 | LiveDesk | 只在直接分发版作为实验功能 | 开放 |
 | R12 | 循环点卡顿 | 全部 | 中 | 中 | WE 文档；AVPlayerLooper | 导入时统一时长、去音轨、交叉淡化 | 开放；W-T3、M3 |
 | R13 | 驱动 TDR 或睡眠后 mpv 卡住不退出 | Win | 中 | 高 | mpv #3469；lively #3078 | time-pos 停滞检测 + 重启（02 章 2.4） | **新增**；W-T9 |
-| R14 | 恶意壁纸包（路径穿越、zip bomb、外传数据、挖矿） | 全部 | 中 | 高 | Go archive/zip 默认不拒绝不安全路径 | 10.4 / 10.6 的校验、沙箱、默认禁网、CPU 看门狗 | **新增**；单元测试加 fuzz |
+| R14 | 恶意壁纸包（路径穿越、zip bomb、外传数据、挖矿） | 全部 | 中 | 高 | Go archive/zip 默认不拒绝不安全路径 | 10.4 的路径/规模/可执行文件校验；Web 沙箱、默认禁网与 CPU 看门狗已随 D-16 移除 | **新增**；单元测试加 fuzz |
 | R15 | SmartScreen 警告影响首次安装转化 | Win | 高 | 中 | MS Learn（EV 不再自动获得信誉） | Artifact Signing 或 OV 签名积累信誉；第二阶段上 Store | **新增** |
-| R16 | MAS 审核拒绝 Web 壁纸（2.4.5(iv) 关于额外代码的条款） | mac | 中 | 中 | App Review Guidelines | MAS 版首发只支持视频和 shader，Web 壁纸作为后续功能 | **新增**；Q-D3 |
+| R16 | MAS 审核拒绝 Web 壁纸（2.4.5(iv) 关于额外代码的条款） | mac | 中 | 中 | App Review Guidelines | **已关闭（D-16）**：Web 壁纸移除，不再需要该审核决策 | 关闭；Q-D3 失效 |
 | R17 | 坏包导致无限崩溃循环 | 全部 | 低 | 高 | 【推断】 | 安全模式（02 章 2.5） | **新增** |

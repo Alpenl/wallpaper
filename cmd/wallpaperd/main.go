@@ -32,8 +32,6 @@ import (
 	imgr "wpapp/internal/render/image"
 	"wpapp/internal/render/mf"
 	"wpapp/internal/render/mpv"
-	"wpapp/internal/render/shader"
-	webwall "wpapp/internal/render/web"
 	"wpapp/internal/telemetry"
 	"wpapp/internal/transcode"
 )
@@ -53,13 +51,10 @@ type flags struct {
 	importPath    string
 	duration      time.Duration
 	debug         bool
-	shaderhost    bool
-	webhost       bool
 	mfhost        bool
 	pipe, swap    string
 	logPath       string
 	helper        string
-	sceneprobe    string
 	in            string
 	out           string
 	width, height int
@@ -82,14 +77,11 @@ func parseFlags(args []string) *flags {
 	fs.DurationVar(&f.duration, "duration", 0, "headless：运行时长（0=直到 Ctrl+C）")
 	fs.StringVar(&f.statusOut, "status", "", "headless：退出前把状态 JSON 写到此文件（- 为 stdout）")
 	fs.BoolVar(&f.debug, "debug", false, "调试日志")
-	fs.BoolVar(&f.shaderhost, "shaderhost", false, "internal: isolated native shader renderer")
-	fs.BoolVar(&f.webhost, "webhost", false, "internal: isolated web renderer")
 	fs.BoolVar(&f.mfhost, "mfhost", false, "内部：MF 渲染子进程")
 	fs.StringVar(&f.pipe, "pipe", "", "内部：管道名")
 	fs.StringVar(&f.swap, "swap", "flip", "内部：MF 交换链模式")
 	fs.StringVar(&f.logPath, "log", "", "内部：子进程日志")
-	fs.StringVar(&f.helper, "helper", "", "内部：probe / transcode / sceneprobe")
-	fs.StringVar(&f.sceneprobe, "sceneprobe", "", "Probe a local WE scene package or project directory offline")
+	fs.StringVar(&f.helper, "helper", "", "内部：probe / transcode")
 	fs.StringVar(&f.in, "in", "", "内部：helper 输入文件")
 	fs.StringVar(&f.out, "out", "", "内部：helper 输出文件")
 	fs.BoolVar(&f.cover, "cover", false, "内部：居中裁切")
@@ -115,10 +107,6 @@ func main() {
 	switch {
 	case f.mfhost:
 		role = "mfhost"
-	case f.webhost:
-		role = "web"
-	case f.shaderhost:
-		role = "shader"
 	case f.helper != "":
 		role = safeName(f.helper)
 	}
@@ -128,20 +116,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "crash output:", err)
 	}
 	switch {
-	case f.shaderhost:
-		os.Exit(shader.HostMain())
-	case f.webhost:
-		os.Exit(webwall.HostMain())
 	case f.mfhost:
 		os.Exit(mf.HostMain(f.pipe, f.swap, f.logPath))
-	case f.helper == "shader-preview":
-		if err := shader.PreviewMain(f.in, f.out); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-		return
-	case f.helper == "sceneprobe":
-		os.Exit(runSceneProbeHelper(f.in))
 	case f.helper == "probe":
 		info, err := media.ProbeFile(f.in)
 		if err != nil {
@@ -155,8 +131,6 @@ func main() {
 	case f.helper != "":
 		fmt.Fprintln(os.Stderr, "unknown helper operation")
 		os.Exit(2)
-	case f.sceneprobe != "":
-		os.Exit(runSceneProbe(f.sceneprobe))
 	case f.exportDiag:
 		e, err := setup(f, nil, nil)
 		if err != nil {
@@ -233,7 +207,7 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 	exe, _ := os.Executable()
 	e := &env{paths: paths, store: store, log: log, logw: lw, exe: exe, initialConfig: store.Config.Clone()}
 	e.host = newHost(f, log)
-	imp := importer.Options{ShaderSnapshot: func(dir, dst string) error { return shader.Preview(e.exe, dir, dst) }, Library: paths.Library, Cache: paths.Cache, GOOS: runtime.GOOS, Lang: store.Config.UI.Lang,
+	imp := importer.Options{Library: paths.Library, Cache: paths.Cache, GOOS: runtime.GOOS, Lang: store.Config.UI.Lang,
 		Probe: e.probe}
 	imp.Snapshot = e.snapshot
 	enc, ext, encName := e.encoder(store.Config)
@@ -259,10 +233,6 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 			cfg := e.configSnapshot()
 			opts.Lang = cfg.UI.Lang
 			opts.BeforeReplace = func(id string) error { return e.app.PreparePackageReplacement(ctx, id) }
-			if !f.headless {
-				opts.ConsentSignal = func(title, permission string) bool { return e.app.RequestSignalConsent(ctx, title, permission) }
-				opts.ConsentNetwork = func(title string, hosts []string) bool { return e.app.RequestNetworkConsent(ctx, title, hosts) }
-			}
 			opts.Transcode, opts.TranscodeExt, _ = e.encoder(cfg)
 			opts.CanTranscodeGIF = e.encoderCapabilities(cfg).GIF
 			return importer.Import(ctx, src, opts)
@@ -335,22 +305,11 @@ func (e *env) snapshot(src, dst string) error {
 }
 
 func (e *env) newRenderer(kind string, cfg config.Config, d desktop.DisplayID) render.Renderer {
-	if kind == "shader" {
-		r := shader.New(e.exe)
-		r.Log = e.log.Info
-		r.Display = string(d)
-		r.StderrPath = filepath.Join(e.paths.Logs, "shader-"+safeName(string(d))+"-stderr.log")
-		return r
-	}
-	if kind == "web" {
-		r := webwall.New(e.exe)
-		r.Log = e.log.Info
-		r.Display = string(d)
-		r.StderrPath = filepath.Join(e.paths.Logs, "web-"+safeName(string(d))+"-stderr.log")
-		return r
-	}
 	if kind == "image" {
 		return imgr.New()
+	}
+	if kind != "video" {
+		return nil // stale or unknown library entries must not fall through to a video renderer
 	}
 	if r := platformRenderer(e, cfg, d); r != nil {
 		return r

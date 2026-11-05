@@ -1,5 +1,11 @@
 # CHANGELOG（调研文档迭代记录）
 
+## 2026-11-05 产品范围收敛（D-16 / ADR-011）
+
+- 产品只保留图片与视频壁纸。移除 Web 壁纸引擎（WebView2/WKWebView 宿主、网络同意、Web 属性）、Shader 引擎（GLSL→HLSL/MSL、D3D11/Metal）、音频/鼠标响应式输入与 WE scene 离线探测，连同源码、示例、界面入口和导入路径。
+- F-12、F-14、F-22、F-26 标记 withdrawn；F-11 只导入图片/视频，Lively web、WE web/scene/app 明确返回不支持。库 schema 升至 5 且不兼容旧数据：低于 5 的库在启动时被忽略，库与分配从空开始，不迁移旧条目、不清理磁盘文件。
+- 10 章删除 web/shader 字段、属性注入、权限与 scene 解析；schema 只保留 video/image；08 章冻结为历史。02 章当前架构与 06 章 F-22 说明同步更新。
+
 ## 2026-10-22 UTC v0.3.0-mvp 预发布准备
 
 - 应用与打包默认版本同步为 0.3.0-mvp；保留原生应用和 UI 分支仅设计参考的边界。

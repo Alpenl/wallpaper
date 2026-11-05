@@ -1,6 +1,6 @@
 # 08 网页与 Shader 壁纸
 
-> **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
+> **状态：已冻结 / 被取代（2026-11-05，D-16 / ADR-011）。** 产品定位调整为只做图片与视频壁纸；Web 壁纸、Shader、音频/鼠标响应式输入已从产品移除。本文仅保留历史设计、证据与原轮次目标，不代表当前产品能力；相关源码、示例和界面入口已删除。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
 
 ## 8.1 WebView 选择
 - MyGo 用的是系统 WebView：WebView2、WKWebView、WebKitGTK 4.1【文档】MyGo 架构文档。macOS 上 hello-world 加 WKWebView 子进程约 62 MB【文档】。

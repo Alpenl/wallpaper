@@ -31,7 +31,7 @@
 | F-09 说关设置后 WebView 进程退出 | 当前设置 UI 是 MyGo 原生绘制，不是 WebView；应验证窗口按需销毁/重建和后台资源，而不是不存在的设置 WebView 进程 | [`internal/ui/shell.go`](../internal/ui/shell.go) |
 | “已实现安装与更新” | 本地签名清单验证/下载/回滚机制与“公开签名发行、线上更新已启用”是不同状态 | [`internal/update/`](../internal/update/)、[发布门槛](VALIDATION.md)；公钥、更新源、证书、签名/公证与真机验收仍需各自验证 |
 | 早期“全部是 Go / CGO_ENABLED=0”旁列 `go test -race` | 发布构建可关闭 cgo；Go race 测试通常需要 cgo 与可用编译器，不能要求该测试也用 `CGO_ENABLED=0` | [构建说明](../README.md)、[验证命令](VALIDATION.md) |
-| 16 章的 schema v1 与旧配置样例 | 本轮配置/库/分配/状态 schema 均已升到 2；设计中的旧样例是规格历史，不是当前字段全集 | [`config/files.go`](../internal/config/files.go)、[`config/options_test.go`](../internal/config/options_test.go) |
+| 16 章的 schema v1 与旧配置样例 | 当前 config/state 为 schema 2、assignments 为 3、library 为 5；library 低于 5 时不迁移，启动重置为空库并清空分配（D-16）。设计中的旧样例是规格历史，不是当前字段全集 | [`config/files.go`](../internal/config/files.go)、[`config/options_test.go`](../internal/config/options_test.go)、[`config/library_test.go`](../internal/config/library_test.go) |
 | 早期文档只有 avconvert、mac GIF 尚无严格转码 | 当前默认是应用隔离 AVFoundation helper，可选 ffmpeg；avconvert 仅有限回退。原生路线源码不是 mac 真机通过证明 | [转换路线](../internal/transcode/README.md)、[研究补充](research/NATIVE_MVP_ADDENDUM.md) |
 | 早期“跨屏画布/本周统计未提供” | 当前已有每屏原生裁切空间跨屏和实际 UTC 周暂停计时；没有逐帧同步、单解码器或节电量测量承诺 | [跨屏](SPANNING.md)、[F-03/F-17](IMPLEMENTATION_STATUS.md) |
 | 16:08–16:09 的“最终检查通过” | 是七页布局阶段检查点，不能覆盖其后新增转码、跨屏、指标和 MF 控制代码；最终整体验证须另记 | [验证台账](VALIDATION.md) |
@@ -43,7 +43,7 @@
 
 ## 不在此 checkout 中的历史资产
 
-研究记录提及研究机上的 clone、r6/r9/r12/r15/r18 备份、`prototype/bin/`、`bench/webview/webgl_test.html` 和 `bench/webview/`。本轮没有在 checkout 找到这些资产。保留原引用以便追溯，但不宣称可以直接运行缺失素材的 Web 基准。运行前需补齐已知来源的素材，或另外创建并说明新的等价测试，不得伪造原始结果。
+研究记录提及研究机上的 clone、r6/r9/r12/r15/r18 备份和 `prototype/bin/`；本轮没有在 checkout 找到这些资产。`docs/design/bench/webview/` 与 `webgl_test.html` 仍作为历史资产保留，但 Web/Shader 基准已按 D-16 撤销，不再执行，也不得伪造原始结果。
 
 `docs/screenshots/*.png` 是已入库的旧 UI 图；除非本轮明确重新生成、检查并记录，不标成本轮截图。外部链接不在离线文档校验器的检查范围。
 

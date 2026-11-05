@@ -71,4 +71,4 @@
 
 ### 音频响应与视频声音分离
 
-F-22 的系统回环属于原生 Shader/Web 隔离宿主，不是视频后端的音量或静音选项，不改动 mpv/MF/AVF 解码。WASAPI / ScreenCaptureKit PCM 在采集进程中经 Go FFT/RMS 转换后供渲染使用；上限 min(60, 壁纸 FPS) Hz。L1+、锁屏、睡眠、显示器关闭和不可见时关闭源，恢复重开；主进程不读取 PCM。见 [08 章](08-web-shader.md#85-f-22--f-26-原生输入新产品决策)。
+F-22 的系统回环属于原生 Shader/Web 隔离宿主，不是视频后端的音量或静音选项，不改动 mpv/MF/AVF 解码。**该能力已随 D-16 / ADR-011 移除，以下仅为历史设计依据。** WASAPI / ScreenCaptureKit PCM 在采集进程中经 Go FFT/RMS 转换后供渲染使用；上限 min(60, 壁纸 FPS) Hz。L1+、锁屏、睡眠、显示器关闭和不可见时关闭源，恢复重开；主进程不读取 PCM。见 [08 章](08-web-shader.md#85-f-22--f-26-原生输入新产品决策)。

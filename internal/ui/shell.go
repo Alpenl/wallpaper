@@ -250,7 +250,7 @@ func (sh *Shell) Start(openWindow bool) error {
 		w := sh.win
 		sh.mu.Unlock()
 		ps, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: w, Title: translate(sh.S.view0().Config.UI.Lang, "导入壁纸"), Multiple: true,
-			Filters: []mygo.FileFilter{{Name: translate(sh.S.view0().Config.UI.Lang, "视频 / 图片 / Shader / 壁纸包"), Extensions: []string{"mp4", "mov", "m4v", "webm", "gif", "png", "jpg", "jpeg", "webp", "bmp", "wpk", "zip", "glsl", "frag"}}}})
+			Filters: []mygo.FileFilter{{Name: translate(sh.S.view0().Config.UI.Lang, "视频 / 图片 / 壁纸包"), Extensions: []string{"mp4", "mov", "m4v", "webm", "gif", "png", "jpg", "jpeg", "webp", "bmp", "wpk", "zip"}}}})
 		if err != nil {
 			sh.S.pickerStatus = "文件选择失败：" + err.Error()
 		}
@@ -278,9 +278,6 @@ func (sh *Shell) Start(openWindow bool) error {
 func (sh *Shell) Changed() {
 	sh.S.Refresh()
 	v := sh.S.view0()
-	if v.NetworkConsent != nil {
-		sh.Open()
-	}
 	sh.mu.Lock()
 	w := sh.win
 	t := sh.tray

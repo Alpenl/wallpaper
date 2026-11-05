@@ -1,8 +1,8 @@
-// Package importer 实现本地媒体与安全壁纸包导入（F-11/F-12）：
+// Package importer 实现本地媒体与安全壁纸包导入（F-11）：
 //   - 普通视频或图片文件：探测 → 判断是否需要转码 → 生成 manifest v0 的包目录 → 首帧截图；
 //   - .wpk / manifest 目录：共享 wpk 安全校验；
-//   - Lively zip 或目录：video/gif/picture 与纯本地 web；
-//   - Wallpaper Engine 项目目录：video 与不要求音频处理的本地 web。
+//   - Lively zip 或目录：video/gif/picture；
+//   - Wallpaper Engine 项目目录：video。
 //
 // 媒体探测与截图通过 Options 里的函数完成，产品里它们都在 helper 子进程里运行（10.4）。
 package importer
@@ -28,7 +28,6 @@ import (
 
 // Options 是导入依赖。
 type Options struct {
-	ShaderSnapshot  func(packageDir, dst string) error
 	Library         string
 	Cache           string
 	GOOS            string
@@ -38,8 +37,6 @@ type Options struct {
 	TranscodeExt    string                                           // .mp4/.mov/.m4v; empty preserves the legacy .mov contract
 	CanTranscodeGIF bool                                             // only advertise when this encoder accepts GIF sources
 	BeforeReplace   func(id string) error
-	ConsentSignal   func(title, permission string) bool     // nil means deny
-	ConsentNetwork  func(title string, hosts []string) bool // nil means deny; called only for a declared permission
 	Lang            string
 }
 
@@ -49,14 +46,14 @@ type Result struct {
 	Warnings []string
 }
 
-// ErrUnsupported 表示素材要求未实现的类型或功能（例如可执行程序、音频可视化）。
+// ErrUnsupported 表示素材类型不在产品范围内（例如可执行程序、网页或 WE scene）。
 var ErrUnsupported = errors.New("import: not supported in this version")
 
 // ErrNeedsTranscode 表示本平台播放器不能直接播放，且没有可用的系统编码器。
 var ErrNeedsTranscode = errors.New("import: needs transcoding")
 
 // SupportedExts 是可以拖入的扩展名。
-var SupportedExts = []string{".mp4", ".mov", ".m4v", ".webm", ".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".wpk", ".zip", ".glsl", ".frag"}
+var SupportedExts = []string{".mp4", ".mov", ".m4v", ".webm", ".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".wpk", ".zip"}
 
 // Import 按来源分派。
 func Import(ctx context.Context, src string, o Options) (*Result, error) {
@@ -76,8 +73,6 @@ func Import(ctx context.Context, src string, o Options) (*Result, error) {
 		return nil, fmt.Errorf("%w: 目录里没有 LivelyInfo.json 或 project.json", ErrUnsupported)
 	}
 	switch strings.ToLower(filepath.Ext(src)) {
-	case ".glsl", ".frag":
-		return importShader(src, o)
 	case ".wpk":
 		return importWPK(src, o)
 	case ".zip":
@@ -145,29 +140,9 @@ func importWPK(src string, o Options) (*Result, error) {
 		}
 	}
 	zr.Close()
-	if err := validateShaderArchive(src); err != nil {
-		return nil, err
-	}
-	granted := false
-	audioGranted, inputGranted := false, false
 	r, err := wpk.ExtractChecked(src, o.Library, func(m *wpk.Manifest) error {
 		if err := supportedManifest(m); err != nil {
 			return err
-		}
-		if m.Type == "web" {
-			for _, p := range m.Web.Permissions {
-				if p == "network" && o.ConsentNetwork != nil {
-					granted = o.ConsentNetwork(m.Title.Pick(o.Lang), append([]string(nil), m.Web.NetworkAllow...))
-				}
-			}
-		}
-		if o.ConsentSignal != nil {
-			if m.Declares("audio") {
-				audioGranted = o.ConsentSignal(m.Title.Pick(o.Lang), "audio")
-			}
-			if m.Declares("input") {
-				inputGranted = o.ConsentSignal(m.Title.Pick(o.Lang), "input")
-			}
 		}
 		if o.BeforeReplace != nil {
 			return o.BeforeReplace(m.ID)
@@ -191,33 +166,6 @@ func importWPK(src string, o Options) (*Result, error) {
 		it.Codec = m.Video.Codec
 	}
 	applyMetadata(&it, m)
-	if m.Type == "shader" {
-		preview := filepath.Join(it.Dir, "preview.png")
-		if o.ShaderSnapshot == nil || o.ShaderSnapshot(it.Dir, preview) != nil {
-			b, _ := os.ReadFile(filepath.Join(it.Dir, filepath.FromSlash(m.Entry)))
-			if e := shaderPlaceholder(preview, b); e != nil {
-				return nil, e
-			}
-		}
-	}
-	if m.Type == "web" || m.Type == "shader" {
-		it.Web = m.Web
-		it.PropertyDefs = m.Properties
-		it.NetworkGranted = granted
-		it.AudioGranted, it.InputGranted = audioGranted, inputGranted
-		for _, p := range []string{"audio", "input"} {
-			if m.Declares(p) {
-				it.Permissions = append(it.Permissions, p)
-			}
-		}
-		for _, name := range []string{"preview.png", "preview.webp"} {
-			if exists(filepath.Join(it.Dir, name)) {
-				it.Snapshot = filepath.Join(it.Dir, name)
-				break
-			}
-		}
-		return &Result{Item: it}, nil
-	}
 	res := &Result{Item: it}
 	snapshotItem(o, &res.Item, filepath.Join(r.Dir, filepath.FromSlash(m.Entry)), res)
 	return res, nil
@@ -498,16 +446,10 @@ func importLively(ctx context.Context, dir string, o Options) (*Result, error) {
 		return nil, fmt.Errorf("import: LivelyInfo.json: %w", err)
 	}
 	t := li.typeName()
-	if t == "web" {
-		if li.IsAbsolutePath {
-			return nil, fmt.Errorf("%w: web entry must be inside its package", ErrUnsupported)
-		}
-		return importWeb(dir, li.FileName, li.Title, "lively", o)
-	}
 	switch t {
 	case "video", "gif", "picture":
 	default:
-		return nil, fmt.Errorf("%w: Lively 类型 %s（MVP 只导入视频、GIF 和图片）", ErrUnsupported, t)
+		return nil, fmt.Errorf("%w: Lively 类型 %s（只导入视频、GIF 和图片）", ErrUnsupported, t)
 	}
 	var src string
 	if li.IsAbsolutePath {
@@ -557,11 +499,8 @@ func importWE(ctx context.Context, dir string, o Options) (*Result, error) {
 	if err := readJSON(filepath.Join(dir, "project.json"), &p); err != nil {
 		return nil, fmt.Errorf("import: project.json: %w", err)
 	}
-	if strings.EqualFold(p.Type, "web") {
-		return importWeb(dir, p.File, p.Title, "we", o)
-	}
 	if !strings.EqualFold(p.Type, "video") {
-		return nil, fmt.Errorf("%w: Wallpaper Engine 类型 %s（MVP 只导入 video）", ErrUnsupported, p.Type)
+		return nil, fmt.Errorf("%w: Wallpaper Engine 类型 %s（只导入 video）", ErrUnsupported, p.Type)
 	}
 	src, err := within(dir, p.File)
 	if err != nil {

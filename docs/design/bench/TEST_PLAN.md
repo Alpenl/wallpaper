@@ -7,15 +7,15 @@
 1. F-03：独立/跨屏往返保存；双/三屏负坐标、横竖屏/错位/混合 DPI、同屏数换位/缩放、主屏切换、热插拔、Explorer/Space/睡眠恢复；视频及静态首帧的裁切接缝。保持按屏暂停，不以逐帧同步作已实现能力。见 [空间跨屏](../../SPANNING.md)。
 2. F-07/08：mac 无 ffmpeg 时用原生隔离 helper；Win 可选 ffmpeg 必须有 h264_mf。选主屏物理尺寸及 1080p/1440p/2160p，检查 H.264/30fps/无音轨/偶数边界/首 IDR/GOP；测非整数帧率、旋转/竖屏、透明 GIF/disposal/末帧、取消、编码器不可用/资源上限/失败保留旧输出。avconvert 的有限回退不能关闭严格 AC。当前按屏多 rendition/cover 缓存仍需实现。
 3. F-17：真实 L0–L4 与后端确认一致，跨 UTC 周一、重启、睡眠、断屏、失败和系统时钟调整不虚增；核对 state schema 2 的摘要指标。暂停时长不是节电量；MF/AVF 的 unknown 硬解状态不能冒称成功。
-4. F-18：mpv/MF/AVF 支持能力分别测试 fit/fill/stretch、0.25–4 倍速度、暂停时修改、不重载保位置、L3/L4 恢复、失败反馈及 ≤200 ms 实际时延。以 [当前矩阵](../../IMPLEMENTATION_STATUS.md) 的最终源码接口为准；Web 属性仍依赖未实现 F-12。
+4. F-18：mpv/MF/AVF 支持能力分别测试 fit/fill/stretch、0.25–4 倍速度、暂停时修改、不重载保位置、L3/L4 恢复、失败反馈及 ≤200 ms 实际时延。以 [当前矩阵](../../IMPLEMENTATION_STATUS.md) 的最终源码接口为准；Web 属性已随 F-12 移除。
 
 
-> **这是测试计划，不是测试结果。** 本轮执行情况见 [验证记录](../../VALIDATION.md)。这里的 `wpproto` 参数属于研究原型，不直接等同于 `wallpaperd`。原文提及的 `bench/webview/webgl_test.html` 未包含在当前 checkout 中，Web 基准执行前需先补齐并记录来源，不能声称按原素材复现。
+> **这是测试计划，不是测试结果。** 本轮执行情况见 [验证记录](../../VALIDATION.md)。这里的 `wpproto` 参数属于研究原型，不直接等同于 `wallpaperd`。`bench/webview/webgl_test.html` 仍保留为历史资产；**Web/Shader 基准与 B-T2 已按 D-16 撤销，不再执行。**
 所有阈值为【推断】起始目标，首次数据出来后再校准。
 
 ## 通用
 1. 重启，空闲 5 分钟。跑 baseline 120 s，再启动壁纸，等 30 s，跑 wallpaper 120 s。
-2. 素材：1080p30 H.264、4K30 HEVC、4K30 AV1、bench/webview/webgl_test.html（以及 ?fps=30）。
+2. 素材：1080p30 H.264、4K30 HEVC、4K30 AV1（历史 Web 基准素材已撤销）。
 3. 场景：桌面可见 / 全屏游戏或无边框全屏视频 / 最大化窗口遮挡 / 电池 / 锁屏 / 睡眠后唤醒 / 多屏混合 DPI / explorer 重启（Windows）。
 
 ## Windows（`windows_capture.ps1`）
@@ -29,8 +29,8 @@
 ## 第 9 轮新增验证项
 - **W-T8（MSIX）**：用 MSIX 打包原型（`runFullTrust`）后，WorkerW 挂载是否正常；`windows.startupTask` 在首次启动后、重新登录时是否自动运行。
 - **W-T9（TDR）**：播放中人为触发 TDR（工具待确认，例如 `dxcap -forcetdr`）。通过标准：10 s 内画面恢复；日志里有 `device removed` 和重启记录；supervisor 计数 +1。
-- **B-T2（TrySuspend）**：Web 壁纸进入 L1 后，桌面显示的是最后一帧还是黑屏；WebView2 子进程 CPU 是否约等于 0。
-- **崩溃兜底**：用任务管理器结束 wallpaperd。通过标准：mpv/webhost 子进程 1 s 内全部消失（Job Object 生效）；桌面露出的系统壁纸和动态壁纸的首帧一致；另外，用调试开关触发一次真正的崩溃（例如访问违例），而不是用任务管理器结束进程：任务管理器结束不算崩溃，WER 不会处理【推断】。检查运行超过 60 s 后崩溃时，WER 能否把应用拉起【文档】RegisterApplicationRestart。
+- **B-T2（TrySuspend，已撤销）**：Web 壁纸已按 D-16 移除，本项不再执行。
+- **崩溃兜底**：用任务管理器结束 wallpaperd。通过标准：mpv 子进程 1 s 内全部消失（Job Object 生效）；桌面露出的系统壁纸和动态壁纸的首帧一致；另外，用调试开关触发一次真正的崩溃（例如访问违例），而不是用任务管理器结束进程：任务管理器结束不算崩溃，WER 不会处理【推断】。检查运行超过 60 s 后崩溃时，WER 能否把应用拉起【文档】RegisterApplicationRestart。
 
 ## 第 12 轮：原型
 - 运行方法和日志字段见 [../prototype/README.md](../prototype/README.md)。W-T1/W-T3/W-T6/W-T9、崩溃兜底、M1–M4、Q-M6 都可以直接用 `wpproto` 完成。采集 CPU、GPU 和功耗时，与 `windows_capture.ps1` / `macos_powermetrics.sh` 同时运行。
