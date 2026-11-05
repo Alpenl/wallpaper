@@ -28,7 +28,7 @@ fi
 bash scripts/release-self-test.sh
 if [ "${SKIP_TESTS:-0}" != 1 ]; then bash scripts/check.sh; fi
 # Never inherit a partial TARGETS/ARCHES value and label it a complete release.
-TARGETS='windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64' bash scripts/build.sh
+TARGETS='windows/amd64 windows/arm64 darwin/amd64 darwin/arm64' bash scripts/build.sh
 bash scripts/package-metadata.sh
 # Remove only generated files in this dedicated directory; never arbitrary paths.
 python3 - "$RELEASE_DIR" <<'PY'
@@ -42,7 +42,6 @@ for p in root.iterdir():
 PY
 ARCHES='amd64 arm64' bash scripts/package-windows.sh
 ARCHES='amd64 arm64' bash scripts/package-macos.sh
-ARCHES='amd64' bash scripts/package-linux.sh
 bash scripts/package-updates.sh
 cp dist/package-metadata/{RELEASE-NOTES,BUILD-INFO}.txt "$RELEASE_DIR/"
 python3 - "$RELEASE_DIR" <<'PY'

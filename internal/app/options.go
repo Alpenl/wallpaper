@@ -106,7 +106,7 @@ func (a *App) SetItemProps(itemID string, props config.ItemProps) {
 			}
 			if updater, ok := s.r.(render.PropertyUpdater); ok && s.started {
 				gen := s.gen
-				s.ops <- func() {
+				s.ops.enqueue(func() {
 					err := updater.UpdateProperties(props.WebValues)
 					if err != nil {
 						a.Do(func() {
@@ -115,7 +115,7 @@ func (a *App) SetItemProps(itemID string, props config.ItemProps) {
 							}
 						})
 					}
-				}
+				})
 				continue
 			}
 			if !a.updateScreenPlayback(s) {
@@ -146,7 +146,7 @@ func (a *App) updateScreenPlayback(s *screen) bool {
 	}
 	gen, r := s.gen, s.r
 	options, note := a.playbackOptions(s, r)
-	s.ops <- func() {
+	s.ops.enqueue(func() {
 		err := updater.UpdatePlayback(options)
 		a.Do(func() {
 			if s.gen != gen {
@@ -162,7 +162,7 @@ func (a *App) updateScreenPlayback(s *screen) bool {
 				s.note = note
 			}
 		})
-	}
+	})
 	return true
 }
 

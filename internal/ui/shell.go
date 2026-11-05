@@ -62,17 +62,26 @@ type trayDisplayState struct {
 }
 
 type trayMenuState struct {
-	PausedAll bool
-	Profile   string
-	FewItems  bool
-	Lang      string
-	SafeMode  bool
-	Displays  []trayDisplayState
+	PausedAll  bool
+	Profile    string
+	FewItems   bool
+	Header     string
+	Status     string
+	Recent     []trayWallpaperState
+	Covered    bool
+	Fullscreen bool
+	Importing  bool
+	Lang       string
+	SafeMode   bool
+	Displays   []trayDisplayState
 }
 
 func trayState(v app.View) trayMenuState {
 	s := trayMenuState{PausedAll: v.PausedAll, Profile: v.Config.Perf.Profile,
 		FewItems: len(v.Library) < 2, Lang: v.Config.UI.Lang, SafeMode: v.SafeMode}
+	s.Header, s.Status = traySummary(v)
+	s.Recent = trayRecent(v)
+	s.Covered, s.Fullscreen, s.Importing = v.Config.Pause.OnCovered, v.Config.Pause.OnFullscreen, v.Importing
 	for _, d := range v.Displays {
 		s.Displays = append(s.Displays, trayDisplayState{d.ID, d.Index, d.Name, d.Alias != "" || d.Friendly != "", d.Options.Paused})
 	}
@@ -82,7 +91,9 @@ func trayState(v app.View) trayMenuState {
 func (s trayMenuState) equal(other trayMenuState) bool {
 	return s.PausedAll == other.PausedAll && s.Profile == other.Profile &&
 		s.FewItems == other.FewItems && s.Lang == other.Lang && s.SafeMode == other.SafeMode &&
-		slices.Equal(s.Displays, other.Displays)
+		s.Header == other.Header && s.Status == other.Status && s.Covered == other.Covered &&
+		s.Fullscreen == other.Fullscreen && s.Importing == other.Importing &&
+		slices.Equal(s.Recent, other.Recent) && slices.Equal(s.Displays, other.Displays)
 }
 
 func trayToolTip(v app.View) string {
@@ -119,8 +130,11 @@ func (sh *Shell) menu(v app.View) *mygo.Menu {
 			&mygo.MenuItem{Label: tr("退出安全模式"), Click: func(*mygo.MenuItem, *mygo.Window) { sh.S.ctl.ExitSafeMode() }},
 		)
 	}
-	items = append(items, &mygo.MenuItem{Label: tr("打开壁纸库"), Click: func(*mygo.MenuItem, *mygo.Window) { sh.OpenPage(pgLibrary) }})
 	if !v.SafeMode {
+		header, status := traySummary(v)
+		items = append(items, &mygo.MenuItem{Label: header, Disabled: true}, &mygo.MenuItem{Label: status, Disabled: true}, &mygo.MenuItem{Type: mygo.MenuItemSeparator})
+	}
+	if !v.SafeMode && (trayHasWallpaper(v) || v.PausedAll) {
 		items = append(items,
 			&mygo.MenuItem{Label: tr("暂停全部壁纸"), Type: mygo.MenuItemCheckbox, Checked: v.PausedAll, Click: func(*mygo.MenuItem, *mygo.Window) {
 				sh.S.ctl.SetPausedAll(!sh.S.ctl.View().PausedAll)
@@ -153,11 +167,47 @@ func (sh *Shell) menu(v app.View) *mygo.Menu {
 			items = append(items, &mygo.MenuItem{Label: tr("显示器"), Submenu: displays})
 		}
 	}
+	if !v.SafeMode && len(v.Library) > 0 {
+		items = append(items, sh.wallpaperMenu(v))
+	}
+	if len(items) > 0 && items[len(items)-1].Type != mygo.MenuItemSeparator {
+		items = append(items, &mygo.MenuItem{Type: mygo.MenuItemSeparator})
+	}
 	items = append(items,
+		&mygo.MenuItem{Label: tr("打开壁纸库"), Accelerator: "CmdOrCtrl+L", Click: func(*mygo.MenuItem, *mygo.Window) { sh.OpenPage(pgLibrary) }},
+		&mygo.MenuItem{Label: tr("导入壁纸…"), Accelerator: "CmdOrCtrl+O", Disabled: v.Importing, Click: func(*mygo.MenuItem, *mygo.Window) {
+			if sh.S.ctl.View().Importing {
+				return
+			}
+			sh.OpenPage(pgLibrary)
+			mygo.RunOnMain(func() {
+				sh.S.importFiles()
+				if sh.S.Invalidate != nil {
+					sh.S.Invalidate()
+				}
+			})
+		}},
+		&mygo.MenuItem{Label: tr("显示器设置…"), Click: func(*mygo.MenuItem, *mygo.Window) { sh.OpenPage(pgDisplays) }},
+		&mygo.MenuItem{Type: mygo.MenuItemSeparator},
+		&mygo.MenuItem{Label: tr("自动暂停"), Submenu: []*mygo.MenuItem{
+			{Label: tr("被窗口遮挡时"), Type: mygo.MenuItemCheckbox, Checked: v.Config.Pause.OnCovered, Click: func(*mygo.MenuItem, *mygo.Window) {
+				sh.S.ctl.UpdateConfig(func(c *config.Config) { c.Pause.OnCovered = !c.Pause.OnCovered })
+			}},
+			{Label: tr("其他应用全屏时"), Type: mygo.MenuItemCheckbox, Checked: v.Config.Pause.OnFullscreen, Click: func(*mygo.MenuItem, *mygo.Window) {
+				sh.S.ctl.UpdateConfig(func(c *config.Config) { c.Pause.OnFullscreen = !c.Pause.OnFullscreen })
+			}},
+			{Type: mygo.MenuItemSeparator},
+			{Label: tr("更多电源设置…"), Click: func(*mygo.MenuItem, *mygo.Window) { sh.OpenPage(pgPause) }},
+		}},
 		&mygo.MenuItem{Label: tr("性能档位"), Submenu: []*mygo.MenuItem{profItem("smooth", "流畅"), profItem("balanced", "均衡"), profItem("saver", "省电（15 fps）")}},
 		&mygo.MenuItem{Type: mygo.MenuItemSeparator},
-		&mygo.MenuItem{Label: tr("设置…"), Click: func(*mygo.MenuItem, *mygo.Window) { sh.OpenPage(pgPerf) }},
-		&mygo.MenuItem{Label: tr("退出"), Click: func(*mygo.MenuItem, *mygo.Window) {
+		&mygo.MenuItem{Label: tr("设置…"), Accelerator: "CmdOrCtrl+,", Click: func(*mygo.MenuItem, *mygo.Window) { sh.OpenPage(pgPerf) }},
+		&mygo.MenuItem{Label: tr("版本与诊断"), Submenu: []*mygo.MenuItem{
+			{Label: tr("版本管理"), Click: func(*mygo.MenuItem, *mygo.Window) { sh.OpenPage(pgStartup) }},
+			{Label: tr("关于与诊断"), Click: func(*mygo.MenuItem, *mygo.Window) { sh.OpenPage(pgAbout) }},
+		}},
+		&mygo.MenuItem{Type: mygo.MenuItemSeparator},
+		&mygo.MenuItem{Label: tr("退出"), Accelerator: "CmdOrCtrl+Q", Click: func(*mygo.MenuItem, *mygo.Window) {
 			if sh.OnQuit != nil {
 				sh.OnQuit() // 由调用方负责最终 mygo.App.Quit()
 				return
@@ -207,7 +257,7 @@ func (sh *Shell) Start(openWindow bool) error {
 		return ps
 	}
 	v := sh.S.view0()
-	t, err := mygo.NewTray(mygo.TrayOptions{ID: "wallpaperd", Icon: Icon(), ToolTip: trayToolTip(v), Menu: sh.menu(v)})
+	t, err := mygo.NewTray(mygo.TrayOptions{ID: "wallpaperd", Icon: trayIcon(), IconIsTemplate: runtime.GOOS == "darwin", ToolTip: trayToolTip(v), Menu: sh.menu(v)})
 	if err != nil {
 		return err
 	}

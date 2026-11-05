@@ -115,12 +115,13 @@ def expected_assets(folder):
         f'Wallpaper-{VERSION}-windows-arm64-setup.exe',
         f'Wallpaper-{VERSION}-macos-amd64.app.zip',
         f'Wallpaper-{VERSION}-macos-arm64.app.zip',
-        f'Wallpaper-{VERSION}-linux-amd64.tar.gz',
         'BUILD-INFO.txt', 'RELEASE-NOTES.txt', 'SHA256SUMS',
     }
     if 'updater_signing=signed' in (folder / 'BUILD-INFO.txt').read_text().splitlines():
         names.add(f'Wallpaper-{VERSION}-updates.tar.gz')
     actual = {p.name for p in folder.iterdir()}
+    # 与打包验证器一致：DMG 可选，但必须遵守相同的文件和校验和约束。
+    names |= actual & {f'Wallpaper-{VERSION}-macos-{arch}.dmg' for arch in ('amd64', 'arm64')}
     if actual != names:
         raise RuntimeError(f'Unexpected release asset set: missing={names-actual}, extra={actual-names}')
     assets = {}

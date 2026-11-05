@@ -242,10 +242,10 @@ func TestCanceledCanvasWorkerDoesNotChangeSystemWallpaper(t *testing.T) {
 	host := newHost(1)
 	st := &config.Store{Config: config.Defaults(), Assign: config.Assignments{}}
 	a := New(Deps{Store: st, Host: host})
-	s := &screen{worker: &screenWorker{}, d: host.displays[0], canvas: image.Rect(0, 0, 100, 100), item: &config.Item{ID: "x", Type: "image", Dir: "missing", Entry: "a.png"}, ops: make(chan func(), 1), quit: make(chan struct{})}
+	s := &screen{worker: &screenWorker{}, d: host.displays[0], canvas: image.Rect(0, 0, 100, 100), item: &config.Item{ID: "x", Type: "image", Dir: "missing", Entry: "a.png"}, ops: newScreenOps(), quit: make(chan struct{})}
 	a.installSystemWallpaper(s)
 	close(s.quit)
-	(<-s.ops)()
+	s.ops.take()()
 	if len(host.wall) != 0 {
 		t.Fatal("retired screen changed system wallpaper")
 	}

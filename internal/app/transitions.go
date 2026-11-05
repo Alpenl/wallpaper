@@ -28,6 +28,11 @@ func (a *App) closeScreen(s *screen, destroySurface bool) {
 }
 
 func (a *App) closeScreenForPause(s *screen, destroySurface, policyPause bool) {
+	select {
+	case <-s.quit:
+		return
+	default:
+	}
 	countStopped := policyPause
 	r, surf := s.r, s.surf
 	a.capturePosition(s)
@@ -45,8 +50,10 @@ func (a *App) closeScreenForPause(s *screen, destroySurface, policyPause bool) {
 	id := s.d.ID
 	queued := time.Now()
 	log := a.transitionLog(s, r, gen, "close")
-	done := make(chan struct{})
-	s.ops <- func() {
+	if r == nil && (!policyPause || !s.ops.accepting()) && !destroySurface {
+		return
+	}
+	s.ops.cleanup(func() {
 		var closeErr error
 		begin := time.Now()
 		from := s.worker.level
@@ -80,19 +87,16 @@ func (a *App) closeScreenForPause(s *screen, destroySurface, policyPause bool) {
 		if destroySurface && surf != nil {
 			_ = surf.Close()
 		}
-		close(done)
-	}
+	})
 	if destroySurface {
 		close(s.quit)
-		select { // 有界等待，避免卡住事件循环
-		case <-done:
-		case <-time.After(3 * time.Second):
-			a.log.Warn("close screen timed out", "display", id)
-		}
 	}
 }
 
 func (a *App) applyLevel(s *screen, l visibility.Level) {
+	if !s.ops.accepting() {
+		return
+	}
 	r := s.r
 	if r == nil {
 		return
@@ -101,7 +105,7 @@ func (a *App) applyLevel(s *screen, l visibility.Level) {
 		a.closeScreenForPause(s, false, true)
 		if s.surf != nil {
 			surf := s.surf
-			s.ops <- func() { _ = surf.SetVisible(false) }
+			s.ops.enqueue(func() { _ = surf.SetVisible(false) })
 		}
 		return
 	}
@@ -110,7 +114,7 @@ func (a *App) applyLevel(s *screen, l visibility.Level) {
 	queued := time.Now()
 	log := a.transitionLog(s, r, gen, "set_level")
 	s.levelPending++
-	s.ops <- func() {
+	s.ops.enqueue(func() {
 		begin := time.Now()
 		from := s.worker.level
 		ctx := log.With("from", from.String(), "to", l.String())
@@ -143,6 +147,6 @@ func (a *App) applyLevel(s *screen, l visibility.Level) {
 				s.metricsReady, s.metricsLevel = true, l
 			}
 		})
-	}
+	})
 
 }

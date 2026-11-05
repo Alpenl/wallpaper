@@ -14,11 +14,14 @@ type trayController struct {
 	v            app.View
 	optionsCalls int
 	nextCalls    int
+	assignedID   string
+	assignCalls  int
 }
 
 func (c *trayController) View() app.View                       { return c.v }
 func (c *trayController) SetPausedAll(v bool)                  { c.v.PausedAll = v }
 func (c *trayController) ExitSafeMode()                        { c.v.SafeMode = false }
+func (c *trayController) AssignAll(id string)                  { c.assignedID = id; c.assignCalls++ }
 func (c *trayController) Next()                                { c.nextCalls++ }
 func (c *trayController) UpdateConfig(fn func(*config.Config)) { fn(&c.v.Config) }
 func (c *trayController) SetDisplayOptions(id string, options config.DisplayOptions) {
@@ -35,8 +38,8 @@ func trayFixture() (*Shell, *trayController) {
 		Config:  config.Defaults(),
 		Library: []config.Item{{ID: "one"}, {ID: "two"}},
 		Displays: []app.DisplayView{
-			{ID: "a", Index: 1, Name: "工作屏", Alias: "工作屏"},
-			{ID: "b", Index: 2, Name: "副屏", Friendly: "副屏", Options: config.DisplayOptions{Paused: true}},
+			{ID: "a", ItemID: "one", Level: "L0", State: "active", Index: 1, Name: "工作屏", Alias: "工作屏"},
+			{ID: "b", ItemID: "two", Level: "L1", State: "active", Index: 2, Name: "副屏", Friendly: "副屏", Options: config.DisplayOptions{Paused: true}},
 		},
 	}}
 	return &Shell{S: NewSettings(c, "windows")}, c
@@ -93,6 +96,12 @@ func TestTrayMenu(t *testing.T) {
 				trayItem(items, "退出安全模式").Click(nil, nil)
 				if c.v.SafeMode || !c.v.PausedAll || !c.v.Displays[1].Options.Paused {
 					t.Fatal("safe mode exit changed manual pauses")
+				}
+				return
+			}
+			if tc.library == 0 && !tc.paused {
+				if pause != nil || next != nil {
+					t.Fatal("empty library exposes ineffective playback controls")
 				}
 				return
 			}
@@ -173,7 +182,7 @@ func TestTrayRefreshState(t *testing.T) {
 		{"FPS", func(v *app.View) { v.Displays[0].FPSCap = 15 }, false},
 		{"reasons", func(v *app.View) { v.Displays[0].Reasons = "User" }, false},
 		{"layout", func(v *app.View) { v.Layout = "span" }, false},
-		{"more items", func(v *app.View) { v.Library = append(v.Library, config.Item{ID: "three"}) }, false},
+		{"more items", func(v *app.View) { v.Library = append(v.Library, config.Item{ID: "three"}) }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sh, c := trayFixture()

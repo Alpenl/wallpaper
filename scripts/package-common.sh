@@ -53,7 +53,7 @@ for marker in ['CGO_ENABLED=0', 'GOOS=' + os, 'GOARCH=' + arch]:
     if not any(line.strip() == 'build\t' + marker for line in info.splitlines()):
         raise SystemExit(f'{binary}: missing/mismatched build metadata {marker}')
 # Go -trimpath deliberately omits linker flags from build info. Inspect the
-# embedded version string; release-verify also executes Linux -version.
+# embedded version string.
 if version.encode() not in Path(binary).read_bytes():
     raise SystemExit(f'{binary}: requested version string not found')
 PY

@@ -32,10 +32,10 @@ func TestTransitionBeginBeforeBlockingCall(t *testing.T) {
 	sink := make(transitionSink, 8)
 	a := &App{log: slog.New(slog.NewJSONHandler(sink, nil)), post: make(chan func(), 8), stopped: make(chan struct{})}
 	r := &heldLevel{fakeR: &fakeR{}, entered: make(chan struct{}), release: make(chan struct{})}
-	s := &screen{d: desktop.Display{ID: "A"}, item: &config.Item{ID: "item-x"}, r: r, gen: 7, worker: &screenWorker{}, ops: make(chan func(), 1)}
+	s := &screen{d: desktop.Display{ID: "A"}, item: &config.Item{ID: "item-x"}, r: r, gen: 7, worker: &screenWorker{}, ops: newScreenOps()}
 	a.applyLevel(s, visibility.L1)
 	done := make(chan struct{})
-	go func() { (<-s.ops)(); close(done) }()
+	go func() { s.ops.take()(); close(done) }()
 	select {
 	case <-r.entered:
 	case <-time.After(10 * time.Second):

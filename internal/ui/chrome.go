@@ -31,11 +31,12 @@ func (s *Settings) topBar(c *ui.Context, v app.View) {
 		w -= 320
 	}
 	bar := c.TitleBar()
+	mac := s.GOOS == "darwin"
 	right := bar.Right
 	if s.page == pgLibrary {
 		right = 0
 	}
-	merged := w-bar.Left-right >= 1380
+	merged := !mac && w-bar.Left-right >= 1380
 	titleContent := func() {
 
 		title := tr(c, "显示器")
@@ -78,10 +79,10 @@ func (s *Settings) topBar(c *ui.Context, v app.View) {
 	if merged {
 		available = w - max(12, bar.Left) - max(12, right) - 380
 	}
-	narrow := available < libraryToolbarWide
-	splitNav := s.page == pgLibrary && available < libraryToolbarNav
+	narrow := available < libraryToolbarWide || (mac && available < libraryToolbarWide+170)
+	splitNav := !mac && s.page == pgLibrary && available < libraryToolbarNav
 	toolbarContent := func() {
-		if !splitNav {
+		if !splitNav && !mac {
 			navContent()
 		}
 		if s.page != pgLibrary {
@@ -103,6 +104,42 @@ func (s *Settings) topBar(c *ui.Context, v app.View) {
 		if accentButton(c.Key("imp"), "导入壁纸").Disabled(s.PickFiles == nil || v.Importing).Clicked() {
 			s.importFiles()
 		}
+	}
+	if mac {
+		// The caption holds window controls and display selection; navigation
+		// shares the content toolbar instead of consuming a separate row.
+		captionInset := max(float32(12), bar.Left+12)
+		ui.Column(c.Key("header")).Shrink(0).Background(barBg(t)).Children(func() {
+			ui.Row(c.Key("top")).Height(max(32, bar.Height)).Padding(0, captionInset, 0, captionInset).Justify(ui.Center).AlignItems(ui.Center).DragWindow().Children(func() {
+				title := tr(c, "显示器")
+				if d != nil {
+					title = fmt.Sprintf(tr(c, "显示器 %d"), d.Index)
+				}
+				// Keep the caption utility quiet and stable at every window width.
+				// Full display names belong in the tooltip and selection menu.
+				tip := tr(c, "选择显示器")
+				if d != nil {
+					tip += " · " + displayName(c, *d)
+				}
+				ghostButton(c.Key("pickdisp"), title).FontSize(13).FontWeight(500).TextColor(t.Text).Tooltip(tip).Label(tr(c, "选择显示器")).Menu(func(m *ui.Menu) {
+					for _, o := range v.Displays {
+						label := dispLabel(c, o)
+						if o.Primary {
+							label += tr(c, "（主屏）")
+						}
+						if m.Item(label).Checked(d != nil && o.ID == d.ID).Chosen() {
+							s.dispSel, s.renameID = o.ID, ""
+						}
+					}
+				})
+			})
+			ui.Row(c.Key("tools")).Height(36).Padding(0, 12).Gap(8).AlignItems(ui.Center).Children(func() {
+				navContent()
+				toolbarContent()
+			})
+			ui.Box(c).Height(1).Background(lineColor(t)).Children(func() {})
+		})
+		return
 	}
 	ui.Column(c.Key("header")).Shrink(0).Padding(4, 0).Background(barBg(t)).Children(func() {
 		ui.Row(c.Key("top")).Height(max(32, bar.Height)).Padding(0, max(12, right), 0, max(12, bar.Left)).Gap(8).AlignItems(ui.Center).DragWindow().Children(func() {

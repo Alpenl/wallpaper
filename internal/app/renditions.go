@@ -247,7 +247,7 @@ func (a *App) updateRendition(s *screen) bool {
 	gen := s.gen
 	it := render.Item{ID: s.item.ID, Kind: s.item.Type, Path: path, Start: s.r.Stats().Pos}
 	level := a.ctl.Display(s.n).Level()
-	s.ops <- func() {
+	s.ops.enqueue(func() {
 		err := updater.UpdateSource(it, level)
 		a.Do(func() {
 			if s.gen != gen {
@@ -259,7 +259,7 @@ func (a *App) updateRendition(s *screen) bool {
 				s.mediaPath = path
 			}
 		})
-	}
+	})
 	return true
 }
 

@@ -1,0 +1,2 @@
+d17e5da5f46112fee12b5603bf00f1d3dfea7c84336dd7d57d7795aa76d7981c  Wallpaper-0.3.4-mac-test.6-macos-arm64.app.zip
+a6c29bd224c52346923c01fd7550947656f51d8e3ab514cb427cdcf60b25f07d  Wallpaper-0.3.4-mac-test.6-macos-arm64.dmg
