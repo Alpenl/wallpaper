@@ -10,6 +10,12 @@ The release entrypoint builds/packages only the four Windows/macOS targets,
 including update feeds, dependency notices and asset verification. Linux remains
 in compatibility CI only; its standalone packaging script is not invoked by releases.
 
+发布资产必须包含 Windows amd64/arm64 安装包、macOS amd64/arm64 应用 ZIP，
+以及 `BUILD-INFO.txt`、`RELEASE-NOTES.txt` 和 `SHA256SUMS`。macOS 两种架构的
+DMG 均为可选；仅当构建元数据声明 `updater_signing=signed` 时，更新归档才是必需资产。
+打包验证器与发布程序使用相同约束：拒绝 Linux 包、缺失必需资产及未知额外资产，
+每个资产必须为非空普通文件且非符号链接；除校验清单自身外，所有资产均须被校验和完整覆盖。
+
 Push an existing `vMAJOR.MINOR.PATCH` tag (optionally `-rc.1` or another SemVer
 prerelease suffix), or dispatch Release with that tag. Tags must resolve to a
 commit reachable from `origin/master`; lightweight and annotated tags work.

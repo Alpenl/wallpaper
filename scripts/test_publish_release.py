@@ -24,6 +24,10 @@ publisher.configure("1.2.3-rc.1")
 COMMIT = 'a' * 40
 OTHER_COMMIT = 'b' * 40
 NOTES = '# Native checkpoint\n\nUnsigned prerelease.\n'
+REQUIRED_PACKAGES = (
+    'windows-amd64-setup.exe', 'windows-arm64-setup.exe',
+    'macos-amd64.app.zip', 'macos-arm64.app.zip',
+)
 
 
 class ReleaseFixture:
@@ -33,7 +37,7 @@ class ReleaseFixture:
         self.root = Path(self.temp.name)
         self.folder = self.root / 'release-assets'
         self.folder.mkdir()
-        for name in ['windows-amd64-setup.exe', 'windows-arm64-setup.exe', 'macos-amd64.app.zip', 'macos-arm64.app.zip', 'linux-amd64.tar.gz']:
+        for name in REQUIRED_PACKAGES:
             (self.folder / f'Wallpaper-{publisher.VERSION}-{name}').write_bytes(b'fixture-' + name.encode())
         (self.folder / 'BUILD-INFO.txt').write_text(f'version={publisher.VERSION}\ncommit={COMMIT}\ndirty=false\nwindows_signing=unsigned\nmacos_developer_id=none\n')
         (self.folder / 'RELEASE-NOTES.txt').write_text(NOTES)
@@ -48,7 +52,71 @@ class ReleaseFixture:
 
 class AssetVerificationTests(ReleaseFixture, unittest.TestCase):
     def test_exact_assets(self):
-        self.assertEqual(len(publisher.expected_assets(self.folder)), 8)
+        expected = {f'Wallpaper-{publisher.VERSION}-{name}' for name in REQUIRED_PACKAGES}
+        expected |= {'BUILD-INFO.txt', 'RELEASE-NOTES.txt', 'SHA256SUMS'}
+        self.assertEqual(set(publisher.expected_assets(self.folder)), expected)
+
+    def test_signed_update_bundle_is_required_only_with_signing_marker(self):
+        info = self.folder / 'BUILD-INFO.txt'
+        original = info.read_text()
+        bundle = self.folder / f'Wallpaper-{publisher.VERSION}-updates.tar.gz'
+        for signed in (False, True):
+            for present in (False, True):
+                with self.subTest(signed=signed, present=present):
+                    info.write_text(original + ('updater_signing=signed\n' if signed else 'updater_signing=unsigned\n'))
+                    if present:
+                        bundle.write_bytes(b'signed-update-fixture')
+                    else:
+                        bundle.unlink(missing_ok=True)
+                    self.write_sums()
+                    if signed == present:
+                        assets = publisher.expected_assets(self.folder)
+                        self.assertEqual(bundle.name in assets, signed)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'Unexpected release asset set'):
+                            publisher.expected_assets(self.folder)
+
+    def test_optional_dmgs_require_integrity_and_manifest_coverage(self):
+        for arch in ('amd64', 'arm64'):
+            dmg = self.folder / f'Wallpaper-{publisher.VERSION}-macos-{arch}.dmg'
+            for damage, message in (
+                ('tampered', 'Checksum mismatch'),
+                ('unchecked', 'cover every'),
+                ('duplicate', 'duplicate'),
+                ('empty', 'nonempty regular asset'),
+                ('directory', 'nonempty regular asset'),
+            ):
+                with self.subTest(arch=arch, damage=damage):
+                    if damage == 'unchecked':
+                        self.write_sums()
+                    dmg.write_bytes(b'dmg-fixture')
+                    if damage != 'unchecked':
+                        self.write_sums()
+                    if damage == 'duplicate':
+                        sums = self.folder / 'SHA256SUMS'
+                        record = next(line for line in sums.read_text().splitlines() if line.endswith('  ' + dmg.name))
+                        sums.write_text(sums.read_text() + record + '\n')
+                    elif damage == 'tampered':
+                        dmg.write_bytes(b'changed-dmg-fixture')
+                    elif damage == 'empty':
+                        dmg.write_bytes(b'')
+                    elif damage == 'directory':
+                        dmg.unlink()
+                        dmg.mkdir()
+                    try:
+                        with self.assertRaisesRegex(RuntimeError, message):
+                            publisher.expected_assets(self.folder)
+                    finally:
+                        if dmg.is_dir():
+                            dmg.rmdir()
+                        else:
+                            dmg.unlink()
+
+    def test_unknown_dmg_is_rejected(self):
+        (self.folder / f'Wallpaper-{publisher.VERSION}-macos-riscv64.dmg').write_bytes(b'unsupported')
+        self.write_sums()
+        with self.assertRaisesRegex(RuntimeError, 'Unexpected release asset set'):
+            publisher.expected_assets(self.folder)
 
     def test_changed_bytes_rejected(self):
         (self.folder / 'BUILD-INFO.txt').write_text('tampered')
@@ -274,8 +342,9 @@ class PublicationLifecycleTests(ReleaseFixture, unittest.TestCase):
         self.assertNotIn(('PATCH', 'releases/1'), self.server.writes)
         self.assertTrue(all(r['draft'] for r in self.server.releases))
 
-    def test_new_release_is_published_with_exact_tag_and_eight_hashed_assets(self):
+    def test_new_release_is_published_with_four_platform_packages_and_seven_hashed_assets(self):
         report = self.invoke()
+        self.assertEqual(len(report['assets']), 7)
         self.assertEqual(self.server.tag, {'type': 'commit', 'sha': COMMIT})
         self.assertEqual(self.server.uploads, self.all_names())
         self.assertEqual(report['tag'], publisher.TAG)
@@ -285,6 +354,47 @@ class PublicationLifecycleTests(ReleaseFixture, unittest.TestCase):
         self.assertTrue(all(set(a) == {'name', 'size', 'digest'} for a in report['assets']))
         self.assertFalse(self.server.releases[0]['draft'])
         self.assertTrue(self.server.releases[0]['prerelease'])
+
+    def test_missing_required_package_fails_before_network(self):
+        for suffix in REQUIRED_PACKAGES:
+            path = self.folder / f'Wallpaper-{publisher.VERSION}-{suffix}'
+            original = path.read_bytes()
+            with self.subTest(package=suffix):
+                path.unlink()
+                self.write_sums()
+                try:
+                    with self.assertRaisesRegex(RuntimeError, 'Unexpected release asset set') as failure:
+                        self.invoke()
+                    self.assertIn(path.name, str(failure.exception))
+                    self.assertEqual(self.server.calls, [])
+                finally:
+                    path.write_bytes(original)
+
+    def test_linux_package_fails_before_network(self):
+        (self.folder / f'Wallpaper-{publisher.VERSION}-linux-amd64.tar.gz').write_bytes(b'obsolete')
+        self.write_sums()
+        with self.assertRaisesRegex(RuntimeError, 'Unexpected release asset set'):
+            self.invoke()
+        self.assertEqual(self.server.calls, [])
+
+    def test_signed_update_and_optional_dmgs_are_published_and_rechecked(self):
+        info = self.folder / 'BUILD-INFO.txt'
+        info.write_text(info.read_text() + 'updater_signing=signed\n')
+        for suffix in ('updates.tar.gz', 'macos-amd64.dmg', 'macos-arm64.dmg'):
+            (self.folder / f'Wallpaper-{publisher.VERSION}-{suffix}').write_bytes(b'optional-fixture')
+        self.write_sums()
+        report = self.invoke()
+        self.assertEqual(self.server.uploads, self.all_names())
+        self.assertEqual({a['name'] for a in report['assets']}, set(self.all_names()))
+        self.assertEqual(len(report['assets']), 10)
+        self.server.writes.clear()
+        self.assertEqual(self.invoke(), report)
+        self.assertEqual(self.server.writes, [])
+        dmg = next(a for a in self.server.releases[0]['assets'] if a['name'].endswith('.dmg'))
+        dmg['digest'] = 'sha256:' + '0' * 64
+        with self.assertRaisesRegex(RuntimeError, 'will not overwrite'):
+            self.invoke()
+        self.assertEqual(self.server.writes, [])
 
     def test_upload_status_text_does_not_break_machine_readable_report(self):
         self.server.upload_stdout = 'Successfully uploaded 1 asset\n'
