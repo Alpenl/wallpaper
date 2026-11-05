@@ -1,1 +1,7 @@
 internal/render/shader/testdata/** text eol=lf
+.githooks/* text eol=lf
+scripts/claude-summary-context.sh text eol=lf
+*.png binary
+*.ico binary
+*.icns binary
+*.syso binary

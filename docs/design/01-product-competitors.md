@@ -2,7 +2,7 @@
 
 > **设计/研究基线**：正文保留原轮次的证据与目标，不表示本轮产品已实现或通过验收。当前状态见 [实现矩阵](../IMPLEMENTATION_STATUS.md)，来源解释与历史差异见 [证据约定](../EVIDENCE.md)。
 
-市场数据的完整版和来源链接见 `docs/research/wallpaper_research.md`。本章只保留和技术决策相关的要点。
+市场数据的完整版和来源链接见 `docs/research/wallpaper_research.md`。本章只保留和技术决策相关的要点。本机 WE 2.8.42 与本项目的逐项对比（Scene/编辑器/工坊、体积、分发与差距清单）见 [2026-11-05 对比报告](../research/COMPARISON_WALLPAPER_ENGINE_2026-11-05.md)；该报告是只读本机检查，不替代本章的选型依据，也不构成性能或市场结论。
 
 | 竞品 | 平台 | 技术要点 | 依据 |
 |---|---|---|---|

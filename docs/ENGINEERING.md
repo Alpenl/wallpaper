@@ -56,6 +56,56 @@ IPC major、update/config/WPK schema、cache version 独立；不支持的协议
 历史设计/实验明确标注且指向生产路径；删除历史实现时同步修正可运行性说明与引用。
 发版前复核 README 的版本、依赖、限制及实际测试平台，不把旧结果冒充新验证。
 
+### 每次提交追加总结（2026-11-05 起）
+
+每次包含代码、测试、脚本、配置或资源的提交，必须在
+[提交总结](COMMIT_SUMMARIES.md) 末尾追加独立条目，并与改动在同一个提交中暂存。
+已有条目不改写；纠错追加。纯 Markdown 提交可免，流程初始化仍记录。
+模板为 `## YYYY-MM-DD | 简短且唯一的主题`，包含非空的 `目的`、`改动`、`验证`、
+`限制` 四行；示例见总结文档。一个任务拆多次提交时逐个记录，不能只在最后补一次。
+总结不替代验证记录、用户文档或正式 release note，也不授予自动提交、推送权限。
+
+提交前按顺序：检查变更 → 写总结 → 明确暂存文件 → 运行检查 → 审查暂存 diff → 提交。
+
+```bash
+python3 scripts/check-commit-summary.py
+```
+
+Windows 可使用 `python`。检查依赖 Git 和 Python 3.9+，只读取实际暂存区，
+支持 `git commit -a`、路径选择及初始提交；未暂存的总结不算。
+非 `.md` 文件一律视为代码/配置/资源，删除与重命名也包含在内。
+代码 amend 须再追加修订条目；仅改 commit message、不改树时无须追加。
+Git 历史提供当前提交 SHA，总结只写提交前基线或已存在的相关 SHA，避免自引用循环。
+
+启用本地钩子（每个新克隆一次，Git 不随 clone 安装 hook）：先检查
+`git config --show-origin --get core.hooksPath` 和现有 `pre-commit` / `pre-merge-commit`；
+已有钩子必须保留并由维护者整合，不得直接覆盖。没有现有配置或钩子时：
+
+```bash
+git config --local core.hooksPath .githooks
+```
+
+Unix 克隆后确认两个钩子可执行；首次提交这两个文件时（尤其 Windows）
+用以下命令保留 Git 的 executable bit，后续克隆才可直接执行：
+
+```bash
+git add --chmod=+x .githooks/pre-commit .githooks/pre-merge-commit
+```
+
+[pre-commit](../.githooks/pre-commit) 检查实际暂存区，失败则阻止提交；
+[pre-merge-commit](../.githooks/pre-merge-commit) 阻止自动生成 merge commit，
+让维护者补总结后再 `git commit`（包括纯文档自动合并，合并结果仍留在暂存区）。
+它们不会写总结、自动暂存或提交。
+[项目 Claude 配置](../.claude/settings.json) 的 SessionStart hook 只读提示规则与
+钩子配置状态，不修改 Git 设置；新建配置后需新会话加载，不依赖旧会话热加载。
+
+合并代码使用 `git merge --no-ff --no-commit <branch>`，追加独立合并总结后再提交。
+来自被合并分支的旧总结不算本次合并总结；冲突解决保留 HEAD 的既有前缀，
+再追加另一分支的记录与合并条目。fast-forward 不创建新提交，无须额外条目。
+这是一道本地防漏检查，不是服务端强制策略；GitHub 网页合并、未安装钩子的克隆、
+禁用钩子和部分底层 Git 命令不受它保护。不得用 `--no-verify` 等主动绕开规则。
+现有 CI 的 `test_*.py` 自动发现会运行检查器回归，但不逐提交审查历史总结。
+
 ## 9. 语言
 log messages、error strings、identifiers 使用 English；注释沿用所在文件主导语言。
 用户文案通过既有 i18n；不做批量翻译或语言 lint。

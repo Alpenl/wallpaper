@@ -134,3 +134,10 @@ sceneprobe 是只读本地离线特征报告，不是 WE scene 播放能力，�
 - 改动：删除 internal/app 的 web/reactive 实现、internal/config 的 web 配置与迁移、macOS/Windows 的 Web/Shader 宿主、cmd/wallpaperd 的 sceneprobe 与 shader 探测、examples/shader-waves 与 examples/web-orbit、相关测试和 CI 步骤；壁纸类型与 wpk schema 收敛为 video|image，render.Item 去掉 Viewport/PackageDir/FPSCap/Kind；导入器拒绝 Shader/Web 来源；library schema 升到 5，旧 schema 不迁移——启动时忽略旧索引与分配并立即落盘为空库和空 assignments，旧磁盘壁纸目录保持不动；同步 i18n、示例、README、设计/验证/状态文档与 DECISIONS_PENDING（D-16 等）。为通过提交总结检查，本分支引入 master 已有的 docs/COMMIT_SUMMARIES.md 与 scripts/check-commit-summary.py。
 - 验证：go test -timeout 240s ./...、go vet -unsafeptr=false ./...、CGO_ENABLED=0 go build ./... 均通过；darwin/amd64、darwin/arm64、windows/arm64、linux/amd64 交叉构建通过；python scripts/check-docs.py 通过（46 个 Markdown、408 个本地链接）。
 - 限制：未做 Windows/macOS 真机运行与安装包验收，未运行 race 与真机性能测试；旧 library schema 数据被有意丢弃且不提供迁移或旧壁纸目录清理，新 schema 仍保持只读保护；本分支基于 9f09dbd，尚未合入 master 的图标与提交总结工具提交，后续合并时 COMMIT_SUMMARIES.md 需保留本分支的追加内容。
+
+## 2026-11-05 | 合并 master 最新图标、打包修复与提交流程
+
+- 目的：把 de-scope 分支同步到最新 master，使本地构建使用完整的应用图标、托盘绘制、NSIS 路径/编码修复、提交总结流程与最新发布脚本，而不是继续从旧基线手工摘取文件。
+- 改动：以 --no-ff --no-commit 合并 master 的 49a4e32、530ac41；解决 COMMIT_SUMMARIES.md 的 add/add 冲突并保留本分支既有条目；自动合并 README、docs/README、docs/ENGINEERING、docs/VALIDATION、internal/ui/shell.go 等，修正 README 中仍把离线 scene 探测当作当前能力的表述；应用图标、ICO/ICNS/.syso、托盘图标、NSIS Icon/DisplayIcon、cygpath 路径处理与提交总结工具随合并进入本分支；另为中文 Windows 下的 makensis 补 UTF-8 BOM，避免源文件编码报错。Web/Shader/响应式输入/scene 探测的删除保持不变。
+- 验证：go test -timeout 240s ./...、go vet -unsafeptr=false ./...、CGO_ENABLED=0 go build ./... 通过；python scripts/check-docs.py 通过（48 个 Markdown、426 个本地链接）；python scripts/check-icons.py 通过（9 个 Windows 帧、ICNS 11 元素、双架构 .syso）；合并后尚未重建安装器。
+- 限制：合并只同步 master 的两个提交，不等于 master 已接受 de-scope；安装器与真机验收需在合并提交后用新版本重建；未运行 race 与安装/卸载验收。

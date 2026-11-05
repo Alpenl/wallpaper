@@ -27,6 +27,8 @@ if [ -n "${WPAPP_NOTARY_PROFILE:-}" ] && [ -z "${WPAPP_CODESIGN_ID:-}" ]; then
 fi
 bash scripts/release-self-test.sh
 if [ "${SKIP_TESTS:-0}" != 1 ]; then bash scripts/check.sh; fi
+# check.sh is skipped with SKIP_TESTS=1; icon assets still gate the release.
+python3 scripts/check-icons.py
 # Never inherit a partial TARGETS/ARCHES value and label it a complete release.
 TARGETS='windows/amd64 windows/arm64 darwin/amd64 darwin/arm64' bash scripts/build.sh
 bash scripts/package-metadata.sh

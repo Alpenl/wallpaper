@@ -1,0 +1,9 @@
+#!/bin/sh
+# Git 在提交工作区根目录运行此钩子，并传入实际使用的 GIT_INDEX_FILE。
+for python in python3 python; do
+    if "$python" -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+        exec "$python" scripts/check-commit-summary.py
+    fi
+done
+printf '%s\n' 'Commit summary check requires Python 3.9+ (python3 or python).' >&2
+exit 1
