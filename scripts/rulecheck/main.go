@@ -18,18 +18,7 @@ func within(path, root string) bool {
 }
 
 func forbidden(file, imp string) bool {
-	if within(file, "internal/ui") {
-		if strings.HasPrefix(imp, "wpapp/internal/render/") {
-			return true
-		}
-		for _, root := range []string{"platform", "desktop/win", "desktop/mac", "desktop/linux"} {
-			if within(imp, "wpapp/internal/"+root) {
-				return true
-			}
-		}
-	}
-	return within(file, "internal/config") &&
-		(imp == "wpapp/internal/app" || within(imp, "wpapp/internal/ui"))
+	return within(file, "internal/session") && (within(imp, "wpapp/internal/platform/mac") || within(imp, "wpapp/internal/platform/win") || within(imp, "wpapp/internal/player"))
 }
 
 func check(file string, src any) []string {
@@ -47,7 +36,7 @@ func check(file string, src any) []string {
 	timeName := ""
 	for _, imp := range f.Imports {
 		path, _ := strconv.Unquote(imp.Path.Value)
-		if !test && forbidden(file, path) {
+		if forbidden(file, path) {
 			report(imp.Pos(), "forbidden direct import: "+path)
 		}
 		if path == "time" {

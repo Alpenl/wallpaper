@@ -1,3 +1,6 @@
+这是动态壁纸应用的重写分支。
+当前进度及真机验收标准见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)。
+
 # Wallpaper
 
 [工程规则](docs/ENGINEERING.md)
