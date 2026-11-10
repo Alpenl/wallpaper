@@ -1,0 +1,32 @@
+name: Rust spike
+on:
+  push:
+    branches: [rust-spike]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rust-spike-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Build spike
+        run: cargo build --release --locked -p wallpaper-spike
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wallpaper-spike-${{ matrix.runner }}
+          if-no-files-found: error
+          path: |
+            target/release/wallpaper-spike
+            target/release/wallpaper-spike.exe

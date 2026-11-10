@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 2,
+  "pause": { "batteryPolicy": "fps15", "lowBatteryPct": 150, "resumeDebounceMs": 0, "onFullscreen": false },
+  "startup": { "launchAtLogin": true },
+  "ui": { "lang": "synthetic-language", "theme": "synthetic-theme" },
+  "unknownSyntheticField": true
+}

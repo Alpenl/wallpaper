@@ -1,0 +1,18 @@
+[package]
+name = "wallpaper-spike"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wallpaper-core.workspace = true
+wallpaper-platform.workspace = true
+wallpaper-ui.workspace = true
+anyhow.workspace = true
+log.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+env_logger = "0.11"
+gpui.workspace = true
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["font-kit", "runtime_shaders"] }
+tray-icon = "=0.26.1"

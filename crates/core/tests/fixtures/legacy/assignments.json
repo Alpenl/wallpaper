@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 3,
+  "layout": "span",
+  "spanItem": "synthetic-span",
+  "default": "sample-video",
+  "displays": { "display-b": "sample-image", "display-a": "sample-video", "display-empty": "" },
+  "aliases": { "display-a": "Synthetic display A" },
+  "options": {
+    "display-a": { "paused": true, "fit": "fit", "speed": 1.5, "audio": "sound" },
+    "display-b": { "paused": false, "fit": "", "speed": 0, "audio": "" },
+    "display-only-options": { "paused": true, "fit": "invalid-fit", "speed": -1, "audio": "invalid-audio" }
+  }
+}

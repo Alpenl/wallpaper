@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 4,
+  "items": [
+    { "id": "sample-video", "title": "Synthetic video", "type": "video", "entry": "clip.mp4", "width": 1920, "height": 1080, "durationSec": 2.5, "sizeBytes": 4096, "addedAt": "2020-01-01T00:00:00Z", "props": { "fit": "fit" }, "unused": true },
+    { "id": "sample-image", "type": "image", "entry": "image.png", "props": { "fit": "" } },
+    { "id": "sample-stretch", "type": "image", "props": { "fit": "stretch" } },
+    { "id": "sample-invalid", "type": "video", "width": -1, "height": 4294967296, "durationSec": -1, "sizeBytes": -1, "props": { "fit": "unknown-fit" } },
+    { "id": "sample-null", "type": "image", "props": { "fit": null } },
+    { "id": "sample-web", "type": "web" },
+    { "id": "sample-unknown", "type": "unknown-type" },
+    { "id": "sample-no-type" }
+  ]
+}
