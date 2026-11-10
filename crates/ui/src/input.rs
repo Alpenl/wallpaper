@@ -102,6 +102,13 @@ pub fn render(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Statef
     let focused = shell.focus.is_focused(window);
     let focus = shell.focus.clone();
     let entity = cx.entity();
+    // Roughly what fits beside the icon and clear button; past it, keep the caret in view.
+    let overflowing = shell
+        .query
+        .chars()
+        .map(|c| if c.is_ascii() { 7.5 } else { 14. })
+        .sum::<f32>()
+        > 215.;
     row()
         .id("search")
         .relative()
@@ -121,6 +128,7 @@ pub fn render(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Statef
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
+                .when(overflowing, |s| s.justify_end())
                 .when(shell.query.is_empty() && !focused, |s| {
                     s.text_color(rgb(MUTED)).child("搜索")
                 })
@@ -158,9 +166,16 @@ pub fn render(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Statef
             if this.marked.is_some() {
                 return;
             }
+            let command = event.keystroke.modifiers.secondary(cx);
             match event.keystroke.key.as_str() {
+                "backspace" if command => this.query.clear(),
                 "backspace" => {
                     this.query.pop();
+                }
+                "v" if command => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                        this.query.push_str(&text.replace(['\r', '\n'], " "));
+                    }
                 }
                 "escape" => this.query.clear(),
                 _ => return,

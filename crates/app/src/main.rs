@@ -10,6 +10,7 @@ use gpui::{App, Application, Bounds, QuitMode, WindowBounds, WindowOptions, prel
 use runtime::{Runtime, Source};
 use std::{
     cell::{Cell, RefCell},
+    collections::VecDeque,
     rc::Rc,
     time::Duration,
 };
@@ -21,14 +22,21 @@ use wallpaper_ui::{Shell, UiCommand, UiSnapshot};
 struct Interface {
     controller: Controller,
     snapshot: UiSnapshot,
+    queued: VecDeque<UiCommand>,
     window: Option<gpui::WindowHandle<Shell>>,
 }
 impl Interface {
     fn dispatch(&mut self, command: UiCommand, runtime: &mut Runtime) {
         let main = MainThread::new().expect("foreground");
-        let mut submitted = false;
+        if matches!(command, UiCommand::Delete(_)) {
+            self.snapshot.deletion = None;
+        }
         let result = match command {
-            UiCommand::TogglePause => runtime.toggle(main),
+            UiCommand::TogglePause => {
+                let result = runtime.toggle(main);
+                self.snapshot.playback = Rc::new(runtime.snapshot());
+                result
+            }
             UiCommand::Error(error) => {
                 self.snapshot.error = Some(error);
                 return;
@@ -41,24 +49,32 @@ impl Interface {
                 self.snapshot.deletion = None;
                 return;
             }
+            // A quick save is still finishing; run this right after it instead of
+            // greying out the whole window for a few milliseconds.
+            command if self.controller.busy() && !self.snapshot.busy => {
+                self.queued.push_back(command);
+                return;
+            }
             command => {
+                let long_running = matches!(command, UiCommand::Import(_));
                 let result = self.controller.submit(
                     command,
                     runtime.displays(),
                     runtime.playing_items(),
                     runtime.is_play(),
                 );
-                submitted = result.is_ok();
+                if result.is_ok() {
+                    self.snapshot.notice.clear();
+                    if long_running {
+                        self.snapshot.busy = true;
+                        self.snapshot.progress = "正在导入…".into();
+                    }
+                }
                 result
             }
         };
         if let Err(error) = result {
             self.snapshot.error = Some(format!("{error:#}"));
-        }
-        self.snapshot.busy = self.controller.busy();
-        if submitted {
-            self.snapshot.progress = "正在处理…".into();
-            self.snapshot.notice.clear();
         }
     }
     fn poll(&mut self, runtime: &mut Runtime, main: MainThread) -> bool {
@@ -99,6 +115,9 @@ impl Interface {
                             self.snapshot.error = Some(format!("重新读取真实存储失败：{error:#}"))
                         }
                     }
+                    if let Some(next) = self.queued.pop_front() {
+                        self.dispatch(next, runtime);
+                    }
                 }
             }
         }
@@ -133,7 +152,7 @@ fn open_settings(
                 }),
                 ..Default::default()
             },
-            move |_, cx| {
+            move |window, cx| {
                 let cached = state.clone();
                 let source = Rc::new(move || cached.borrow().snapshot.clone());
                 let dispatch = Rc::new(move |command, cx: &mut App| {
@@ -142,7 +161,7 @@ fn open_settings(
                         .dispatch(command, &mut runtime.borrow_mut());
                     cx.refresh_windows();
                 });
-                cx.new(|cx| Shell::new(source, dispatch, cx))
+                cx.new(|cx| Shell::new(source, dispatch, window, cx))
             },
         )?;
         interface.borrow_mut().window = Some(handle);
@@ -185,6 +204,7 @@ fn run(
             deletion: None,
             display_errors: vec![],
         },
+        queued: VecDeque::new(),
         window: None,
     }));
     let app: Application = gpui_platform::application().with_assets(wallpaper_ui::Icons);

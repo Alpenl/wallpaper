@@ -19,13 +19,10 @@ const GLYPHS: &[(&str, &str)] = &[
         "trash",
         r#"<path d="M5 6h14l-1 15H6zM3 6h18M9 3h6M10 10v7m4-7v7"/>"#,
     ),
-    (
-        "folder",
-        r#"<path d="M2 6h8l2 3h10v11H2z" fill="white" stroke="none"/><path d="M3 4h7l2 2h8"/>"#,
-    ),
+    ("folder", r#"<path d="M3 5h6l2 3h10v11H3z"/>"#),
     (
         "gear",
-        r#"<path d="m10 2-1 3-3 1-3 4 1 3-1 3 3 3 3 1 1 2h4l1-2 3-1 3-3-1-3 1-3-3-4-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/>"#,
+        r#"<circle cx="12" cy="12" r="2.8"/><circle cx="12" cy="12" r="6.6"/><path d="M12 2v3.4M12 18.6V22M2 12h3.4M18.6 12H22M4.9 4.9l2.4 2.4M16.7 16.7l2.4 2.4M4.9 19.1l2.4-2.4M16.7 7.3l2.4-2.4"/>"#,
     ),
     (
         "monitor",

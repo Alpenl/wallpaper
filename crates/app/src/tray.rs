@@ -13,7 +13,7 @@ pub(crate) struct Tray {
 impl Tray {
     pub(crate) fn new() -> Result<Self> {
         let menu = Menu::new();
-        let open = MenuItem::new("打开设置", true, None);
+        let open = MenuItem::new("打开窗口", true, None);
         let pause = MenuItem::new("暂停", true, None);
         let quit = MenuItem::new("退出", true, None);
         menu.append_items(&[&open, &pause, &quit])?;
@@ -21,7 +21,7 @@ impl Tray {
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_icon(icon)
-            .with_tooltip("Wallpaper spike")
+            .with_tooltip("Wallpaper")
             .build()?;
         Ok(Self {
             _icon: icon,

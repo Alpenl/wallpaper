@@ -104,9 +104,18 @@ pub struct Shell {
     pub(crate) sort: Sort,
     pub(crate) descending: bool,
     pub(crate) focus: FocusHandle,
+    root: FocusHandle,
 }
 impl Shell {
-    pub fn new(source: Source, dispatch: Dispatch, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        source: Source,
+        dispatch: Dispatch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Key events only reach the root once something inside the window has focus.
+        let root = cx.focus_handle();
+        window.focus(&root, cx);
         Self {
             source,
             dispatch,
@@ -120,6 +129,7 @@ impl Shell {
             sort: Sort::Name,
             descending: false,
             focus: cx.focus_handle(),
+            root,
         }
     }
     /// The display that header, grid marks and "apply" target, with its 1-based number.
@@ -300,6 +310,9 @@ impl Shell {
             })
     }
     fn tabs(&self, s: &UiSnapshot, cx: &mut Context<Self>) -> Div {
+        let can_pause = s.playback.paused
+            || s.persistent_disabled.is_some()
+            || s.displays.iter().any(|d| s.assigned(d).is_some());
         column()
             .px(px(16.))
             .pt(px(10.))
@@ -333,7 +346,7 @@ impl Shell {
                             "暂停"
                         },
                         UiCommand::TogglePause,
-                        true,
+                        can_pause,
                         Button::Outline,
                     ))
                     .child(
@@ -357,16 +370,6 @@ impl Shell {
             .child(div().h(px(1.)).w_full().bg(rgb(ACCENT)))
     }
     fn footer(&self, s: &UiSnapshot) -> Div {
-        let phase = if s.playback.paused {
-            "已暂停"
-        } else {
-            match s.playback.phase {
-                Phase::Starting => "启动中",
-                Phase::Confirmed => "播放中",
-                Phase::Failed => "失败",
-                Phase::Stopped => "已停止",
-            }
-        };
         row()
             .h(px(52.))
             .px(px(16.))
@@ -382,7 +385,7 @@ impl Shell {
                     .truncate()
                     .text_size(px(12.))
                     .text_color(rgb(MUTED))
-                    .child(format!("主显示器：{phase} · {}", s.playback.reason)),
+                    .child(format!("主显示器：{}", status_line(&s.playback))),
             )
             .child(
                 div()
@@ -485,6 +488,21 @@ impl Render for Shell {
             .child(library::content(self, &s, window, cx))
             .child(self.footer(&s));
         row()
+            .id("root")
+            .track_focus(&self.root)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key != "escape" {
+                    return;
+                }
+                if this.menu.take().is_none() {
+                    if (this.source)().deletion.is_some() {
+                        (this.dispatch)(UiCommand::CancelDelete, cx);
+                    } else {
+                        this.overlay = Overlay::None;
+                    }
+                }
+                cx.notify();
+            }))
             .relative()
             .size_full()
             .items_start()
@@ -531,12 +549,57 @@ fn notice_bar(message: String, color: u32) -> Div {
         .mx(px(16.))
         .mt(px(8.))
         .px(px(10.))
+        .py(px(5.))
         .gap(px(8.))
         .flex_shrink_0()
         .bg(rgb(CARD))
         .border_1()
         .border_color(rgb(BORDER))
         .text_size(px(12.))
+        .line_height(px(18.))
         .text_color(rgb(color))
-        .child(div().flex_1().min_w_0().truncate().child(message))
+        .child(div().flex_1().min_w_0().child(message))
+}
+/// Reasons are only meaningful to the user when nothing is playing.
+fn status_line(playback: &Snapshot) -> String {
+    let reason = playback.reason.as_str();
+    if playback.paused {
+        return "已暂停".into();
+    }
+    match playback.phase {
+        Phase::Starting => "启动中".into(),
+        Phase::Confirmed => "播放中".into(),
+        Phase::Stopped if !reason.is_empty() => reason.into(),
+        Phase::Stopped => "已停止".into(),
+        Phase::Failed if !reason.is_empty() => format!("失败 · {reason}"),
+        Phase::Failed => "失败".into(),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::{Phase, Snapshot, status_line};
+    fn snapshot(phase: Phase, reason: &str, paused: bool) -> Snapshot {
+        Snapshot {
+            phase,
+            reason: reason.into(),
+            paused,
+            ..Snapshot::idle()
+        }
+    }
+    #[test]
+    fn status_line_shows_reasons_only_when_not_playing() {
+        assert_eq!(
+            status_line(&snapshot(Phase::Confirmed, "", false)),
+            "播放中"
+        );
+        assert_eq!(
+            status_line(&snapshot(Phase::Stopped, "未分配壁纸", false)),
+            "未分配壁纸"
+        );
+        assert_eq!(
+            status_line(&snapshot(Phase::Failed, "decoder failed", false)),
+            "失败 · decoder failed"
+        );
+        assert_eq!(status_line(&snapshot(Phase::Failed, "x", true)), "已暂停");
+    }
 }

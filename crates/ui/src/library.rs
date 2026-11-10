@@ -179,7 +179,12 @@ pub fn content(shell: &Shell, s: &UiSnapshot, window: &Window, cx: &mut Context<
         .overflow_y_scroll()
         .px(px(16.))
         .pb(px(12.));
-    let body = if s.items.is_empty() {
+    let body = if s.items.is_empty() && s.busy {
+        body.justify_center()
+            .items_center()
+            .text_color(rgb(MUTED))
+            .child(s.progress.clone())
+    } else if s.items.is_empty() {
         body.justify_center()
             .items_center()
             .gap(px(12.))
@@ -194,7 +199,7 @@ pub fn content(shell: &Shell, s: &UiSnapshot, window: &Window, cx: &mut Context<
                     .text_color(rgb(MUTED))
                     .child("打开图片或视频，把它设置为桌面壁纸。"),
             )
-            .child(shell.import_button("empty-import", Button::Outline, s.busy))
+            .child(shell.import_button("empty-import", Button::Primary, s.busy))
     } else if items.is_empty() {
         body.justify_center()
             .items_center()
@@ -240,6 +245,23 @@ fn size_label(bytes: u64) -> String {
     };
     format!("{:.1} {unit}", bytes as f64 / divisor)
 }
+fn duration_label(seconds: f64) -> String {
+    let total = seconds.round().max(1.) as u64;
+    let (hours, minutes, rest) = (total / 3600, total / 60 % 60, total % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{rest:02}")
+    } else {
+        format!("{minutes}:{rest:02}")
+    }
+}
+/// Keeps the wallpaper's own proportions; a square preview would crop widescreen art.
+fn preview_height(pixels: (Option<u32>, Option<u32>)) -> f32 {
+    let width = INSPECTOR - 32.;
+    match pixels {
+        (Some(w), Some(h)) if w > 0 && h > 0 => (width * h as f32 / w as f32).clamp(120., width),
+        _ => width * 9. / 16.,
+    }
+}
 fn summary(item: &Item) -> String {
     let kind = match item.kind {
         Kind::Image => "图片",
@@ -269,7 +291,11 @@ pub fn panel(shell: &Shell, s: &UiSnapshot, cx: &mut Context<Shell>) -> Div {
             .justify_center()
             .items_center()
             .text_color(rgb(MUTED))
-            .child("选择壁纸查看详情");
+            .child(if s.items.is_empty() {
+                "导入壁纸后在这里查看详情"
+            } else {
+                "选择壁纸查看详情"
+            });
     };
     let item = &entry.item;
     let mut chips = row().flex_wrap().justify_center().gap(px(6.));
@@ -279,7 +305,7 @@ pub fn panel(shell: &Shell, s: &UiSnapshot, cx: &mut Context<Shell>) -> Div {
     if item.kind == Kind::Video
         && let Some(duration) = item.duration_sec
     {
-        chips = chips.child(chip(format!("{duration:.1} 秒")));
+        chips = chips.child(chip(duration_label(duration)));
     }
     if let Some(date) = item.added_at.split('T').next().filter(|d| !d.is_empty()) {
         chips = chips.child(chip(format!("添加于 {date}")));
@@ -310,7 +336,7 @@ pub fn panel(shell: &Shell, s: &UiSnapshot, cx: &mut Context<Shell>) -> Div {
                 .child(
                     div()
                         .w_full()
-                        .h(px(INSPECTOR - 32.))
+                        .h(px(preview_height((item.width, item.height))))
                         .flex_shrink_0()
                         .overflow_hidden()
                         .border_1()
@@ -368,30 +394,55 @@ pub fn panel(shell: &Shell, s: &UiSnapshot, cx: &mut Context<Shell>) -> Div {
                 .border_t_1()
                 .border_color(rgb(BORDER))
                 .when_some(target, |v, (number, display)| {
+                    let applied = s.assigned(display).is_some_and(|i| i.item.id == item.id);
                     v.child(
                         shell
                             .action(
                                 "assign-display",
                                 None,
-                                format!("应用到显示器 {number}"),
+                                if applied {
+                                    format!("已应用到显示器 {number}")
+                                } else {
+                                    format!("应用到显示器 {number}")
+                                },
                                 UiCommand::AssignDisplay(item.id.clone(), display.id.clone()),
-                                enabled,
+                                enabled && !applied,
                                 Button::Primary,
                             )
                             .flex_1(),
                     )
                 })
-                .child(
-                    shell
-                        .action(
-                            "assign-all",
-                            None,
-                            "全部显示器",
-                            UiCommand::AssignAll(item.id.clone()),
-                            enabled,
-                            Button::Outline,
-                        )
-                        .flex_1(),
-                ),
+                .when(s.displays.len() > 1 || target.is_none(), |v| {
+                    v.child(
+                        shell
+                            .action(
+                                "assign-all",
+                                None,
+                                "全部显示器",
+                                UiCommand::AssignAll(item.id.clone()),
+                                enabled,
+                                Button::Outline,
+                            )
+                            .flex_1(),
+                    )
+                }),
         )
+}
+#[cfg(test)]
+mod tests {
+    use super::{INSPECTOR, duration_label, preview_height};
+    #[test]
+    fn duration_uses_clock_format() {
+        assert_eq!(duration_label(0.4), "0:01");
+        assert_eq!(duration_label(83.2), "1:23");
+        assert_eq!(duration_label(3725.), "1:02:05");
+    }
+    #[test]
+    fn preview_follows_aspect_within_limits() {
+        let width = INSPECTOR - 32.;
+        assert_eq!(preview_height((Some(1920), Some(1080))), width * 9. / 16.);
+        assert_eq!(preview_height((Some(1080), Some(1920))), width);
+        assert_eq!(preview_height((Some(4000), Some(400))), 120.);
+        assert_eq!(preview_height((None, None)), width * 9. / 16.);
+    }
 }
