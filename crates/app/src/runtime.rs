@@ -17,6 +17,10 @@ use wallpaper_core::{
 };
 use wallpaper_platform::{Desktop, MainThread};
 
+fn topology_changed(current: &[DisplayInfo], next: &[DisplayInfo]) -> bool {
+    current != next
+}
+
 fn log_reason(reason: &str) -> String {
     wallpaper_core::redact::redact(reason, &[]).unwrap_or_else(|_| "reason omitted".into())
 }
@@ -348,7 +352,7 @@ impl Runtime {
         }
         Ok(changed)
     }
-    fn is_play(&self) -> bool {
+    pub(crate) fn is_play(&self) -> bool {
         matches!(self.source, Source::Play(_))
     }
     pub(crate) fn snapshot(&self) -> Snapshot {
@@ -570,6 +574,11 @@ impl Runtime {
             .map(|d| &d.id.0)
             .collect();
         log::info!("topology changed: added={added:?} removed={removed:?}");
+        self.reconcile(displays, main)?;
+        Ok(true)
+    }
+    fn reconcile(&mut self, displays: Vec<DisplayInfo>, main: MainThread) -> Result<()> {
+        let topology_changed = topology_changed(&self.topology, &displays);
         let targets = self.source.targets(&displays);
         let current = self
             .screens
@@ -603,7 +612,8 @@ impl Runtime {
         }
         for id in changes.keep {
             let screen = self.screens.get_mut(&id).unwrap();
-            if let Some(desktop) = &mut screen.desktop
+            if topology_changed
+                && let Some(desktop) = &mut screen.desktop
                 && let Err(e) = desktop.reposition(main)
             {
                 screen.fail(
@@ -617,7 +627,59 @@ impl Runtime {
         }
         self.topology = displays;
         self.update_decisions(main, false)?;
-        Ok(true)
+        Ok(())
+    }
+    pub(crate) fn refresh_source(
+        &mut self,
+        library: Library,
+        assignments: Assignments,
+        main: MainThread,
+    ) -> Result<()> {
+        if let Source::Assigned {
+            library: old_library,
+            assignments: old_assignments,
+            ..
+        } = &mut self.source
+        {
+            *old_library = library;
+            *old_assignments = assignments;
+            self.reconcile(self.topology.clone(), main)?;
+            self.publish()?;
+        }
+        Ok(())
+    }
+    fn replace_settings(&mut self, settings: PauseSettings) -> bool {
+        if self.is_play() {
+            return false;
+        }
+        self.settings = settings;
+        true
+    }
+    pub(crate) fn set_settings(&mut self, settings: PauseSettings, main: MainThread) -> Result<()> {
+        if !self.replace_settings(settings) {
+            return Ok(());
+        }
+        self.update_decisions(main, false)?;
+        self.publish()
+    }
+    pub(crate) fn displays(&self) -> Vec<DisplayInfo> {
+        self.topology.clone()
+    }
+    pub(crate) fn playing_items(&self) -> Vec<String> {
+        self.screens
+            .values()
+            .flat_map(|s| match &s.target {
+                Target::Play { item, path, .. } => vec![item.clone(), format!("path:{path}")],
+                _ => vec![],
+            })
+            .collect()
+    }
+    pub(crate) fn display_errors(&self) -> Vec<String> {
+        self.screens
+            .values()
+            .filter(|s| s.session.state.phase == Phase::Failed)
+            .map(|s| format!("显示器 {}：{}", s.info.name, s.session.state.reason))
+            .collect()
     }
     pub(crate) fn tick(&mut self, main: MainThread) -> Result<()> {
         let wall_now = SystemTime::now();
@@ -720,6 +782,36 @@ mod tests {
     use super::*;
     use wallpaper_core::displays::Frame;
 
+    #[test]
+    fn reposition_depends_on_entire_topology() {
+        let a = info("a", true);
+        let b = info("b", false);
+        assert!(!topology_changed(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&a)
+        ));
+        assert!(topology_changed(
+            std::slice::from_ref(&a),
+            &[a.clone(), b.clone()]
+        ));
+        assert!(topology_changed(&[a.clone(), b], &[a]));
+    }
+    #[test]
+    fn play_keeps_default_pause_settings() {
+        let mut runtime = Runtime::new(
+            Source::Play("test.mp4".into()),
+            None,
+            Rc::new(Cell::new(0)),
+            PauseSettings::default(),
+        );
+        let stored = PauseSettings {
+            low_battery_pct: 91,
+            on_fullscreen: false,
+            ..Default::default()
+        };
+        runtime.replace_settings(stored);
+        assert_eq!(runtime.settings, PauseSettings::default());
+    }
     #[test]
     fn log_reasons_preserve_diagnostics_and_redact_generic_secrets() {
         assert_eq!(log_reason("avf: Cannot Open"), "avf: Cannot Open");

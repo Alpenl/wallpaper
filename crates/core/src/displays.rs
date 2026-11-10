@@ -496,6 +496,39 @@ mod tests {
         );
     }
     #[test]
+    fn assignment_and_fit_changes_restart_only_affected_screen() {
+        let a = display("a");
+        let b = display("b");
+        let current = [a.clone(), b.clone()]
+            .into_iter()
+            .map(|d| {
+                (
+                    d.id,
+                    Running {
+                        target: play(),
+                        frame: d.frame,
+                        scale: d.scale,
+                    },
+                )
+            })
+            .collect();
+        for fit_only in [false, true] {
+            let mut changed = play();
+            if let Target::Play { item, fit, .. } = &mut changed {
+                if fit_only {
+                    *fit = Fit::Stretch;
+                } else {
+                    *item = "other".into();
+                }
+            }
+            let targets = BTreeMap::from([(a.id.clone(), changed), (b.id.clone(), play())]);
+            let changes = diff(&current, &[a.clone(), b.clone()], &targets);
+            assert_eq!(changes.stop, vec![a.id.clone()]);
+            assert_eq!(changes.start, vec![a.id.clone()]);
+            assert_eq!(changes.keep, vec![b.id.clone()]);
+        }
+    }
+    #[test]
     fn other_screen_added_or_removed_keeps_existing_screen() {
         let a = display("a");
         let b = display("b");

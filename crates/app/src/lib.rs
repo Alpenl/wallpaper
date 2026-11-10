@@ -20,3 +20,5 @@ pub(crate) fn test_temp(label: &str) -> std::path::PathBuf {
 }
 
 pub mod diagnostics;
+
+pub mod controller;
