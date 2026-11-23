@@ -90,6 +90,21 @@ func TestResumeOptionsPreservePlaybackAndFilters(t *testing.T) {
 	}
 }
 
+// decodeCommand normalizes either a JSON array command (["cmd", ...]) or a
+// named-argument JSON object command ({"name":"loadfile",...}) for fakeIPC.
+func decodeCommand(raw json.RawMessage) ([]json.RawMessage, map[string]json.RawMessage) {
+	trimmed := strings.TrimSpace(string(raw))
+	if strings.HasPrefix(trimmed, "{") {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) == nil {
+			return []json.RawMessage{obj["name"], obj["url"], obj["flags"], obj["options"]}, obj
+		}
+	}
+	var arr []json.RawMessage
+	_ = json.Unmarshal(raw, &arr)
+	return arr, nil
+}
+
 // Respond to real JSON IPC messages without a running mpv or a display server.
 func fakeIPC(t *testing.T, respond func([]json.RawMessage) (any, string)) *client {
 	t.Helper()
@@ -100,18 +115,19 @@ func fakeIPC(t *testing.T, respond func([]json.RawMessage) (any, string)) *clien
 		sc := bufio.NewScanner(b)
 		for sc.Scan() {
 			var request struct {
-				Command []json.RawMessage `json:"command"`
-				ID      int               `json:"request_id"`
+				Command json.RawMessage `json:"command"`
+				ID      int             `json:"request_id"`
 			}
 			if err := json.Unmarshal(sc.Bytes(), &request); err != nil {
 				return
 			}
-			data, e := respond(request.Command)
+			args, _ := decodeCommand(request.Command)
+			data, e := respond(args)
 			if e == "" {
 				e = "success"
 			}
 			_ = json.NewEncoder(b).Encode(map[string]any{"request_id": request.ID, "error": e, "data": data})
-			if string(request.Command[0]) == `"loadfile"` && e == "success" {
+			if len(args) > 0 && string(args[0]) == `"loadfile"` && e == "success" {
 				_ = json.NewEncoder(b).Encode(map[string]any{"event": "file-loaded"})
 			}
 		}
@@ -137,11 +153,11 @@ func TestL3ResumeSendsPlaybackOptions(t *testing.T) {
 	load := <-commands
 	var name string
 	_ = json.Unmarshal(load[0], &name)
-	if name != "loadfile" || len(load) != 5 {
+	if name != "loadfile" || len(load) != 4 {
 		t.Fatalf("unexpected load: %s", load)
 	}
 	var options map[string]string
-	if err := json.Unmarshal(load[4], &options); err != nil {
+	if err := json.Unmarshal(load[3], &options); err != nil {
 		t.Fatal(err)
 	}
 	want := resumeOptions(r.o, 8.5, 15)
@@ -336,7 +352,7 @@ func TestSourceSwapPreservesPausePositionAndCap(t *testing.T) {
 		t.Fatal(load)
 	}
 	var opts map[string]string
-	if err := json.Unmarshal(load[4], &opts); err != nil {
+	if err := json.Unmarshal(load[3], &opts); err != nil {
 		t.Fatal(err)
 	}
 	if opts["start"] != "12.500" || opts["pause"] != "yes" || !strings.Contains(opts["vf"], "fps=15") {
@@ -387,15 +403,16 @@ func TestLoadWaitsForFileLoadedBeforePause(t *testing.T) {
 		sc := bufio.NewScanner(b)
 		for sc.Scan() {
 			var req struct {
-				Command []json.RawMessage `json:"command"`
-				ID      int               `json:"request_id"`
+				Command json.RawMessage `json:"command"`
+				ID      int             `json:"request_id"`
 			}
 			if json.Unmarshal(sc.Bytes(), &req) != nil {
 				return
 			}
-			commands <- req.Command
+			args, _ := decodeCommand(req.Command)
+			commands <- args
 			_ = json.NewEncoder(b).Encode(map[string]any{"request_id": req.ID, "error": "success"})
-			if string(req.Command[0]) == `"loadfile"` {
+			if len(args) > 0 && string(args[0]) == `"loadfile"` {
 				<-loaded
 				_ = json.NewEncoder(b).Encode(map[string]any{"event": "file-loaded"})
 			}

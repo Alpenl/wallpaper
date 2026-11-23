@@ -10,11 +10,11 @@ cbuffer WPUniforms : register(b0) { float4 wp_resolutionTime; float4 wp_deltaFra
 #define iAudioLevel wp_deltaFrame.z
 void mainImage(out float4 c, in float2 p) {
 float a = iTime;
-float2x2 r = wp_constructor0(cos(a), sin(a), -sin(a), cos(a));
+float2x2 r = wp_constructor0(cos(a), sin(a), -(sin(a)), cos(a));
 float2 q = mul(r, (((p / iResolution.xy) - 0.5)));
 (c = float4((q + 0.5), 0.0, 1.0));
 }
 void wp_init() {;}
 
-float4 wp_vertex(uint id : SV_VertexID) : SV_Position { return float4(id == 1 ? 3.0 : -1.0, id == 2 ? 3.0 : -1.0, 0.0, 1.0); }
-float4 wp_fragment(float4 pos : SV_Position) : SV_Target { float4 color=0.0; wp_init(); mainImage(color,float2(pos.x,iResolution.y-pos.y)); return color; }
+float4 wp_vertex(uint wp_id : SV_VertexID) : SV_Position { return float4(wp_id == 1 ? 3.0 : -1.0, wp_id == 2 ? 3.0 : -1.0, 0.0, 1.0); }
+float4 wp_fragment(float4 wp_pos : SV_Position) : SV_Target { float4 wp_color=0.0; wp_init(); mainImage(wp_color,float2(wp_pos.x,iResolution.y-wp_pos.y)); return wp_color; }

@@ -129,6 +129,9 @@ func verify(args []string) error {
 	plat := fs.String("platform", "", "平台")
 	pubp := fs.String("pub", "", "update.pub")
 	fs.Parse(args)
+	if *plat == "" || *pubp == "" {
+		return fmt.Errorf("-platform and -pub are required")
+	}
 	pub, err := readKey(*pubp, ed25519.PublicKeySize)
 	if err != nil {
 		return err
@@ -145,6 +148,9 @@ func verify(args []string) error {
 	m, err := update.Verify(ed25519.PublicKey(pub), mb, string(sig))
 	if err != nil {
 		return err
+	}
+	if m.Platform != *plat {
+		return fmt.Errorf("manifest platform %q does not match -platform %q", m.Platform, *plat)
 	}
 	if bad := update.Plan(d, m); len(bad) > 0 {
 		return fmt.Errorf("%d files do not match the manifest", len(bad))

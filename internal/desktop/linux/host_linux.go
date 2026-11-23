@@ -43,6 +43,7 @@ type Host struct {
 	events              chan desktop.Event
 	stop                chan struct{}
 	mu                  sync.Mutex
+	rootW, rootH        uint16
 	surfs               map[xproto.Window]bool
 	once                sync.Once
 	foreground          desktop.ForegroundTracker
@@ -71,6 +72,13 @@ func (h *Host) Start() error {
 	}
 	h.c = c
 	h.scr = xproto.Setup(c).DefaultScreen(c)
+	h.mu.Lock()
+	h.rootW, h.rootH = h.scr.WidthInPixels, h.scr.HeightInPixels
+	h.mu.Unlock()
+	if err := xproto.ChangeWindowAttributesChecked(h.c, h.scr.Root, xproto.CwEventMask, []uint32{xproto.EventMaskStructureNotify}).Check(); err != nil {
+		h.log.Warn("x11: failed to subscribe root ConfigureNotify", "err", err)
+	}
+	h.refreshRootGeometry()
 	h.initForeground()
 	// Host 拥有事件读取循环；Close 关闭 X11 连接后退出。
 	go h.drain()
@@ -79,13 +87,37 @@ func (h *Host) Start() error {
 	return nil
 }
 
+func (h *Host) refreshRootGeometry() {
+	if h.c == nil || h.scr == nil {
+		return
+	}
+	geom, err := xproto.GetGeometry(h.c, xproto.Drawable(h.scr.Root)).Reply()
+	if err != nil || geom == nil || geom.Width == 0 || geom.Height == 0 {
+		return
+	}
+	h.mu.Lock()
+	h.rootW, h.rootH = geom.Width, geom.Height
+	h.mu.Unlock()
+}
+
+func (h *Host) rootSize() (uint16, uint16) {
+	h.mu.Lock()
+	w, ht := h.rootW, h.rootH
+	h.mu.Unlock()
+	if (w == 0 || ht == 0) && h.scr != nil {
+		return h.scr.WidthInPixels, h.scr.HeightInPixels
+	}
+	return w, ht
+}
+
 func (h *Host) drain() {
 	for {
 		ev, err := h.c.WaitForEvent()
 		if ev == nil && err == nil {
 			return // 连接关闭
 		}
-		if _, ok := ev.(xproto.ConfigureNotifyEvent); ok {
+		if cfg, ok := ev.(xproto.ConfigureNotifyEvent); ok && cfg.Window == h.scr.Root {
+			h.refreshRootGeometry()
 			h.emit(desktop.Event{Kind: desktop.EventDisplaysChanged, Source: "ConfigureNotify"})
 		}
 	}
@@ -142,6 +174,11 @@ func ReadBattery(dir string) (bool, int) {
 		if strings.TrimSpace(string(typ)) != "Battery" {
 			continue
 		}
+		// Exclude peripheral device batteries (wireless mice, keyboards, controllers).
+		scope, _ := os.ReadFile(filepath.Join(p, "scope"))
+		if strings.TrimSpace(string(scope)) == "Device" {
+			continue
+		}
 		st, _ := os.ReadFile(filepath.Join(p, "status"))
 		cap, _ := os.ReadFile(filepath.Join(p, "capacity"))
 		n, err := strconv.Atoi(strings.TrimSpace(string(cap)))
@@ -157,8 +194,9 @@ func (h *Host) Displays() []desktop.Display {
 	if h.scr == nil {
 		return nil
 	}
+	w, ht := h.rootSize()
 	return []desktop.Display{{ID: "x11-0", Device: os.Getenv("DISPLAY"), Scale: 1, Primary: true,
-		Bounds: image.Rect(0, 0, int(h.scr.WidthInPixels), int(h.scr.HeightInPixels))}}
+		Bounds: image.Rect(0, 0, int(w), int(ht))}}
 }
 
 func (h *Host) atom(name string) xproto.Atom {
@@ -209,14 +247,14 @@ func (h *Host) CreateSurface(id desktop.DisplayID) (desktop.Surface, error) {
 	if id != "x11-0" {
 		return nil, fmt.Errorf("x11: unknown display %s", id)
 	}
-	w, ht := h.scr.WidthInPixels, h.scr.HeightInPixels
+	w, ht := h.rootSize()
 	wid, err := xproto.NewWindowId(h.c)
 	if err != nil {
 		return nil, err
 	}
 	if err := xproto.CreateWindowChecked(h.c, h.scr.RootDepth, wid, h.scr.Root, 0, 0, w, ht, 0,
-		xproto.WindowClassInputOutput, h.scr.RootVisual, xproto.CwBackPixel|xproto.CwEventMask,
-		[]uint32{0, xproto.EventMaskStructureNotify}).Check(); err != nil {
+		xproto.WindowClassInputOutput, h.scr.RootVisual, xproto.CwBackPixel,
+		[]uint32{0}).Check(); err != nil {
 		return nil, err
 	}
 	xproto.ChangeProperty(h.c, xproto.PropModeReplace, wid, h.atom("_NET_WM_WINDOW_TYPE"), xproto.AtomAtom, 32, 1, u32le(uint32(h.atom("_NET_WM_WINDOW_TYPE_DESKTOP"))))

@@ -38,6 +38,7 @@ type Renderer struct {
 	options       render.PlaybackOptions
 	stop          chan struct{}
 	pendingStart  float64
+	seeking       bool
 	positionKnown bool
 	awaitingFrame bool
 	stats         atomic.Value // render.Stats; no native/UI calls in Stats
@@ -108,7 +109,7 @@ func (r *Renderer) UpdatePlayback(o render.PlaybackOptions) error {
 		if o.Volume != r.options.Volume {
 			r.player.Send(macos.Sel("setVolume:"), float32(o.Volume)/100)
 		}
-		if o.Speed != r.options.Speed && !r.paused && r.pendingStart == 0 {
+		if o.Speed != r.options.Speed && !r.paused && r.pendingStart == 0 && !r.seeking {
 			r.player.Send(macos.Sel("setRate:"), float32(o.Speed))
 		}
 		r.options = o
@@ -116,11 +117,20 @@ func (r *Renderer) UpdatePlayback(o render.PlaybackOptions) error {
 	return err
 }
 
-// Resolve the exported NSString constants rather than depending on their
-// undocumented string values. Framework loading is deferred until Load.
-var gravityOnce sync.Once
-var gravities map[string]objc.ID
-var gravityErr error
+// rawPtr reinterprets a native (non-Go) symbol address as unsafe.Pointer.
+func rawPtr(addr uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&addr))
+}
+
+// Resolve the exported NSString constants and seek completion msgSend binding
+// rather than depending on undocumented string values.
+var (
+	gravityOnce       sync.Once
+	gravities         map[string]objc.ID
+	mediaTypeVideo    objc.ID
+	msgSeekCompletion func(objc.ID, objc.SEL, macos.CMTime, macos.CMTime, macos.CMTime, objc.Block)
+	gravityErr        error
+)
 
 func loadGravities() error {
 	gravityOnce.Do(func() {
@@ -136,10 +146,60 @@ func loadGravities() error {
 				gravityErr = fmt.Errorf("avf: %s: %w", symbol, err)
 				return
 			}
-			gravities[fit] = *(*objc.ID)(unsafe.Pointer(address))
+			gravities[fit] = *(*objc.ID)(rawPtr(address))
 		}
+		if addr, err := purego.Dlsym(h, "AVMediaTypeVideo"); err == nil {
+			mediaTypeVideo = *(*objc.ID)(rawPtr(addr))
+		}
+		lo, err := purego.Dlopen("/usr/lib/libobjc.A.dylib", purego.RTLD_NOW)
+		if err != nil {
+			gravityErr = err
+			return
+		}
+		purego.RegisterLibFunc(&msgSeekCompletion, lo, "objc_msgSend")
 	})
 	return gravityErr
+}
+
+// buildFPSComposition inspects video track geometry and nominal frame rate off
+// the main thread so AppKit never blocks synchronously loading tracks. It
+// returns a retained AVMutableVideoComposition only when fps > 0, naturalSize
+// is valid, and fps is strictly below the track's nominal frame rate.
+func buildFPSComposition(path string, fps int) (objc.ID, error) {
+	if fps <= 0 {
+		return 0, nil
+	}
+	pool := macos.Class("NSAutoreleasePool").Send(macos.Sel("new"))
+	defer pool.Send(macos.Sel("drain"))
+	url := macos.Class("NSURL").Send(macos.Sel("fileURLWithPath:"), macos.NSString(path))
+	asset := macos.Class("AVURLAsset").Send(macos.Sel("URLAssetWithURL:options:"), url, objc.ID(0))
+	if asset == 0 {
+		return 0, nil
+	}
+	mt := mediaTypeVideo
+	if mt == 0 {
+		mt = macos.NSString("vide")
+	}
+	tracks := asset.Send(macos.Sel("tracksWithMediaType:"), mt)
+	if tracks == 0 || objc.Send[uintptr](tracks, macos.Sel("count")) == 0 {
+		return 0, nil
+	}
+	track := tracks.Send(macos.Sel("objectAtIndex:"), uintptr(0))
+	if track == 0 {
+		return 0, nil
+	}
+	natural := objc.Send[macos.CGSize](track, macos.Sel("naturalSize"))
+	nominalFPS := float64(objc.Send[float32](track, macos.Sel("nominalFrameRate")))
+	if !shouldAttachFPSComposition(fps, natural.W, natural.H, nominalFPS) {
+		return 0, nil
+	}
+	comp := macos.Class("AVMutableVideoComposition").Send(macos.Sel("videoCompositionWithPropertiesOfAsset:"), asset)
+	if comp == 0 {
+		return 0, errors.New("avf: could not create video composition for FPS cap")
+	}
+	macos.MsgSetCMTime(comp, macos.Sel("setFrameDuration:"), macos.CMTime{Value: 1, Timescale: int32(fps), Flags: 1})
+	comp.Send(macos.Sel("retain"))
+	return comp, nil
 }
 
 func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
@@ -156,36 +216,41 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	if view == 0 {
 		return errors.New("avf: no view")
 	}
-	r.close(r.surf != nil && r.surf.Native() == uintptr(view))
+	r.mu.Lock()
+	sameSurface := r.surf != nil && r.surf.Native() == uintptr(view)
+	fps := r.fps
+	o := r.options
+	r.mu.Unlock()
+	r.close(sameSurface)
+
+	// Prepare optional FPS videoComposition off the main thread.
+	comp, err := buildFPSComposition(it.Path, fps)
+	if err != nil {
+		return err
+	}
+
 	stop := make(chan struct{})
 	r.mu.Lock()
 	r.released = false
 	r.item, r.surf, r.paused = it, s, paused
 	r.stop, r.pendingStart = stop, it.Start
+	r.seeking = false
 	r.positionKnown = false
 	r.awaitingFrame = true
-	fps := r.fps
-	o := r.options
 	r.mu.Unlock()
 	// Retain the saved resume offset while readiness/seek is pending. Otherwise
 	// an immediate restart would overwrite a valid saved position with zero.
 	r.stats.Store(render.Stats{Backend: "avf", HWDec: "unknown", Pos: it.Start})
-	var loadErr error
 	macos.Main(func() {
+		defer func() {
+			if comp != 0 {
+				comp.Send(macos.Sel("release"))
+			}
+		}()
 		url := macos.Class("NSURL").Send(macos.Sel("fileURLWithPath:"), macos.NSString(it.Path))
 		item := macos.Class("AVPlayerItem").Send(macos.Sel("playerItemWithURL:"), url)
-		if fps > 0 {
-			// F-05 限帧：给模板 item 挂一个 frameDuration=1/fps 的 videoComposition（AVPlayerLooper 复制模板，
-			// 每一轮都带上）。未在真机验证【推断】。
-			asset := item.Send(macos.Sel("asset"))
-			comp := macos.Class("AVMutableVideoComposition").Send(macos.Sel("videoCompositionWithPropertiesOfAsset:"), asset)
-			if comp != 0 {
-				macos.MsgSetCMTime(comp, macos.Sel("setFrameDuration:"), macos.CMTime{Value: 1, Timescale: int32(fps), Flags: 1})
-				item.Send(macos.Sel("setVideoComposition:"), comp)
-			} else {
-				loadErr = errors.New("avf: could not create video composition for FPS cap")
-				return
-			}
+		if comp != 0 {
+			item.Send(macos.Sel("setVideoComposition:"), comp)
 		}
 		p := macos.Class("AVQueuePlayer").Send(macos.Sel("new"))
 		p.Send(macos.Sel("setMuted:"), o.Muted)
@@ -195,6 +260,12 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		ly := macos.Class("AVPlayerLayer").Send(macos.Sel("playerLayerWithPlayer:"), p)
 		ly.Send(macos.Sel("retain"))
 		ly.Send(macos.Sel("setVideoGravity:"), gravities[o.Fit])
+		// Keep an opaque black backdrop on the video layer because the parent window may be transparent.
+		if black := macos.Class("NSColor").Send(macos.Sel("blackColor")); black != 0 {
+			if cg := black.Send(macos.Sel("CGColor")); cg != 0 {
+				ly.Send(macos.Sel("setBackgroundColor:"), cg)
+			}
+		}
 		root := view.Send(macos.Sel("layer"))
 		macos.MsgSetFrame(ly, macos.Sel("setFrame:"), objc.Send[macos.CGRect](root, macos.Sel("bounds")))
 		ly.Send(macos.Sel("setAutoresizingMask:"), uint(2|16))
@@ -207,10 +278,6 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		r.player, r.looper, r.layer = p, lp, ly
 		r.mu.Unlock()
 	})
-	if loadErr != nil {
-		r.Close()
-		return loadErr
-	}
 	// Renderer 拥有采样循环；Close 关闭 stop 后退出。
 	go r.sampleLoop(stop)
 	return nil
@@ -231,7 +298,7 @@ func (r *Renderer) sampleLoop(stop chan struct{}) {
 				return // a queued callback must not touch a closed/replaced player
 			}
 			r.sampleOnMain()
-			pending = r.pendingStart > 0 || r.awaitingFrame
+			pending = r.pendingStart > 0 || r.seeking || r.awaitingFrame
 		})
 		delay := time.Second
 		if pending {
@@ -247,6 +314,18 @@ func (r *Renderer) sampleLoop(stop chan struct{}) {
 	}
 }
 
+func (r *Renderer) reportError(msg string) {
+	st := r.Stats()
+	if st.LastErr == "" {
+		st.LastErr = msg
+		r.stats.Store(st)
+		select {
+		case r.done <- errors.New(st.LastErr):
+		default:
+		}
+	}
+}
+
 // sampleOnMain requires the native main thread and r.mu. Seeking an item before
 // it is ready may be ignored, so a nonzero Start holds playback until ready.
 func (r *Renderer) sampleOnMain() {
@@ -254,22 +333,32 @@ func (r *Renderer) sampleOnMain() {
 	if p == 0 {
 		return
 	}
+	if r.looper != 0 && objc.Send[int64](r.looper, macos.Sel("status")) == 2 { // AVPlayerLooperStatusFailed
+		msg := macos.GoString(r.looper.Send(macos.Sel("error")).Send(macos.Sel("localizedDescription")))
+		if msg == "" {
+			msg = "looper failed"
+		}
+		r.reportError("avf: " + msg)
+		return
+	}
 	item := p.Send(macos.Sel("currentItem"))
+	if item == 0 {
+		return
+	}
 	status := objc.Send[int64](item, macos.Sel("status"))
 	if status == 2 { // AVPlayerItemStatusFailed
-		st := r.Stats()
-		if st.LastErr == "" {
-			st.LastErr = "avf: " + macos.GoString(item.Send(macos.Sel("error")).Send(macos.Sel("localizedDescription")))
-			r.stats.Store(st)
-			select {
-			case r.done <- errors.New(st.LastErr):
-			default:
-			}
+		msg := macos.GoString(item.Send(macos.Sel("error")).Send(macos.Sel("localizedDescription")))
+		if msg == "" {
+			msg = "item failed"
 		}
+		r.reportError("avf: " + msg)
 		return
 	}
 	if status != 1 { // AVPlayerItemStatusReadyToPlay
 		return
+	}
+	if r.seeking {
+		return // wait for seek completionHandler before revealing or sampling position
 	}
 	if r.pendingStart > 0 {
 		start := r.pendingStart
@@ -279,14 +368,37 @@ func (r *Renderer) sampleOnMain() {
 		}
 		ticks, _ := seekTicks(start)
 		// Default seek tolerances may land on a nearby keyframe, skipping seconds
-		// on L3 resume. Require the saved presentation time in both directions.
+		// on L3 resume. Require the saved presentation time in both directions
+		// and wait for completionHandler before clearing pendingStart or revealing.
 		zero := macos.CMTime{Timescale: seekTimescale, Flags: 1}
-		macos.MsgSeekCMTime(p, macos.Sel("seekToTime:toleranceBefore:toleranceAfter:"), macos.CMTime{Value: ticks, Timescale: seekTimescale, Flags: 1}, zero, zero)
-		r.pendingStart = 0
-		if !r.paused {
-			p.Send(macos.Sel("setRate:"), float32(r.options.Speed))
-		}
-		return // seek is asynchronous; only report a measured position next time
+		target := macos.CMTime{Value: ticks, Timescale: seekTimescale, Flags: 1}
+		r.seeking = true
+		stop := r.stop
+		var blk objc.Block
+		blk = objc.NewBlock(func(_ objc.Block, finished bool) {
+			// Dispatch back to main asynchronously so the block is never released
+			// before the ObjC callback returns and locks are never contended on AVF's queue.
+			go func() {
+				macos.Main(func() {
+					defer blk.Release()
+					r.mu.Lock()
+					defer r.mu.Unlock()
+					if r.stop != stop || r.player != p || r.player == 0 {
+						return
+					}
+					r.seeking = false
+					if finished {
+						r.pendingStart = 0
+						if !r.paused {
+							r.player.Send(macos.Sel("setRate:"), float32(r.options.Speed))
+						}
+						r.sampleOnMain()
+					}
+				})
+			}()
+		})
+		msgSeekCompletion(p, macos.Sel("seekToTime:toleranceBefore:toleranceAfter:completionHandler:"), target, zero, zero, blk)
+		return
 	}
 	tm := objc.Send[macos.CMTime](p, macos.Sel("currentTime"))
 	st := r.Stats()
@@ -296,7 +408,7 @@ func (r *Renderer) sampleOnMain() {
 	}
 	st.Loops = objc.Send[int64](r.looper, macos.Sel("loopCount"))
 	r.stats.Store(st)
-	if r.awaitingFrame && objc.Send[bool](r.layer, macos.Sel("isReadyForDisplay")) {
+	if r.awaitingFrame && r.surf != nil && objc.Send[bool](r.layer, macos.Sel("isReadyForDisplay")) {
 		withoutLayerActions(func() {
 			r.layer.Send(macos.Sel("setHidden:"), false)
 			objc.ID(r.surf.Native()).Send(macos.Sel("layer")).Send(macos.Sel("setContents:"), objc.ID(0))
@@ -333,7 +445,7 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 			return
 		}
 		r.paused = l != visibility.L0
-		if l == visibility.L0 && r.pendingStart == 0 {
+		if l == visibility.L0 && r.pendingStart == 0 && !r.seeking {
 			r.player.Send(macos.Sel("setRate:"), float32(r.options.Speed))
 		} else {
 			r.player.Send(macos.Sel("pause"))
@@ -377,18 +489,23 @@ func (r *Renderer) Close() error {
 func (r *Renderer) close(keepStill bool) error {
 	r.mu.Lock()
 	r.released = false
+	r.seeking = false
 	p, lp, ly := r.player, r.looper, r.layer
 	r.player, r.looper, r.layer = 0, 0, 0
+	s := r.surf
+	if !keepStill {
+		r.surf = nil
+	}
 	if r.stop != nil {
 		close(r.stop)
 		r.stop = nil
 	}
 	r.mu.Unlock()
 	releasePlayer(p, lp, ly)
-	if !keepStill && r.surf != nil {
+	if !keepStill && s != nil {
 		macos.Main(func() {
 			withoutLayerActions(func() {
-				objc.ID(r.surf.Native()).Send(macos.Sel("layer")).Send(macos.Sel("setContents:"), objc.ID(0))
+				objc.ID(s.Native()).Send(macos.Sel("layer")).Send(macos.Sel("setContents:"), objc.ID(0))
 			})
 		})
 	}

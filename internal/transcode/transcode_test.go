@@ -27,6 +27,14 @@ func TestDecide(t *testing.T) {
 		{media.Info{Kind: "video", Codec: "av1"}, "windows", Recommend},
 		{media.Info{Kind: "video", Codec: "prores"}, "darwin", None},
 		{media.Info{Kind: "video", Codec: "prores"}, "windows", Recommend},
+		{media.Info{Kind: "video", Codec: "h264", W: 1920, H: 1080, FPS: 30, Rotation: 90}, "windows", Required},
+		{media.Info{Kind: "video", Codec: "h264", W: 1920, H: 1080, FPS: 30, Rotation: 180}, "darwin", Required},
+		{media.Info{Kind: "video", Codec: "h264", W: 1920, H: 1080, FPS: 30, Rotation: 270}, "linux", Required},
+		{media.Info{Kind: "video", Codec: "h264", W: 1920, H: 1080, FPS: 30, BitDepth: 10}, "windows", Required},
+		{media.Info{Kind: "video", Codec: "h264", W: 1920, H: 1080, FPS: 30, BitDepth: 8}, "windows", None},
+		{media.Info{Kind: "video", Codec: "h264", W: 1919, H: 1080, FPS: 30}, "windows", Required},
+		{media.Info{Kind: "video", Codec: "h264", W: 1920, H: 1081, FPS: 30}, "darwin", Required},
+		{media.Info{Kind: "video", Codec: "h264", W: 1920, H: 1080, FPS: 300}, "linux", Required},
 	}
 	for _, c := range cases {
 		if p := Decide(&c.in, c.goos); p.Action != c.want {

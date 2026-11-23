@@ -1,10 +1,12 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -348,6 +350,68 @@ func validAudio(a string) string {
 	return ""
 }
 
+var rePropKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+
+func validPropertyDef(p wpk.Prop) bool {
+	if !rePropKey.MatchString(p.Key) || len(p.Default) == 0 || p.MaxLength < 0 || p.MaxLength > 2000 {
+		return false
+	}
+	switch p.Type {
+	case "slider":
+		if p.Min == nil || p.Max == nil {
+			return false
+		}
+		if math.IsNaN(*p.Min) || math.IsInf(*p.Min, 0) || math.IsNaN(*p.Max) || math.IsInf(*p.Max, 0) || *p.Min > *p.Max {
+			return false
+		}
+		if p.Step != nil && (math.IsNaN(*p.Step) || math.IsInf(*p.Step, 0) || *p.Step <= 0) {
+			return false
+		}
+	case "select":
+		if len(p.Options) == 0 {
+			return false
+		}
+		for _, o := range p.Options {
+			if !json.Valid(o) {
+				return false
+			}
+		}
+	case "bool", "color", "text":
+	default:
+		return false
+	}
+	return p.ValidateValue(p.Default) == nil
+}
+
+// Normalize sanitizes persisted playback properties and filters malformed property definitions.
+func (it *Item) Normalize() {
+	it.Props.Normalize()
+	if len(it.PropertyDefs) == 0 {
+		return
+	}
+	seen := make(map[string]bool, len(it.PropertyDefs))
+	valid := make([]wpk.Prop, 0, len(it.PropertyDefs))
+	for _, p := range it.PropertyDefs {
+		if seen[p.Key] || !validPropertyDef(p) {
+			continue
+		}
+		seen[p.Key] = true
+		valid = append(valid, p)
+	}
+	if len(valid) == 0 {
+		it.PropertyDefs = nil
+	} else {
+		it.PropertyDefs = valid
+	}
+}
+
+// Normalize sanitizes every item in the library.
+func (l *Library) Normalize() {
+	for i := range l.Items {
+		l.Items[i].Normalize()
+	}
+}
+
 // Library 是 library.json。
 type Library struct {
 	SchemaVersion int    `json:"schemaVersion"`
@@ -600,9 +664,11 @@ func Open(p Paths) (*Store, error) {
 	if err := load(s.LibrarySaver, LibraryVersion, &s.Library, libraryMigrations); err != nil {
 		return nil, err
 	}
+	s.Library.Normalize()
 	if err := load(s.AssignSaver, AssignmentsVersion, &s.Assign, assignMigrations); err != nil {
 		return nil, err
 	}
+	s.Assign.SpanOptions.Normalize()
 	for k, o := range s.Assign.Options {
 		o.Normalize()
 		s.Assign.Options[k] = o

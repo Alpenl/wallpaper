@@ -228,7 +228,7 @@ func (s *Settings) libGrid(c *ui.Context, v app.View, items []config.Item) {
 				if n := screens[it.ID]; len(n) > 0 {
 					ui.Row(c).Gap(5).Padding(2, 8).Radius(999).Background(ui.RGBA(10, 12, 16, 0.62)).AlignItems(ui.Center).Children(func() {
 						ui.Box(c).Size(6, 6).Radius(3).Background(ui.Hex("#34d399")).Children(func() {})
-						ui.Text(c, tr(c, "屏 ")+strings.Join(n, "、")).FontSize(11).FontWeight(600).TextColor(ui.Hex("#ffffff"))
+						ui.Text(c, tr(c, "屏 ")+strings.Join(n, tr(c, "、"))).FontSize(11).FontWeight(600).TextColor(ui.Hex("#ffffff"))
 					}).Label(tr(c, "使用中"))
 				}
 				ui.Box(c).Grow(1).Children(func() {})
@@ -290,41 +290,40 @@ func (s *Settings) preview(c *ui.Context, it config.Item, h float32) {
 
 func (s *Settings) libList(c *ui.Context, v app.View, items []config.Item, inUse map[string][]string) {
 	t := c.Theme()
-	ui.Scroll(c.Key("listscroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Gap(6).Padding(6, 12, 12, 12).Children(func() {
-			for i, it := range items {
-				it, i := it, i
-				row := ui.Row(c.Key("row"+it.ID)).Height(44).Gap(8).Padding(2, 8, 2, 2).Radius(6).AlignItems(ui.Center).Background(panelBg(t)).Border(1, lineColor(t)).Cursor(ui.CursorPointer).Children(func() {
-					ui.Box(c).Width(68).Radius(8).Clip().Children(func() { s.preview(c, it, 38) })
-					ui.Column(c).Grow(1).Shrink(1).Gap(3).Children(func() {
-						ui.Text(c, it.Title).FontSize(14).FontWeight(600).SingleLine().Ellipsis("…")
-						meta := tr(c, typeNames[it.Type]) + " · " + tr(c, originNames[it.Origin])
-						if it.Codec != "" {
-							meta += " · " + strings.ToUpper(it.Codec)
-						}
-						text(c, meta).FontSize(12).TextColor(t.TextMuted)
-					})
-					if it.Transcode == "recommended" {
-						chip(c, "建议转码", t.Warning)
-					}
-					if n := inUse[it.ID]; len(n) > 0 {
-						chip(c, "使用中 · "+strings.Join(n, "、"), t.Accent)
-					}
-				})
-				if i == s.gridSel {
-					row.Border(2, t.Accent).Background(t.Accent.Alpha(0.08))
-				} else if row.Hovered() {
-					row.Background(t.SurfaceHover)
+	s.list.Selected = nil
+	s.list.Key = func(i int) any { return items[i].ID }
+	s.list.Label = func(i int) string { return items[i].Title }
+	ui.List(c.Key("listscroll"), &s.list, len(items), func(i int) {
+		it := items[i]
+		row := ui.Row(c.Key("row"+it.ID)).Height(44).Gap(8).Margin(0, 0, 6, 0).Padding(2, 8, 2, 2).Radius(6).AlignItems(ui.Center).Background(panelBg(t)).Border(1, lineColor(t)).Cursor(ui.CursorPointer).Children(func() {
+			ui.Box(c).Width(68).Radius(8).Clip().Children(func() { s.preview(c, it, 38) })
+			ui.Column(c).Grow(1).Shrink(1).Gap(3).Children(func() {
+				ui.Text(c, it.Title).FontSize(14).FontWeight(600).SingleLine().Ellipsis("…")
+				meta := tr(c, typeNames[it.Type]) + " · " + tr(c, originNames[it.Origin])
+				if it.Codec != "" {
+					meta += " · " + strings.ToUpper(it.Codec)
 				}
-				if row.Clicked() {
-					s.selID, s.gridSel, s.confirmRm = it.ID, i, false
-				}
-				if row.DoubleClicked() {
-					s.applyCurrent(c, v, it.ID)
-				}
+				text(c, meta).FontSize(12).TextColor(t.TextMuted)
+			})
+			if it.Transcode == "recommended" {
+				chip(c, "建议转码", t.Warning)
+			}
+			if n := inUse[it.ID]; len(n) > 0 {
+				chip(c, tr(c, "使用中 · ")+strings.Join(n, tr(c, "、")), t.Accent)
 			}
 		})
-	})
+		if i == s.gridSel {
+			row.Border(2, t.Accent).Background(t.Accent.Alpha(0.08))
+		} else if row.Hovered() {
+			row.Background(t.SurfaceHover)
+		}
+		if row.Clicked() {
+			s.selID, s.gridSel, s.confirmRm = it.ID, i, false
+		}
+		if row.DoubleClicked() {
+			s.applyCurrent(c, v, it.ID)
+		}
+	}).Grow(1).MinHeight(0).Padding(6, 12, 12, 12)
 }
 
 // propertyPanel keeps the preview and footer pinned around independently scrolling properties.
@@ -357,7 +356,7 @@ func (s *Settings) sidePanel(c *ui.Context, v app.View, it config.Item, using []
 	ui.Box(c.Key("stage")).Label(tr(c, "壁纸预览")).Height(180).Shrink(0).Clip().Children(func() {
 		s.preview(c, it, 180)
 		if len(using) > 0 {
-			ui.Text(c, tr(c, "正在用于：")+strings.Join(using, "、")).Absolute().Left(10).Bottom(10).FontSize(11).TextColor(ui.Hex("#ffffff")).Background(ui.RGBA(10, 12, 16, 0.65)).Padding(3, 8).SingleLine()
+			ui.Text(c, tr(c, "正在用于：")+strings.Join(using, tr(c, "、"))).Absolute().Left(10).Bottom(10).FontSize(11).TextColor(ui.Hex("#ffffff")).Background(ui.RGBA(10, 12, 16, 0.65)).Padding(3, 8).SingleLine()
 		}
 	})
 	ui.Scroll(c.Key("dscroll")).Grow(1).Shrink(1).MinHeight(0).Children(func() {
@@ -663,13 +662,6 @@ func (s *Settings) overrideNotice(c *ui.Context, v app.View) {
 			c.Toast(tr(c, "已清除覆盖"))
 		}
 	})
-}
-
-func (s *Settings) noEncoderHint() string {
-	if s.GOOS == "darwin" {
-		return "未找到可用编码器。macOS 默认使用系统 AVFoundation；可选配置 ffmpeg，avconvert 仅作有限兼容兜底。"
-	}
-	return "没有找到 ffmpeg。本应用不附带编码器（许可证原因），请自行安装 ffmpeg 并加入 PATH，或在“播放与性能”里指定路径。"
 }
 
 // applyCurrent 把壁纸应用到当前显示器（双击 / 回车）。

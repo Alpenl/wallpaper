@@ -6,7 +6,22 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jezek/xgb/xproto"
 )
+
+func TestValidMachinePropType(t *testing.T) {
+	const utf8 xproto.Atom = 315
+	if !validMachinePropType(xproto.AtomString, utf8) {
+		t.Fatal("STRING must be accepted")
+	}
+	if !validMachinePropType(utf8, utf8) {
+		t.Fatal("UTF8_STRING must be accepted")
+	}
+	if validMachinePropType(xproto.AtomCardinal, utf8) || validMachinePropType(0, 0) {
+		t.Fatal("non-string property type must be rejected")
+	}
+}
 
 func TestContainsAtom(t *testing.T) {
 	if !containsAtom(u32le(1, 7, 20), 7) || containsAtom(u32le(1, 7, 20), 8) || containsAtom([]byte{1, 2, 3}, 1) {

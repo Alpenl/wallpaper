@@ -222,3 +222,101 @@ func TestUnsupportedWPKCannotReplaceExistingItem(t *testing.T) {
 		t.Fatal("existing item changed", string(b), err)
 	}
 }
+
+// H-07: Forbid IsAbsolutePath in Lively .zip archives unconditionally, and reject
+// UNC / Windows device paths across all importer entrypoints.
+func TestLivelyZipForbidsIsAbsolutePath(t *testing.T) {
+	o := opts(t, "windows")
+	target := fixture("h264_audio.mp4")
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zp := filepath.Join(t.TempDir(), "abs.zip")
+	f, err := os.Create(zp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, _ := zw.Create("LivelyInfo.json")
+	escaped := strings.ReplaceAll(absTarget, `\`, `\\`)
+	_, _ = w.Write([]byte(`{"Title":"Exfil","Type":"video","IsAbsolutePath":true,"FileName":"` + escaped + `"}`))
+	_ = zw.Close()
+	_ = f.Close()
+	if _, err := Import(context.Background(), zp, o); !errors.Is(err, wpk.ErrUnsafe) {
+		t.Fatalf("expected wpk.ErrUnsafe for IsAbsolutePath in zip, got %v", err)
+	}
+}
+
+func TestRejectsUNCAndDevicePaths(t *testing.T) {
+	o := opts(t, "windows")
+	badPaths := []string{
+		`\\attacker\share\evil.mp4`,
+		`//attacker/share/evil.mp4`,
+		`\\?\C:\Windows\win.ini`,
+		`\\.\pipe\evil`,
+		`\/attacker\share\evil.mp4`,
+		`/\attacker/share/evil.mp4`,
+	}
+	for _, p := range badPaths {
+		if _, err := Import(context.Background(), p, o); !errors.Is(err, wpk.ErrUnsafe) {
+			t.Errorf("Import(%q): expected ErrUnsafe, got %v", p, err)
+		}
+		if _, err := CollectSources(p); !errors.Is(err, wpk.ErrUnsafe) {
+			t.Errorf("CollectSources(%q): expected ErrUnsafe, got %v", p, err)
+		}
+		if got := PreviewColors(p); got != nil {
+			t.Errorf("PreviewColors(%q): expected nil, got %v", p, got)
+		}
+		// Local Lively folder with IsAbsolutePath pointing at UNC/device path must also fail.
+		dir := t.TempDir()
+		escaped := strings.ReplaceAll(p, `\`, `\\`)
+		_ = os.WriteFile(filepath.Join(dir, "LivelyInfo.json"), []byte(`{"Title":"UNC","Type":"video","IsAbsolutePath":true,"FileName":"`+escaped+`"}`), 0o644)
+		if _, err := Import(context.Background(), dir, o); !errors.Is(err, wpk.ErrUnsafe) {
+			t.Errorf("Lively folder IsAbsolutePath(%q): expected ErrUnsafe, got %v", p, err)
+		}
+	}
+}
+
+// M-04: Options.PreviewColors overrides in-process PreviewColors for video/image imports.
+func TestPreviewColorsOptionCallback(t *testing.T) {
+	o := opts(t, "windows")
+	var paths []string
+	o.PreviewColors = func(p string) []string {
+		paths = append(paths, p)
+		return []string{"green", "绿色"}
+	}
+	r1, err := Import(context.Background(), fixture("still.png"), o)
+	if err != nil || len(r1.Item.Colors) != 2 || r1.Item.Colors[0] != "green" {
+		t.Fatalf("image PreviewColors callback failed: %v %+v", err, r1)
+	}
+	r2, err := Import(context.Background(), fixture("h264_audio.mp4"), o)
+	if err != nil || len(r2.Item.Colors) != 2 || r2.Item.Colors[0] != "green" {
+		t.Fatalf("video PreviewColors callback failed: %v %+v", err, r2)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 PreviewColors calls, got %d", len(paths))
+	}
+}
+
+// M-05: Rotated, 10-bit H.264, odd-dimension, and >240fps videos require transcode
+// and never fail manifest writing if a direct copy path is exercised.
+func TestRequiresTranscodeForIncompatibleVideoAttributes(t *testing.T) {
+	cases := map[string]media.Info{
+		"rotated": {Container: "mp4", Kind: "video", Codec: "h264", W: 1920, H: 1080, FPS: 30, Rotation: 90},
+		"10bit":   {Container: "mp4", Kind: "video", Codec: "h264", W: 1920, H: 1080, FPS: 30, BitDepth: 10},
+		"oddDims": {Container: "mp4", Kind: "video", Codec: "h264", W: 1919, H: 1080, FPS: 30},
+		"over240": {Container: "mp4", Kind: "video", Codec: "h264", W: 1920, H: 1080, FPS: 300},
+	}
+	for name, info := range cases {
+		t.Run(name, func(t *testing.T) {
+			o := opts(t, "windows")
+			inf := info
+			o.Probe = func(string) (*media.Info, error) { return &inf, nil }
+			_, err := Import(context.Background(), fixture("h264_audio.mp4"), o)
+			if !errors.Is(err, ErrNeedsTranscode) {
+				t.Fatalf("%s: expected ErrNeedsTranscode, got %v", name, err)
+			}
+		})
+	}
+}

@@ -14,12 +14,15 @@
 // Windows 上正在运行的 exe 可以改名但不能覆盖，所以替换一律用“先移走旧文件再移入新文件”。
 // macOS .app 的 dir 是 Contents 目录；逐文件替换后签名封印是否仍然有效需要真机验证【推断】。
 // 主程序两次 rename 之间若断电，可能没有可启动的程序；用户必须重新运行安装器。
+// Kept as one file (~1000 lines): manifest verification, staging, atomic apply, boot counting,
+// and rollback recovery form one transactional state machine over pending.json and rollback/.
 package update
 
 import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -28,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path"
@@ -88,25 +92,72 @@ func Verify(pub ed25519.PublicKey, manifest []byte, sig string) (*Manifest, erro
 	if err := validateManifest(&m); err != nil {
 		return nil, err
 	}
+	seen := map[string]bool{}
 	for _, f := range m.Files {
 		if !safeRel(f.Path) {
 			return nil, fmt.Errorf("update: unsafe path %q", f.Path)
 		}
+		key := strings.ToLower(f.Path)
+		if seen[key] {
+			return nil, fmt.Errorf("update: duplicate path %q", f.Path)
+		}
+		seen[key] = true
 	}
 	for _, p := range m.Remove {
 		if !safeRel(p) {
 			return nil, fmt.Errorf("update: unsafe path %q", p)
 		}
+		key := strings.ToLower(p)
+		if seen[key] {
+			return nil, fmt.Errorf("update: duplicate path %q", p)
+		}
+		seen[key] = true
 	}
 	return &m, nil
 }
 
 func safeRel(p string) bool {
-	if p == "" || strings.Contains(p, `\`) || path.IsAbs(p) || strings.HasPrefix(p, stateDir) {
+	if p == "" || p == "." || strings.ContainsAny(p, `\:`) || strings.ContainsRune(p, 0) || path.IsAbs(p) {
 		return false
 	}
 	c := path.Clean(p)
-	return c == p && c != ".." && !strings.HasPrefix(c, "../")
+	if c != p || c == "." || c == ".." || strings.HasPrefix(c, "../") {
+		return false
+	}
+	if !filepath.IsLocal(filepath.FromSlash(p)) {
+		return false
+	}
+	segs := strings.Split(p, "/")
+	if len(segs) == 0 || strings.EqualFold(segs[0], stateDir) {
+		return false
+	}
+	for _, seg := range segs {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+		if strings.HasSuffix(seg, ".") || strings.HasSuffix(seg, " ") {
+			return false
+		}
+		if isWindowsReservedName(seg) {
+			return false
+		}
+	}
+	return true
+}
+
+func isWindowsReservedName(seg string) bool {
+	base := seg
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.TrimRight(base, " ")
+	switch strings.ToUpper(base) {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	}
+	return false
 }
 
 // Client 是更新客户端。
@@ -130,24 +181,103 @@ func (c *Client) http() *http.Client {
 
 func (c *Client) base() string { return strings.TrimRight(c.Feed, "/") + "/" + c.Platform + "/" }
 
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return true
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.Unmap().IsLoopback()
+	}
+	return false
+}
+
+func isLoopbackURL(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	pu, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return isLoopbackHost(pu.Hostname())
+}
+
+func validateURL(pu *url.URL, allowLoopback bool) error {
+	if pu == nil || pu.Hostname() == "" {
+		return errors.New("update: invalid url")
+	}
+	host := pu.Hostname()
+	loopback := isLoopbackHost(host)
+	if pu.Scheme != "https" && !(allowLoopback && pu.Scheme == "http" && loopback) {
+		return fmt.Errorf("update: refusing non-https url %s", pu.Redacted())
+	}
+	if loopback {
+		if !allowLoopback {
+			return fmt.Errorf("update: refusing loopback url %s", pu.Redacted())
+		}
+		return nil
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		ip = ip.Unmap()
+		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return fmt.Errorf("update: refusing private/local url %s", pu.Redacted())
+		}
+	}
+	return nil
+}
+
+func validateRedirectURL(initial, target *url.URL, allowLoopback bool) error {
+	if initial != nil && initial.Scheme == "https" && target.Scheme != "https" {
+		return fmt.Errorf("update: refusing redirect downgrade to %s", target.Redacted())
+	}
+	return validateURL(target, allowLoopback)
+}
+
+func (c *Client) httpFor(initial *url.URL, allowLoopback bool) *http.Client {
+	baseClient := c.http()
+	hc := *baseClient
+	origCheck := baseClient.CheckRedirect
+	hc.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("update: too many redirects")
+		}
+		if err := validateRedirectURL(initial, req.URL, allowLoopback); err != nil {
+			return err
+		}
+		if origCheck != nil {
+			return origCheck(req, via)
+		}
+		return nil
+	}
+	return &hc
+}
+
+func (c *Client) allowLoopbackFor(pu *url.URL) bool {
+	if c.Feed != "" {
+		return isLoopbackURL(c.Feed)
+	}
+	return isLoopbackHost(pu.Hostname())
+}
+
 func (c *Client) get(ctx context.Context, u string, limit int64) ([]byte, error) {
 	pu, err := url.Parse(u)
 	if err != nil {
 		return nil, err
 	}
-	if pu.Scheme != "https" && !(pu.Scheme == "http" && (pu.Hostname() == "127.0.0.1" || pu.Hostname() == "localhost")) {
-		return nil, fmt.Errorf("update: refusing non-https url %s", pu.Redacted())
+	allowLoopback := c.allowLoopbackFor(pu)
+	if err := validateURL(pu, allowLoopback); err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http().Do(req)
+	resp, err := c.httpFor(pu, allowLoopback).Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("update: GET %s: %s", pu.Path, resp.Status)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
@@ -158,6 +288,80 @@ func (c *Client) get(ctx context.Context, u string, limit int64) ([]byte, error)
 		return nil, fmt.Errorf("update: %s too large", pu.Path)
 	}
 	return b, nil
+}
+
+func (c *Client) downloadToFile(ctx context.Context, u, dst string, wantSize int64, wantSHA string, mode os.FileMode) (int64, error) {
+	pu, err := url.Parse(u)
+	if err != nil {
+		return 0, err
+	}
+	allowLoopback := c.allowLoopbackFor(pu)
+	if err := validateURL(pu, allowLoopback); err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.httpFor(pu, allowLoopback).Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("update: GET %s: %s", pu.Path, resp.Status)
+	}
+	if resp.ContentLength > wantSize {
+		return 0, fmt.Errorf("update: %s too large: %d > %d", pu.Path, resp.ContentLength, wantSize)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return 0, err
+	}
+	f, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return 0, err
+	}
+	h := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, wantSize+1))
+	closeErr := errors.Join(f.Sync(), f.Close())
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(dst)
+		return 0, errors.Join(copyErr, closeErr)
+	}
+	if n > wantSize {
+		_ = os.Remove(dst)
+		return 0, fmt.Errorf("update: %s too large", pu.Path)
+	}
+	if n != wantSize || !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), wantSHA) {
+		_ = os.Remove(dst)
+		return 0, fmt.Errorf("update: hash mismatch for %s", pu.Path)
+	}
+	return n, nil
+}
+
+func fileModeForPath(rel string) os.FileMode {
+	base := path.Base(rel)
+	lower := strings.ToLower(base)
+	if strings.Contains(lower, ".so.") {
+		return 0o755
+	}
+	ext := strings.ToLower(path.Ext(base))
+	switch ext {
+	case ".exe", ".dll", ".so", ".dylib", ".sh", ".command", ".appimage", ".bat", ".cmd", ".ps1":
+		return 0o755
+	case "":
+		upper := strings.ToUpper(base)
+		switch upper {
+		case "LICENSE", "NOTICE", "README", "CHANGELOG", "COPYING", "AUTHORS", "VERSION", "THIRD_PARTY_NOTICES":
+			return 0o644
+		}
+		if strings.HasPrefix(upper, "LICENSE") || strings.HasPrefix(upper, "README") || strings.HasPrefix(upper, "NOTICE") {
+			return 0o644
+		}
+		return 0o755
+	default:
+		return 0o644
+	}
 }
 
 // Check 返回比当前新的已验签清单；没有更新时返回 ErrNoUpdate。
@@ -244,6 +448,13 @@ func (c *Client) Apply(ctx context.Context, m *Manifest, progress func(done, tot
 	if err := validateManifest(m); err != nil {
 		return 0, err
 	}
+	wantPlat := c.Platform
+	if wantPlat == "" {
+		wantPlat = runtime.GOOS + "-" + runtime.GOARCH
+	}
+	if m.Platform != wantPlat {
+		return 0, fmt.Errorf("update: manifest for %s, want %s", m.Platform, wantPlat)
+	}
 	if c.Current == "dev" {
 		return 0, ErrNoUpdate
 	}
@@ -266,10 +477,16 @@ func (c *Client) Apply(ctx context.Context, m *Manifest, progress func(done, tot
 		pathsToValidate = append(pathsToValidate, f.Path)
 	}
 	for _, rel := range pathsToValidate {
-		if !safeRel(rel) || seen[rel] {
+		key := strings.ToLower(rel)
+		if !safeRel(rel) || seen[key] {
 			return 0, fmt.Errorf("update: invalid or duplicate path %q", rel)
 		}
-		seen[rel] = true
+		seen[key] = true
+		if st, err := os.Lstat(filepath.Join(c.Dir, filepath.FromSlash(rel))); err == nil && st.IsDir() {
+			return 0, fmt.Errorf("update: target path %q is a directory", rel)
+		} else if err != nil && !os.IsNotExist(err) {
+			return 0, err
+		}
 	}
 	todo := Plan(c.Dir, m)
 	var total, done int64
@@ -285,22 +502,12 @@ func (c *Client) Apply(ctx context.Context, m *Manifest, progress func(done, tot
 		if u == "" {
 			u = c.base() + f.Path
 		}
-		b, err := c.get(ctx, u, f.Size)
+		dst := filepath.Join(staging, filepath.FromSlash(f.Path))
+		n, err := c.downloadToFile(ctx, u, dst, f.Size, f.SHA256, fileModeForPath(f.Path))
 		if err != nil {
 			return done, err
 		}
-		sum := sha256.Sum256(b)
-		if int64(len(b)) != f.Size || !strings.EqualFold(hex.EncodeToString(sum[:]), f.SHA256) {
-			return done, fmt.Errorf("update: hash mismatch for %s", f.Path)
-		}
-		dst := filepath.Join(staging, filepath.FromSlash(f.Path))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return done, err
-		}
-		if err := writeSynced(dst, b, 0o755); err != nil {
-			return done, err
-		}
-		done += f.Size
+		done += n
 		if progress != nil {
 			progress(done, total)
 		}
@@ -314,8 +521,15 @@ func (c *Client) Apply(ctx context.Context, m *Manifest, progress func(done, tot
 	}
 	paths := append(append([]string{}, p.Changed...), m.Remove...)
 	for _, rel := range paths {
-		exists, err := fileExists(filepath.Join(c.Dir, filepath.FromSlash(rel)))
-		if err != nil {
+		cur := filepath.Join(c.Dir, filepath.FromSlash(rel))
+		st, err := os.Lstat(cur)
+		exists := false
+		if err == nil {
+			if st.IsDir() {
+				return done, fmt.Errorf("update: target path %q is a directory", rel)
+			}
+			exists = true
+		} else if !os.IsNotExist(err) {
 			return done, err
 		}
 		p.Plan = append(p.Plan, PlanEntry{Path: rel, Existed: exists})
@@ -335,11 +549,34 @@ func (c *Client) Apply(ctx context.Context, m *Manifest, progress func(done, tot
 			rel == "wallpaperd" || rel == "wallpaperd.exe" || rel == "MacOS/wallpaperd"
 	}
 	sort.SliceStable(p.Plan, func(i, j int) bool { return !isMain(p.Plan[i].Path) && isMain(p.Plan[j].Path) })
-	if err := os.RemoveAll(c.sd("rollback")); err != nil {
+	var prevRollback string
+	rollbackDir := c.sd("rollback")
+	if _, err := os.Lstat(rollbackDir); err == nil {
+		var rnd [8]byte
+		if _, err := rand.Read(rnd[:]); err != nil {
+			return done, err
+		}
+		prevRollback = c.sd("rollback.prev-" + hex.EncodeToString(rnd[:]))
+		if err := os.Rename(rollbackDir, prevRollback); err != nil {
+			return done, err
+		}
+		if err := c.syncParents(c.sd()); err != nil {
+			_ = os.Rename(prevRollback, rollbackDir)
+			return done, err
+		}
+	} else if !os.IsNotExist(err) {
 		return done, err
 	}
 	if err := c.writePending(p); err != nil {
+		if prevRollback != "" {
+			_ = os.Rename(prevRollback, rollbackDir)
+			_ = c.syncParents(c.sd())
+		}
 		return done, err
+	}
+	if prevRollback != "" {
+		// Cleanup of superseded rollback backup after new pending.json is durable.
+		_ = os.RemoveAll(prevRollback)
 	}
 	for _, step := range p.Plan {
 		cur := filepath.Join(c.Dir, filepath.FromSlash(step.Path))
@@ -427,10 +664,11 @@ func (c *Client) ReadPending() (*Pending, error) {
 	}
 	seen := map[string]bool{}
 	for _, step := range p.Plan {
-		if !safeRel(step.Path) || seen[step.Path] {
+		key := strings.ToLower(step.Path)
+		if !safeRel(step.Path) || seen[key] {
 			return nil, fmt.Errorf("update: invalid pending path %q", step.Path)
 		}
-		seen[step.Path] = true
+		seen[key] = true
 	}
 	return &p, nil
 }
@@ -444,7 +682,20 @@ func (c *Client) Recover() error {
 	if p.State != "applying" && p.State != "rolling_back" {
 		return nil
 	}
-	return c.rollback(p)
+	return c.rollback(p, false)
+}
+
+func (c *Client) clearPending() error {
+	if err := os.Remove(c.sd(pendingName)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := c.syncParents(c.sd()); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(c.sd("rollback")); err != nil {
+		return err
+	}
+	return c.syncParents(c.sd())
 }
 
 // Boot counts unconfirmed starts and rolls back after MaxBoots.
@@ -453,11 +704,17 @@ func (c *Client) Boot() (bool, error) {
 	if err != nil || p == nil {
 		return false, err
 	}
+	if p.State != "awaiting" && p.State != "good" {
+		return false, errors.New("update: recovery required before boot")
+	}
+	if c.Current != p.To {
+		if c.Current != "" {
+			return false, c.clearPending()
+		}
+		return false, fmt.Errorf("update: version mismatch: current %q, pending %q", c.Current, p.To)
+	}
 	if p.State == "good" {
 		return false, nil
-	}
-	if p.State != "awaiting" {
-		return false, errors.New("update: recovery required before boot")
 	}
 	p.Boots++
 	if p.Boots > MaxBoots {
@@ -474,18 +731,55 @@ func (c *Client) MarkGood() error {
 		return err
 	}
 	if p.State == "good" {
+		if c.Current != p.To {
+			return fmt.Errorf("update: version mismatch: current %q, pending %q", c.Current, p.To)
+		}
 		return nil
 	}
 	if p.State != "awaiting" {
 		return errors.New("update: cannot confirm unfinished transaction")
 	}
+	if c.Current != p.To {
+		return fmt.Errorf("update: version mismatch: current %q, pending %q", c.Current, p.To)
+	}
+	if p.Boots <= 0 {
+		return errors.New("update: cannot confirm before target version boots")
+	}
 	p.State, p.Good = "good", true
 	return c.writePending(p)
+}
+
+func (c *Client) verifyRollbackBackups(p *Pending) error {
+	var errs []error
+	for _, step := range p.Plan {
+		if !step.Existed {
+			continue
+		}
+		old := c.sd("rollback", filepath.FromSlash(step.Path))
+		exists, err := fileExists(old)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !exists {
+			errs = append(errs, fmt.Errorf("update: missing rollback backup for %s", step.Path))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (c *Client) CanRollback() (string, bool) {
 	p, err := c.ReadPending()
 	if err != nil || p == nil {
+		return "", false
+	}
+	if p.State != "awaiting" && p.State != "good" {
+		return "", false
+	}
+	if c.Current != p.To {
+		return "", false
+	}
+	if c.verifyRollbackBackups(p) != nil {
 		return "", false
 	}
 	return p.From, true
@@ -499,15 +793,24 @@ func (c *Client) Rollback() error {
 	if p == nil {
 		return ErrNothing
 	}
-	return c.rollback(p)
+	if c.Current != "" && c.Current != p.To {
+		return fmt.Errorf("update: version mismatch: current %q, pending %q", c.Current, p.To)
+	}
+	requireAllBackups := p.State == "awaiting" || p.State == "good"
+	if requireAllBackups {
+		if err := c.verifyRollbackBackups(p); err != nil {
+			return err
+		}
+	}
+	return c.rollback(p, requireAllBackups)
 }
 
-func (c *Client) rollback(p *Pending) error {
+func (c *Client) rollback(p *Pending, requireAllBackups bool) error {
 	p.State, p.Good = "rolling_back", false
 	if err := c.writePending(p); err != nil {
 		return err
 	}
-	if err := c.restore(p); err != nil {
+	if err := c.restore(p, requireAllBackups); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(c.sd("rollback")); err != nil {
@@ -530,7 +833,36 @@ func fileExists(name string) (bool, error) {
 	return err == nil, err
 }
 
-func (c *Client) restore(p *Pending) error {
+func (c *Client) restore(p *Pending, requireAllBackups bool) error {
+	// Pre-verify every planned step before trashing or moving any files in c.Dir.
+	var preErrs []error
+	for _, step := range p.Plan {
+		cur := filepath.Join(c.Dir, filepath.FromSlash(step.Path))
+		old := c.sd("rollback", filepath.FromSlash(step.Path))
+		exists, err := fileExists(cur)
+		if err != nil {
+			preErrs = append(preErrs, err)
+			continue
+		}
+		if step.Existed {
+			backup, err := fileExists(old)
+			if err != nil {
+				preErrs = append(preErrs, err)
+				continue
+			}
+			if !backup {
+				if requireAllBackups {
+					preErrs = append(preErrs, fmt.Errorf("update: missing rollback backup for %s", step.Path))
+				} else if !exists {
+					preErrs = append(preErrs, fmt.Errorf("update: missing original and backup for %s", step.Path))
+				}
+			}
+		}
+	}
+	if err := errors.Join(preErrs...); err != nil {
+		return err
+	}
+
 	var errs []error
 	for _, step := range p.Plan {
 		cur := filepath.Join(c.Dir, filepath.FromSlash(step.Path))
@@ -547,7 +879,7 @@ func (c *Client) restore(p *Pending) error {
 				continue
 			}
 			if !backup {
-				// 未备份或已经还原；两边都不存在则不是可忽略的恢复步骤。
+				// Not backed up yet or already restored; missing on both sides is an error.
 				if !exists {
 					errs = append(errs, fmt.Errorf("update: missing original and backup for %s", step.Path))
 				}
@@ -571,10 +903,15 @@ func (c *Client) restore(p *Pending) error {
 	return errors.Join(errs...)
 }
 
-// Cleanup removes expendable staging and trash after recovery.
+// Cleanup removes expendable staging, trash, and superseded rollback backups after recovery.
 func (c *Client) Cleanup() {
 	_ = os.RemoveAll(c.sd("trash"))
 	_ = os.RemoveAll(c.sd("staging"))
+	if matches, err := filepath.Glob(c.sd("rollback.prev-*")); err == nil {
+		for _, m := range matches {
+			_ = os.RemoveAll(m)
+		}
+	}
 }
 
 func (c *Client) moveFile(src, dst string) error {
@@ -608,15 +945,6 @@ func (c *Client) syncParents(dir string) error {
 	return errors.Join(errs...)
 }
 
-func writeSynced(name string, b []byte, mode os.FileMode) error {
-	f, err := os.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
-	if err != nil {
-		return err
-	}
-	_, werr := f.Write(b)
-	return errors.Join(werr, f.Sync(), f.Close())
-}
-
 // Windows does not support syncing directory handles through os.File.Sync.
 func syncDir(dir string) error {
 	if runtime.GOOS == "windows" {
@@ -631,10 +959,14 @@ func syncDir(dir string) error {
 
 // BuildManifest 扫描 dir 生成清单（发布端使用）。
 func BuildManifest(dir, version, platform, notes string) (*Manifest, error) {
+	if !validPlatform(platform) {
+		return nil, fmt.Errorf("update: invalid platform %q", platform)
+	}
 	if _, err := parseVersion(version); err != nil {
 		return nil, err
 	}
 	m := &Manifest{Schema: 1, Version: version, Platform: platform, Notes: notes, Date: time.Now().UTC().Truncate(time.Second)}
+	seen := map[string]bool{}
 	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -642,11 +974,16 @@ func BuildManifest(dir, version, platform, notes string) (*Manifest, error) {
 		rel, _ := filepath.Rel(dir, p)
 		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
-			if rel == stateDir {
+			if strings.EqualFold(rel, stateDir) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
+		key := strings.ToLower(rel)
+		if !safeRel(rel) || seen[key] {
+			return fmt.Errorf("update: invalid or duplicate path %q", rel)
+		}
+		seen[key] = true
 		h, n, err := HashFile(p)
 		if err != nil {
 			return err

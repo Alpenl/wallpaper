@@ -3,6 +3,7 @@ package importer
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -23,6 +24,13 @@ func supportedManifest(m *wpk.Manifest) error {
 	return nil
 }
 func importFolder(dir string, o Options) (*Result, error) {
+	return importFolderValidated(dir, o, false)
+}
+
+func importFolderValidated(dir string, o Options, shaderPrevalidated bool) (*Result, error) {
+	if err := rejectUnsafeHostPath(dir); err != nil {
+		return nil, err
+	}
 	f, err := os.CreateTemp("", "wallpaper-folder-*.wpk")
 	if err != nil {
 		return nil, err
@@ -33,17 +41,21 @@ func importFolder(dir string, o Options) (*Result, error) {
 	if err = wpk.ZipFolder(dir, p); err != nil {
 		return nil, err
 	}
-	return importWPK(p, o)
+	return importWPK(p, o, shaderPrevalidated)
 }
 
 // Foreign local pages retain their full relative asset tree. First run the
 // source through SafeUnzip so executables, links, duplicate paths and size limits
 // are rejected before creating a native package.
 func importWeb(dir, entry, title, origin string, o Options) (*Result, error) {
+	if err := rejectUnsafeHostPath(dir); err != nil {
+		return nil, err
+	}
+	entry = normalizeRelPath(entry)
 	if _, err := within(dir, entry); err != nil {
 		return nil, err
 	}
-	if ext := strings.ToLower(filepath.Ext(entry)); ext != ".html" && ext != ".htm" {
+	if ext := strings.ToLower(path.Ext(entry)); ext != ".html" && ext != ".htm" {
 		return nil, fmt.Errorf("%w: local HTML entry required", ErrUnsupported)
 	}
 	tmp, err := os.MkdirTemp("", "wallpaper-web-*")

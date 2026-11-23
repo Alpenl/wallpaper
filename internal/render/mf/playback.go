@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"wpapp/internal/render"
 )
@@ -180,4 +181,47 @@ func (s *playbackState) seeked(api playbackAPI) error {
 		return s.setPause(api, s.paused)
 	}
 	return nil
+}
+
+type progressKey struct {
+	loops int64
+	pts   int64
+	posMS int64
+}
+
+// stallTracker includes both video frame PTS and media playback clock progress
+// so VFR or subtle-motion wallpapers with >=10s static scenes are not falsely
+// killed as stalled while the playback clock continues advancing.
+type stallTracker struct {
+	last    progressKey
+	hasLast bool
+	same    int
+}
+
+func (d *stallTracker) observe(paused bool, loops, pts int64, posSeconds float64) bool {
+	if paused {
+		d.hasLast = false
+		d.same = 0
+		return false
+	}
+	posMS := int64(-1)
+	if validPosition(posSeconds) {
+		posMS = int64(posSeconds * 1000)
+	}
+	k := progressKey{loops: loops, pts: pts, posMS: posMS}
+	if d.hasLast && k == d.last {
+		d.same++
+	} else {
+		d.same = 0
+	}
+	d.last = k
+	d.hasLast = true
+	return d.same >= 2
+}
+
+// shouldFallbackVBlank reports whether WaitForVBlank failed, returned a
+// non-zero status such as DXGI_STATUS_OCCLUDED (0x087A0001), or returned in
+// under 1ms so the render loop must sleep instead of spinning at 100% CPU.
+func shouldFallbackVBlank(hr uint32, elapsed time.Duration) bool {
+	return hr != 0 || elapsed < time.Millisecond
 }

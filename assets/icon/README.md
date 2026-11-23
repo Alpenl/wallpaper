@@ -52,7 +52,7 @@ macOS `iconutil` 与签名/公证。
 
 - Windows：`.syso` 让 `wallpaperd.exe` 在资源管理器、任务栏和快捷方式中显示图标；
   `scripts/package-windows.sh` 把 `wallpaper.ico` 传给 NSIS，安装器和卸载器使用同一图标
-  （`Icon`、`UnIcon`、`MUI_ICON`、`MUI_UNICON`）。
+  （`Icon`、`UninstallIcon`、`MUI_ICON`、`MUI_UNICON`）。
 - macOS：`scripts/package-macos.sh` 把 `AppIcon.icns` 复制到
   `Wallpaper.app/Contents/Resources/`，`Info.plist` 的 `CFBundleIconFile` 指向它。
 - 托盘：Windows 托盘图标仍在 `internal/ui/shell.go` 运行时绘制（32×32，8× 超采样），

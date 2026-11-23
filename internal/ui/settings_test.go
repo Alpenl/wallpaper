@@ -1,13 +1,22 @@
 package ui
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/egoist/mygo/ui"
 
+	"wpapp/internal/app"
 	"wpapp/internal/config"
 	"wpapp/internal/ui/uidemo"
 )
@@ -833,4 +842,267 @@ func TestAboutBuildIdentity(t *testing.T) {
 	tt.SetLocale("en")
 	tt.Frame()
 	must(t, tt, "Version 1.2.3 · Commit abcdef012345+dirty · darwin/amd64")
+}
+
+func TestEmptyDisplayLevelRendersCleanFallback(t *testing.T) {
+	for _, lang := range []string{"zh-CN", "en"} {
+		t.Run(lang, func(t *testing.T) {
+			ctl, s, tt := newUI(t, "windows")
+			tt.SetSize(1120, 2200)
+			ctl.V.Config.UI.Lang = lang
+			tt.SetLocale(lang)
+			ctl.V.Displays[0].Level = ""
+			ctl.V.Displays[0].State = "active"
+			ctl.V.Displays[1].Level = ""
+			ctl.V.Displays[1].State = "failed"
+
+			for _, p := range []string{"displays", "rules", "about"} {
+				s.SetPage(p)
+				tt.Frame()
+				for _, txt := range tt.Texts() {
+					if strings.HasPrefix(strings.TrimSpace(txt), "·") || strings.TrimSpace(txt) == "·" {
+						t.Fatalf("%s/%s rendered orphan bullet pill: %q", lang, p, txt)
+					}
+				}
+			}
+			s.SetPage("displays")
+			s.SelectDisplay("d1")
+			tt.Frame()
+			must(t, tt, translate(lang, "未知状态"))
+			s.SelectDisplay("d2")
+			tt.Frame()
+			must(t, tt, translate(lang, "已停用（崩溃次数过多）"))
+		})
+	}
+}
+
+func TestTrimmedFFmpegAndFeedPathsDisableSaveButton(t *testing.T) {
+	ctl, s, tt := newUI(t, "windows")
+	tt.SetSize(1120, 2200)
+
+	// ffmpeg path with leading/trailing whitespace.
+	s.SetPage("playback")
+	tt.Frame()
+	s.ffmpeg = "  /opt/bin/ffmpeg  "
+	tt.Frame()
+	click(t, tt, "保存")
+	if got := ctl.View().Config.Render.FFmpegPath; got != "/opt/bin/ffmpeg" {
+		t.Fatalf("saved FFmpegPath = %q", got)
+	}
+	if s.ffmpeg != "/opt/bin/ffmpeg" {
+		t.Fatalf("UI input s.ffmpeg was not updated to trimmed value: %q", s.ffmpeg)
+	}
+
+	// Update feed URL with leading/trailing whitespace.
+	s.SetPage("versions")
+	tt.Frame()
+	s.feed = "  https://updates.example.com/releases  "
+	tt.Frame()
+	click(t, tt, "保存")
+	if got := ctl.View().Config.Update.FeedURL; got != "https://updates.example.com/releases" {
+		t.Fatalf("saved FeedURL = %q", got)
+	}
+	if s.feed != "https://updates.example.com/releases" {
+		t.Fatalf("UI input s.feed was not updated to trimmed value: %q", s.feed)
+	}
+}
+
+func writeTinyPNG(t *testing.T, path string, r uint8) {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.NRGBA{r, 128, 200, 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestThumbCacheBoundedLRUAndNegativeCache(t *testing.T) {
+	ctl := uidemo.New(nil)
+	s := NewSettings(ctl, "windows")
+	s.thumbCap = 3
+	dir := t.TempDir()
+
+	items := make([]config.Item, 4)
+	for i := range items {
+		p := filepath.Join(dir, fmt.Sprintf("t%d.png", i))
+		writeTinyPNG(t, p, uint8(i*40))
+		items[i] = config.Item{ID: fmt.Sprintf("id%d", i), Snapshot: p}
+	}
+
+	// Fill cache to capacity (id0, id1, id2).
+	for i := 0; i < 3; i++ {
+		if bm := s.thumbOf(items[i]); bm == nil {
+			t.Fatalf("expected bitmap for item %d", i)
+		}
+	}
+	if len(s.thumbs) != 3 {
+		t.Fatalf("cache len = %d, want 3", len(s.thumbs))
+	}
+	// Touch id0 so id1 becomes the least recently used entry.
+	if bm := s.thumbOf(items[0]); bm == nil {
+		t.Fatal("cache hit for id0 returned nil")
+	}
+	// Insert id3 -> id1 must be evicted, keeping id0, id2, id3.
+	if bm := s.thumbOf(items[3]); bm == nil {
+		t.Fatal("expected bitmap for id3")
+	}
+	if len(s.thumbs) != 3 {
+		t.Fatalf("cache len after eviction = %d, want 3", len(s.thumbs))
+	}
+	if _, evicted := s.thumbs["id1"]; evicted {
+		t.Fatal("LRU entry id1 was not evicted")
+	}
+	if _, ok := s.thumbs["id0"]; !ok {
+		t.Fatal("MRU entry id0 was evicted")
+	}
+
+	// Corrupt thumbnail must be negative-cached (read once, not on every frame).
+	badPath := filepath.Join(dir, "corrupt.png")
+	if err := os.WriteFile(badPath, []byte("not-a-valid-png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	badItem := config.Item{ID: "bad", Snapshot: badPath}
+	readsBefore := s.thumbReads
+	for range 5 {
+		if bm := s.thumbOf(badItem); bm != nil {
+			t.Fatal("corrupt image unexpectedly decoded")
+		}
+	}
+	if s.thumbReads-readsBefore != 1 {
+		t.Fatalf("corrupt thumbnail was read %d times, want 1", s.thumbReads-readsBefore)
+	}
+
+	// Replacing corrupt file with valid PNG (different size/mtime) invalidates negative cache.
+	writeTinyPNG(t, badPath, 250)
+	if bm := s.thumbOf(badItem); bm == nil {
+		t.Fatal("repaired thumbnail did not invalidate negative cache")
+	}
+}
+
+func TestLibraryListViewVirtualizesLargeLibrary(t *testing.T) {
+	ctl, s, tt := newUI(t, "windows")
+	ctl.V.Config.UI.LibraryView = "list"
+	ctl.V.Library = make([]config.Item, 200)
+	for i := range ctl.V.Library {
+		ctl.V.Library[i] = config.Item{
+			ID:      fmt.Sprintf("item-%03d", i),
+			Title:   fmt.Sprintf("Wallpaper %03d", i),
+			Type:    "video",
+			Origin:  "file",
+			AddedAt: time.Unix(int64(1000+i), 0),
+		}
+	}
+	tt.SetSize(1120, 740)
+	tt.Frame()
+	first, last := s.list.Visible()
+	visibleCount := last - first
+	if visibleCount <= 0 || visibleCount >= 50 {
+		t.Fatalf("expected virtualized list visible slice well below 200, got [%d, %d) (count=%d)", first, last, visibleCount)
+	}
+}
+
+func TestEnglishNoLeakedChineseInDynamicBannersAndStates(t *testing.T) {
+	hasHan := func(s string) bool {
+		return strings.ContainsFunc(s, func(r rune) bool { return unicode.Is(unicode.Han, r) })
+	}
+
+	ctl, s, tt := newUI(t, "windows")
+	tt.SetSize(1120, 2200)
+	ctl.V.LastImport = ""
+	ctl.V.Config.UI.Lang = "en"
+	ctl.V.ReadOnly = []string{"config.json"}
+	ctl.V.Displays[0].FPSCap = 15
+	ctl.V.Displays[0].Level = ""
+	ctl.V.Displays[1].Name = "Display 2"
+	for i := range ctl.V.Library {
+		ctl.V.Library[i].Title = "Fixture " + ctl.V.Library[i].ID
+	}
+	ctl.V.Transcoding["ocean"] = "转码失败：exit status 1"
+	ctl.V.Renditions = []app.RenditionView{{ItemID: "ocean", DisplayID: "d1", Width: 1920, Height: 1080, Status: "等待转码…"}}
+	ctl.UpdateConfig(func(c *config.Config) { c.Update.FeedURL = "https://updates.example.com/rel" })
+
+	tt.SetLocale("en")
+	s.SelectItem("ocean")
+
+	// Library page: read-only banner + queued rendition + transcode failure.
+	s.SetPage("library")
+	tt.Frame()
+	must(t, tt,
+		"config.json was written by a newer version and is read-only in this version.",
+		"Queued for transcoding…",
+		"Transcode failed: exit status 1",
+	)
+	for _, txt := range tt.Texts() {
+		if hasHan(txt) {
+			t.Errorf("library page leaked Chinese in English mode: %q", txt)
+		}
+	}
+
+	// Displays page: FPS cap badge + empty level fallback.
+	s.SetPage("displays")
+	s.SelectDisplay("d1")
+	tt.Frame()
+	must(t, tt, "Capped at 15 fps", "Unknown")
+	for _, txt := range tt.Texts() {
+		if hasHan(txt) {
+			t.Errorf("displays page leaked Chinese in English mode: %q", txt)
+		}
+	}
+
+	// Versions page: new version update notice + rollback confirmation dialog + update errors.
+	checkDone := make(chan struct{}, 1)
+	s.Invalidate = func() {
+		select {
+		case checkDone <- struct{}{}:
+		default:
+		}
+	}
+	s.CheckUpdate = func() (*UpdateInfo, error) {
+		return &UpdateInfo{Version: "0.9.0", Size: 2 << 20}, nil
+	}
+	s.CanRollback = func() (string, bool) { return "0.1.0", true }
+	s.Rollback = func() error { return nil }
+	s.SetPage("versions")
+	tt.Frame()
+	click(t, tt, "Check for updates")
+	// Drain initial invalidate (busy=true) and completion invalidate (busy=false).
+	for {
+		s.mu.Lock()
+		busy := s.upd.busy
+		s.mu.Unlock()
+		if !busy {
+			break
+		}
+		<-checkDone
+	}
+	tt.Frame()
+	must(t, tt, "Version 0.9.0 available, approximately 2.0 MB to download")
+	click(t, tt, "Roll back to 0.1.0")
+	must(t, tt, "Roll back to 0.1.0?")
+	for _, txt := range tt.Texts() {
+		if hasHan(txt) || strings.ContainsRune(txt, '？') {
+			t.Errorf("versions page leaked Chinese/full-width punctuation in English mode: %q", txt)
+		}
+	}
+	click(t, tt, "Cancel")
+
+	// Update error strings from cmd/wallpaperd/update.go translate cleanly in English.
+	for _, tc := range []struct{ raw, want string }{
+		{"这个构建没有内置更新公钥", "This build has no embedded update public key"},
+		{"还没有配置更新源", "No update source configured"},
+		{"请先检查更新", "Check for updates first"},
+		{"更新源已改变，请重新检查更新", "Update source changed; please check for updates again"},
+		{"更新失败：更新源已改变，请重新检查更新", "Update failed: Update source changed; please check for updates again"},
+		{"等待转码…", "Queued for transcoding…"},
+		{"转码失败：boom", "Transcode failed: boom"},
+	} {
+		got := translate("en", tc.raw)
+		if got != tc.want || hasHan(got) {
+			t.Errorf("translate(en, %q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
 }

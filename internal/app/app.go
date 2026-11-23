@@ -3,6 +3,9 @@
 //
 // 线程模型：一个事件循环 goroutine 拥有全部状态（状态机不加锁，07 章）；每块显示器一个 worker goroutine
 // 串行执行可能阻塞的渲染器调用（IPC），结果投递回事件循环。UI 通过 View() 读取快照，通过公开方法投递命令。
+//
+// 大小预算说明（ENGINEERING.md §2）：本文件保留事件循环核心编排（显示器同步、状态机动作派发、宿主信号、
+// 快照发布与配置更新），它们共享单一事件循环所有权且彼此紧密联动；异步导入/删除/转码队列已拆至 queue.go。
 package app
 
 import (
@@ -12,7 +15,6 @@ import (
 	"image"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -26,7 +28,6 @@ import (
 	"wpapp/internal/media"
 	"wpapp/internal/render"
 	"wpapp/internal/supervisor"
-	"wpapp/internal/telemetry"
 	"wpapp/internal/transcode"
 	"wpapp/internal/visibility"
 )
@@ -139,6 +140,7 @@ type screen struct {
 	r              render.Renderer
 	gen            int
 	item           *config.Item
+	loadedItem     string // item ID currently held by r (for retiring teardown barriers)
 	started        bool
 	metricsReady   bool // successfully acknowledged renderer state (including policy L4)
 	metricsLevel   visibility.Level
@@ -159,23 +161,27 @@ type screen struct {
 
 // App 是编排器。
 type App struct {
-	signalConsent  *SignalConsent
-	signalAnswer   chan bool
-	networkConsent *NetworkConsent
-	networkAnswer  chan bool
-	itemGeneration map[string]uint64
-	removing       map[string]uint64
-	d              Deps
-	encoderInfo    transcode.Capabilities
-	log            *slog.Logger
-	t0             time.Time
-	metrics        runtimeMetrics
-	ctl            *visibility.Controller
-	screens        map[desktop.DisplayID]*screen
-	spanOwner      desktop.DisplayID // pinned through teardown; never falls to a removed owner's secondary
-	nextN          int
-	post           chan func()
-	timer          *time.Timer
+	signalConsent       *SignalConsent
+	signalAnswer        chan bool
+	networkConsent      *NetworkConsent
+	networkAnswer       chan bool
+	itemGeneration      map[string]uint64
+	removing            map[string]uint64
+	retiring            map[string][]<-chan struct{}
+	itemSourceKey       map[string]string
+	renditionReady      map[string]map[string]bool
+	renditionDiskChecks atomic.Int64
+	d                   Deps
+	encoderInfo         transcode.Capabilities
+	log                 *slog.Logger
+	t0                  time.Time
+	metrics             runtimeMetrics
+	ctl                 *visibility.Controller
+	screens             map[desktop.DisplayID]*screen
+	spanOwner           desktop.DisplayID // pinned through teardown; never falls to a removed owner's secondary
+	nextN               int
+	post                chan func()
+	timer               *time.Timer
 	// 原始信号（用于配置变化后重建状态机时回放）
 	global           map[visibility.Reason]bool
 	perDisp          map[desktop.DisplayID]visibility.Reason
@@ -203,6 +209,7 @@ type App struct {
 	lastErr          string
 	persistenceErr   atomic.Pointer[string]
 	reattach         int
+	reattaching      bool
 	transc           map[string]string
 	power            map[visibility.Reason]bool
 
@@ -213,7 +220,7 @@ type App struct {
 	closing  chan struct{}
 }
 
-// New 创建编排器。
+// New 创建编排器并立即发布初始视图快照（避免 Run 发布前 View() 返回零值）。
 func New(d Deps) *App {
 	if d.Log == nil {
 		d.Log = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -222,9 +229,60 @@ func New(d Deps) *App {
 	if d.EncoderInfo != nil {
 		encoderInfo = d.EncoderInfo(d.Store.Config)
 	}
-	return &App{encoderInfo: encoderInfo, itemGeneration: map[string]uint64{}, removing: map[string]uint64{}, d: d, log: d.Log, screens: map[desktop.DisplayID]*screen{}, post: make(chan func(), 256),
-		global: map[visibility.Reason]bool{}, perDisp: map[desktop.DisplayID]visibility.Reason{}, battPct: -1,
-		transc: map[string]string{}, power: map[visibility.Reason]bool{}, stopped: make(chan struct{}), closing: make(chan struct{})}
+	a := &App{
+		encoderInfo:    encoderInfo,
+		itemGeneration: map[string]uint64{},
+		removing:       map[string]uint64{},
+		retiring:       map[string][]<-chan struct{}{},
+		itemSourceKey:  map[string]string{},
+		renditionReady: map[string]map[string]bool{},
+		d:              d,
+		log:            d.Log,
+		screens:        map[desktop.DisplayID]*screen{},
+		post:           make(chan func(), 256),
+		global:         map[visibility.Reason]bool{},
+		perDisp:        map[desktop.DisplayID]visibility.Reason{},
+		battPct:        -1,
+		transc:         map[string]string{},
+		power:          map[visibility.Reason]bool{},
+		stopped:        make(chan struct{}),
+		closing:        make(chan struct{}),
+	}
+	a.view = a.buildInitialView()
+	return a
+}
+
+func (a *App) buildInitialView() View {
+	v := View{
+		SafeMode:    a.d.SafeMode,
+		HasEncoder:  a.d.Transcode != nil,
+		Encoder:     a.encoderInfo,
+		Layout:      "independent",
+		Power:       Power{Percent: -1},
+		Transcoding: map[string]string{},
+	}
+	if a.d.Store != nil {
+		v.Config = a.d.Store.Config.Clone()
+		v.Paths = a.d.Store.Paths
+		v.ReadOnly = append([]string(nil), a.d.Store.ReadOnlyWarn...)
+		v.Library = append([]config.Item(nil), a.d.Store.Library.Items...)
+		for i := range v.Library {
+			v.Library[i] = v.Library[i].Clone()
+		}
+		v.Default = a.d.Store.Assign.Default
+	}
+	if a.d.Host != nil {
+		v.Capabilities = a.d.Host.Caps()
+		if a.d.Store != nil {
+			canvas, layoutNote := a.desiredCanvas()
+			v.LayoutNote = layoutNote
+			if !canvas.Empty() {
+				v.Layout = "span"
+				v.Default = a.d.Store.Assign.SpanItem
+			}
+		}
+	}
+	return v
 }
 
 func (a *App) now() time.Duration { return time.Since(a.t0) }
@@ -376,6 +434,11 @@ func (a *App) syncDisplays() {
 			a.closeScreen(s, true)
 			a.ctl.RemoveDisplay(a.now(), s.n)
 			delete(a.screens, id)
+			if !ok {
+				// Unplugged display: clear transient per-display signals so a future
+				// reconnect does not inherit stale Fullscreen/Covered/DisplayOff bits.
+				delete(a.perDisp, id)
+			}
 		}
 	}
 	a.spanOwner = newOwner
@@ -384,7 +447,9 @@ func (a *App) syncDisplays() {
 			pixelsChanged := s.d.PixelSize() != d.PixelSize()
 			s.d = d // Geometry is unchanged; backing raster may change independently.
 			if pixelsChanged && s.item != nil {
-				if !a.updateScreenPlayback(s) {
+				if m := a.ctl.Display(s.n); m != nil && m.Level() >= visibility.L4 {
+					a.setScreenL4Stopped(s)
+				} else if !a.updateScreenPlayback(s) {
 					a.restartPlayback(s)
 				}
 			}
@@ -428,6 +493,7 @@ func (a *App) syncDisplays() {
 		a.assignItem(s)
 		a.startScreen(s, 0)
 	}
+	a.refreshRenditionCache()
 }
 
 // layoutOrder 按物理排列返回显示器（desktop.SortByLayout）。
@@ -531,6 +597,8 @@ func (a *App) assignItem(s *screen) {
 }
 
 // startScreen 在 delay 后启动渲染器（结果回到事件循环）。
+// 当 delay > 0 时，先等待退避期结束，再在事件循环上重新读取最新的 level/config 并构造渲染器，
+// 避免退避期间进入 L4/锁屏却仍拉起未静音的子进程。
 func (a *App) startScreen(s *screen, delay time.Duration) {
 	if !s.ops.accepting() {
 		return
@@ -553,11 +621,63 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 	}
 	if s.r != nil {
 		old := s.r
+		oldItem := s.loadedItem
+		s.r, s.started, s.metricsReady, s.loadedItem = nil, false, false, ""
 		s.ops.cleanup(func() { _ = old.Close() })
+		a.trackRetiring(oldItem, s.ops.barrier())
 	}
 	s.gen++
 	gen := s.gen
-	level := a.ctl.Display(s.n).Level()
+	s.levelPending = 0
+	if delay > 0 {
+		time.AfterFunc(delay, func() {
+			a.Do(func() {
+				if s.gen != gen || !s.ops.accepting() || s.surf == nil || a.d.SafeMode || s.item == nil {
+					return
+				}
+				if _, pending := a.removing[s.item.ID]; pending {
+					return
+				}
+				m := a.ctl.Display(s.n)
+				if m == nil || m.State() == visibility.StateFailed || m.State() == visibility.StateDestroyed {
+					return
+				}
+				if m.Level() >= visibility.L4 {
+					if m.State() == visibility.StateRecovering {
+						m.RestartOK(a.now())
+					}
+					a.setScreenL4Stopped(s)
+					return
+				}
+				a.launchScreen(s, gen)
+			})
+		})
+		return
+	}
+	m := a.ctl.Display(s.n)
+	if m != nil && m.Level() >= visibility.L4 {
+		if m.State() == visibility.StateRecovering {
+			m.RestartOK(a.now())
+		}
+		a.setScreenL4Stopped(s)
+		return
+	}
+	a.launchScreen(s, gen)
+}
+
+func (a *App) launchScreen(s *screen, gen int) {
+	m := a.ctl.Display(s.n)
+	if m == nil || s.item == nil || s.surf == nil {
+		return
+	}
+	level := m.Level()
+	if level >= visibility.L4 {
+		if m.State() == visibility.StateRecovering {
+			m.RestartOK(a.now())
+		}
+		a.setScreenL4Stopped(s)
+		return
+	}
 	r := a.d.NewRenderer(s.item.Type, a.d.Store.Config, s.d.ID)
 	if r == nil {
 		a.lastErr = "当前壁纸类型没有可用渲染器"
@@ -567,7 +687,7 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 		close(s.watchStop)
 	}
 	s.watchStop = make(chan struct{})
-	s.r, s.started, s.metricsReady = r, false, false
+	s.r, s.started, s.metricsReady, s.loadedItem = r, false, false, s.item.ID
 	s.levelPending = 0
 	it := render.Item{PackageDir: s.item.Dir, ID: s.item.ID, Kind: s.item.Type, Path: a.renditionPath(s, true),
 		SignalsBlocked: a.signalsBlocked(s), AudioEnabled: signalGrant(s.item, a.d.Store.Config, "audio"), InputEnabled: signalGrant(s.item, a.d.Store.Config, "input"), Viewport: s.d.Bounds,
@@ -582,38 +702,25 @@ func (a *App) startScreen(s *screen, delay time.Duration) {
 	options, note := a.playbackOptions(s, r)
 	s.note = note
 	surf := s.surf
-	launch := func() {
-		s.ops.enqueue(func() {
-			if level < visibility.L4 {
-				_ = surf.SetVisible(true)
-			}
-			var err error
-			if c, ok := r.(render.Configurable); ok {
-				err = c.Configure(options)
-			}
+	s.ops.enqueue(func() {
+		if level < visibility.L4 {
+			_ = surf.SetVisible(true)
+		}
+		var err error
+		if c, ok := r.(render.Configurable); ok {
+			err = c.Configure(options)
+		}
+		if err == nil {
+			err = r.Load(it, surf, level > visibility.L0)
 			if err == nil {
-				err = r.Load(it, surf, level > visibility.L0)
-				if err == nil {
-					s.worker.level = visibility.L0
-					if level > visibility.L0 {
-						s.worker.level = visibility.L1
-					}
+				s.worker.level = visibility.L0
+				if level > visibility.L0 {
+					s.worker.level = visibility.L1
 				}
 			}
-			a.Do(func() { a.onStarted(s, gen, r, level, err) })
-		})
-	}
-	if delay > 0 {
-		time.AfterFunc(delay, func() {
-			a.Do(func() {
-				if s.gen == gen {
-					launch()
-				}
-			})
-		})
-	} else {
-		launch()
-	}
+		}
+		a.Do(func() { a.onStarted(s, gen, r, level, err) })
+	})
 }
 
 func (a *App) onStarted(s *screen, gen int, r render.Renderer, loadedLevel visibility.Level, err error) {
@@ -625,8 +732,10 @@ func (a *App) onStarted(s *screen, gen int, r render.Renderer, loadedLevel visib
 	if err != nil {
 		a.log.Error("renderer start failed", "display", s.d.ID, "err", err)
 		a.lastErr = "渲染器启动失败: " + err.Error()
+		oldItem := s.loadedItem
 		s.ops.cleanup(func() { _ = r.Close() })
-		s.r = nil
+		a.trackRetiring(oldItem, s.ops.barrier())
+		s.r, s.loadedItem = nil, ""
 		if m.State() == visibility.StateRecovering {
 			m.RestartFailed(t)
 		} else {
@@ -652,6 +761,11 @@ func (a *App) onStarted(s *screen, gen int, r render.Renderer, loadedLevel visib
 	}()
 	s.curCap = 0
 	a.applyCap(s)
+	if updater, ok := r.(render.SignalPolicyUpdater); ok {
+		blocked := a.signalsBlocked(s)
+		s.ops.enqueue(func() { _ = updater.BlockSignals(blocked) })
+	}
+	a.refreshScreenRenditions(s)
 	if m.State() == visibility.StateRecovering {
 		m.RestartOK(t)
 	} else {
@@ -738,6 +852,7 @@ func (a *App) onDone(s *screen, gen int, err error) {
 // ---- 状态机动作 ----
 
 func (a *App) runActions() {
+	healthChecked := false
 	for _, s := range a.sortedScreens() {
 		if !s.ops.accepting() {
 			if machine := a.ctl.Display(s.n); machine != nil {
@@ -779,14 +894,17 @@ func (a *App) runActions() {
 				s.machCap = act.FPS
 				a.applyCap(s)
 			case visibility.ActHealthCheck:
-				a.healthCheck("resume")
+				if !healthChecked {
+					healthChecked = true
+					a.healthCheck("resume")
+				}
 			case visibility.ActRestart:
 				// A corrected runtime may be retried while policy requires a
 				// static snapshot. Clear the failed state, but do not launch a
 				// process until the normal resume transition permits it.
 				if m.Level() >= visibility.L4 {
 					m.RestartOK(a.now())
-					a.closeScreenForPause(s, false, true)
+					a.setScreenL4Stopped(s)
 					continue
 				}
 				d := supervisor.Backoff(s.crashes)
@@ -794,8 +912,10 @@ func (a *App) runActions() {
 				a.log.Info("restart scheduled", "display", s.d.ID, "in", d.String(), "n", s.crashes)
 				if s.r != nil {
 					old := s.r
+					oldItem := s.loadedItem
 					s.ops.cleanup(func() { _ = old.Close() })
-					s.r = nil
+					a.trackRetiring(oldItem, s.ops.barrier())
+					s.r, s.started, s.loadedItem = nil, false, ""
 				}
 				a.startScreen(s, d)
 			case visibility.ActRestartedAt:
@@ -888,7 +1008,7 @@ func (a *App) signal(r visibility.Reason, disp desktop.DisplayID, on bool, src s
 		a.global[r] = on
 	}
 	for _, screen := range a.sortedScreens() {
-		if updater, ok := screen.r.(render.SignalPolicyUpdater); ok {
+		if updater, ok := screen.r.(render.SignalPolicyUpdater); ok && screen.started {
 			blocked := a.signalsBlocked(screen)
 			screen.ops.enqueue(func() { _ = updater.BlockSignals(blocked) })
 		}
@@ -934,7 +1054,14 @@ func (a *App) healthCheck(why string) {
 }
 
 // reattachAll：Explorer 重启或挂载失效。销毁全部表面，按 0/1/2/4/8/16 s 退避重建（Q-P2：不阻塞）。
+// Deduplicated while a reattach cycle is already in progress so multi-display wake
+// or burst shell-restart events never queue redundant rebuilds.
 func (a *App) reattachAll(why string) {
+	if a.reattaching {
+		a.log.Debug("reattach skipped: already in progress", "why", why)
+		return
+	}
+	a.reattaching = true
 	a.log.Info("reattach", "why", why, "try", a.reattach)
 	for _, s := range a.screens {
 		a.closeScreen(s, false)
@@ -962,7 +1089,9 @@ func (a *App) reattachAttempt() {
 			continue
 		}
 		s.surf = surf
-		if a.ctl.Display(s.n).Level() < visibility.L4 {
+		if m := a.ctl.Display(s.n); m != nil && m.Level() >= visibility.L4 {
+			a.setScreenL4Stopped(s)
+		} else {
 			a.startScreen(s, 0)
 		}
 	}
@@ -971,6 +1100,7 @@ func (a *App) reattachAttempt() {
 		if a.reattach > 6 {
 			a.lastErr = "无法重新挂载到桌面，已降级为系统壁纸"
 			a.reattach = 0
+			a.reattaching = false
 			return
 		}
 		back := []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
@@ -978,6 +1108,7 @@ func (a *App) reattachAttempt() {
 		return
 	}
 	a.reattach = 0
+	a.reattaching = false
 }
 
 // ---- 持久化 ----
@@ -1186,396 +1317,55 @@ func (a *App) assign(display, itemID string) {
 			if a.d.Store.Library.Find(now) == nil {
 				now = ""
 			}
-			if old == now && s.r != nil {
+			if old == now && s.r != nil && !s.levelExhausted && s.levelNote == "" {
 				continue
 			}
 			s.crashes = 0
+			s.levelFailures, s.levelExhausted, s.levelNote = 0, false, ""
+			m := a.ctl.Display(s.n)
+			if now == "" {
+				if s.r != nil {
+					a.closeScreen(s, false)
+				} else if old != "" {
+					a.trackRetiring(old, s.ops.barrier())
+				}
+				a.assignItem(s)
+				if s.surf != nil {
+					surf := s.surf
+					s.ops.enqueue(func() { _ = surf.SetVisible(false) })
+				}
+				continue
+			}
+			if m != nil && m.Level() >= visibility.L4 {
+				if old != "" && old != now && s.r == nil {
+					a.trackRetiring(old, s.ops.barrier())
+				}
+				a.assignItem(s)
+				a.refreshScreenRenditions(s)
+				if m.State() == visibility.StateFailed {
+					m.Retry(a.now())
+					continue
+				}
+				a.setScreenL4Stopped(s)
+				continue
+			}
 			if s.r != nil {
 				a.closeScreen(s, false)
+			} else if old != "" && old != now {
+				a.trackRetiring(old, s.ops.barrier())
 			}
 			a.assignItem(s)
-			if m := a.ctl.Display(s.n); m.State() == visibility.StateFailed && now != "" {
+			a.refreshScreenRenditions(s)
+			if m != nil && m.State() == visibility.StateFailed {
 				m.Retry(a.now())
 				continue
 			}
-			if now == "" && s.surf != nil {
-				surf := s.surf
-				s.ops.enqueue(func() { _ = surf.SetVisible(false) })
-				continue
-			}
-			if a.ctl.Display(s.n).Level() < visibility.L4 {
-				a.startScreen(s, 0)
-			}
-		}
-	}
-}
-
-// ApplyAll 是 Import 的 applyTo 取值：导入后应用到所有显示器（headless / e2e 用）。
-const ApplyAll = "*"
-
-// Import 异步导入，完成后只加入壁纸库。applyTo 非空时再应用：显示器稳定 ID = 只应用到那块屏；
-// ApplyAll = 所有显示器。导入本身不会改动任何显示器（修复 0.2.0“导入即应用到所有屏”）。
-// MaxQueuedJobs limits pending import requests and encoder jobs separately.
-const MaxQueuedJobs = 256
-
-type importRequest struct{ path, applyTo string }
-
-func (a *App) Import(path, applyTo string) {
-	a.Do(func() {
-		if a.d.Import == nil {
-			a.lastImp = "此环境没有可用的导入器"
-			return
-		}
-		if len(a.importQueue) >= MaxQueuedJobs {
-			a.lastErr = "导入队列已满（256 项），请等待后重试"
-			return
-		}
-		a.importQueue = append(a.importQueue, importRequest{path, applyTo})
-		a.startNextImport()
-	})
-}
-
-// CancelImports stops the active importer and drops queued requests. Completed
-// items remain in the library; cancellation never auto-applies a partial batch.
-func (a *App) CancelImports() {
-	a.Do(func() {
-		a.importQueue = nil
-		a.importCancelled = true
-		if a.importCancel != nil {
-			a.importCancel()
-		}
-		a.lastImp = "导入已取消；已完成的项目保留在壁纸库"
-	})
-}
-
-// Imports may replace complete item directories, so they are serialized with
-// encoder commits and removals. Finite import requests take priority over queued
-// optimizations; after the import queue drains, one encoder starts at a time.
-func (a *App) advanceJobs() {
-	a.startNextImport()
-	if !a.importing {
-		a.startNextTranscode()
-	}
-}
-
-func (a *App) startNextImport() {
-	if a.importing || a.cleaning || a.transcodingID != "" || len(a.removing) > 0 || len(a.importQueue) == 0 || a.ctx.Err() != nil {
-		return
-	}
-	next := a.importQueue[0]
-	a.importQueue = a.importQueue[1:]
-	a.beginImport(next.path, next.applyTo)
-}
-
-func (a *App) beginImport(path, applyTo string) {
-	if a.d.Import == nil {
-		a.lastImp = "此环境没有可用的导入器"
-		return
-	}
-	a.importing = true
-	a.importCancelled = false
-	a.lastImp = "正在导入 " + filepath.Base(path) + " …"
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.importCancel = cancel
-	// App 拥有导入任务；导入完成或 ctx 取消并收尾后退出。
-	go func() {
-		defer cancel()
-		paths := []string{path}
-		var err error
-		if st, e := os.Stat(path); e == nil && st.IsDir() {
-			paths, err = importer.CollectSources(path)
-		}
-		if err != nil {
-			a.Do(func() {
-				a.importing, a.importCancel = false, nil
-				a.lastImp = "导入失败: " + err.Error()
-				if a.importCancelled {
-					a.lastImp = "导入已取消；已完成的项目保留在壁纸库"
-				} else {
-					a.lastErr = a.lastImp
-				}
-				a.advanceJobs()
-			})
-			return
-		}
-		imported, failed := 0, 0
-		firstID, firstTitle := "", ""
-		var failures []string
-		var warnings []string
-		for i, source := range paths {
-			if ctx.Err() != nil {
-				break
-			}
-			res, e := a.d.Import(ctx, source)
-			if e != nil {
-				failed++
-				if len(failures) < 3 {
-					failures = append(failures, filepath.Base(source)+": "+e.Error())
-				}
-				a.log.Warn("import failed", "file", telemetry.HashPath(source), "err", e)
-				continue
-			}
-			if res == nil {
-				failed++
-				continue
-			}
-			imported++
-			for _, warning := range res.Warnings {
-				if len(warnings) < 3 {
-					warnings = append(warnings, warning)
-				}
-			}
-			if firstID == "" {
-				firstID, firstTitle = res.Item.ID, res.Item.Title
-			}
-			progress := fmt.Sprintf("正在导入 %d/%d：%s", i+1, len(paths), res.Item.Title)
-			result := *res
-			a.Do(func() {
-				old := a.d.Store.Library.Find(result.Item.ID)
-				replacing := old != nil
-				if replacing && result.Item.Props == (config.ItemProps{}) {
-					result.Item.Props = old.Props // 重新导入同一壁纸时保留用户调好的组属性
-				}
-				a.invalidateItemWork(result.Item.ID)
-				a.d.Store.Library.Upsert(result.Item)
-				if replacing {
-					a.refreshItemScreens(result.Item.ID)
-				}
-				a.saveLibrary()
-				a.lastImp = progress
-				if a.d.Store.Config.Render.AutoTranscode && result.Item.Transcode == "recommended" && a.d.Transcode != nil {
-					a.transcode(result.Item.ID)
-				}
-			})
-		}
-		cancelled := ctx.Err() != nil
-		a.Do(func() {
-			a.importing, a.importCancel = false, nil
-			defer a.advanceJobs()
-			if cancelled || a.importCancelled {
-				a.lastImp = "导入已取消；已完成的项目保留在壁纸库"
-				a.refreshStorage()
-				return
-			}
-			switch {
-			case imported == 1 && failed == 0:
-				a.lastImp = "已导入「" + firstTitle + "」"
-			case imported > 0:
-				a.lastImp = fmt.Sprintf("已导入 %d 项，失败 %d 项", imported, failed)
-			default:
-				a.lastImp = "导入失败"
-			}
-			if len(failures) > 0 {
-				a.lastImp += "：" + joinNotes(failures)
-			}
-			if len(warnings) > 0 {
-				a.lastImp += "（" + joinNotes(warnings) + "）"
-			}
-			if imported > 0 {
-				switch {
-				case applyTo == ApplyAll:
-					if !a.spanning() {
-						a.d.Store.Assign.Displays = map[string]string{}
-					}
-					a.assign("", firstID)
-				case applyTo != "":
-					if s := a.screens[desktop.DisplayID(applyTo)]; s != nil {
-						a.assign(applyTo, firstID)
-						a.lastImp += "，已将首项应用到「" + a.labelOf(s) + "」"
-					}
-				}
-			}
-			if failed > 0 {
-				a.lastErr = a.lastImp
-			}
-			a.refreshStorage()
-		})
-	}()
-}
-func joinNotes(n []string) string {
-	s := ""
-	for i, x := range n {
-		if i > 0 {
-			s += "；"
-		}
-		s += x
-	}
-	return s
-}
-
-// Remove 从库中删除壁纸（同时删除包目录与缓存）。
-func (a *App) Remove(itemID string) {
-	a.Do(func() {
-		if a.importing {
-			a.lastErr = "导入进行中，请完成后再删除壁纸"
-			return
-		}
-		if a.d.Store.Library.Find(itemID) == nil {
-			return
-		}
-		if _, pending := a.removing[itemID]; pending {
-			return
-		}
-		a.invalidateItemWork(itemID)
-		generation := a.itemGeneration[itemID]
-		a.removing[itemID] = generation
-		var wait sync.WaitGroup
-		if a.transcodingID == itemID && a.transcodeDone != nil {
-			done := a.transcodeDone
-			wait.Add(1)
-			go func() { <-done; wait.Done() }()
-		}
-		for _, s := range a.screens {
-			if s.item != nil && s.item.ID == itemID {
-				a.closeScreen(s, false)
-				wait.Add(1)
-				done := s.ops.barrier()
-				go func() {
-					defer wait.Done()
-					select {
-					case <-done:
-					case <-a.closing:
-					}
-				}()
-			}
-		}
-		// App 拥有删除等待器；编码与屏幕操作释放后投递删除并退出。
-		go func() { wait.Wait(); a.Do(func() { a.removeItemNow(itemID, generation) }) }()
-	})
-}
-
-func (a *App) removeItemNow(itemID string, generation uint64) {
-	defer a.advanceJobs()
-	if a.removing[itemID] != generation || a.itemGeneration[itemID] != generation {
-		return
-	}
-	delete(a.removing, itemID)
-	it := a.d.Store.Library.Find(itemID)
-	if it == nil {
-		return
-	}
-	var tombstones []string
-	if managedChild(a.d.Store.Paths.Library, it.Dir) {
-		moved, err := tombstone(it.Dir)
-		if err != nil {
-			a.lastErr = "暂无法删除壁纸文件，请稍后重试：" + err.Error()
-			a.refreshItemScreens(itemID)
-			return
-		}
-		if moved != "" {
-			tombstones = append(tombstones, moved)
-		}
-	}
-	if it.Snapshot != "" {
-		dir := filepath.Dir(it.Snapshot)
-		if managedChild(a.d.Store.Paths.Cache, dir) {
-			moved, err := tombstone(dir)
-			if err != nil {
-				a.lastErr = "壁纸已移除，旧预览暂无法清理：" + err.Error()
-			} else if moved != "" {
-				tombstones = append(tombstones, moved)
-			}
-		}
-	}
-	cacheDir := filepath.Join(a.d.Store.Paths.Cache, itemID)
-	if managedChild(a.d.Store.Paths.Cache, cacheDir) {
-		if moved, err := tombstone(cacheDir); err == nil && moved != "" {
-			tombstones = append(tombstones, moved)
-		} else if err != nil {
-			a.lastErr = err.Error()
-		}
-	}
-	a.d.Store.Library.Remove(itemID)
-	a.saveLibrary()
-	if a.d.Store.Assign.SpanItem == itemID {
-		a.d.Store.Assign.SpanItem = ""
-	}
-	if a.d.Store.Assign.Default == itemID {
-		a.d.Store.Assign.Default = ""
-	}
-	for k, v := range a.d.Store.Assign.Displays {
-		if v == itemID {
-			delete(a.d.Store.Assign.Displays, k)
-		}
-	}
-	a.saveAssign()
-	for _, s := range a.screens {
-		if s.item != nil && s.item.ID == itemID {
-			s.item = nil
-			if s.surf != nil {
-				surf := s.surf
-				s.ops.enqueue(func() { _ = surf.SetVisible(false) })
-			}
-		}
-	}
-	for key := range a.d.Store.State.Positions {
-		if strings.HasSuffix(key, "|"+itemID) {
-			delete(a.d.Store.State.Positions, key)
-		}
-	}
-	a.saveState()
-	// App 拥有墓碑清理；有限路径删除及结果投递完成后退出。
-	go func() {
-		var err error
-		for _, path := range tombstones {
-			if e := os.RemoveAll(path); e != nil {
-				err = e
-			}
-		}
-		a.Do(func() {
-			if err != nil {
-				a.lastErr = "文件清理失败：" + err.Error()
-			}
-			a.refreshStorage()
-		})
-	}()
-}
-
-// A package update can retain its ID while changing entry, snapshot and metadata.
-// Refresh active copies explicitly instead of treating same-ID assignment as a no-op.
-func (a *App) refreshItemScreens(itemID string) {
-	for _, s := range a.screens {
-		if s.item == nil || s.item.ID != itemID {
-			continue
-		}
-		if s.r != nil {
-			a.closeScreen(s, false)
-		}
-		a.assignItem(s)
-		m := a.ctl.Display(s.n)
-		if m.State() == visibility.StateFailed {
-			m.Retry(a.now())
-			continue
-		}
-		if m.Level() < visibility.L4 {
 			a.startScreen(s, 0)
 		}
 	}
 }
 
-// Invalidate queued/running work before replacing or removing a library identity.
-func (a *App) invalidateItemWork(itemID string) {
-	for _, j := range a.renditionJobs {
-		if j.item == itemID {
-			j.state = "已取消"
-		}
-	}
-	delete(a.removing, itemID)
-	a.itemGeneration[itemID]++
-	if a.transcodingID == itemID && a.transcodeCancel != nil {
-		a.transcodeCancel()
-	}
-	pending := a.transcodeQueue[:0]
-	for _, id := range a.transcodeQueue {
-		if id != itemID {
-			pending = append(pending, id)
-		}
-	}
-	a.transcodeQueue = pending
-	delete(a.transc, itemID)
-}
-
-// UpdateConfig 修改配置：暂停策略变化会重建状态机并回放当前信号；后端变化会重启渲染器。
+// UpdateConfig 修改配置：暂停策略变化会就地更新状态机并保留计时/熔断状态；后端变化会重启或重试渲染器。
 func (a *App) UpdateConfig(fn func(*config.Config)) {
 	a.Do(func() {
 		old := a.d.Store.Config.Clone()
@@ -1606,15 +1396,18 @@ func (a *App) UpdateConfig(fn func(*config.Config)) {
 		}
 		a.saveConfig()
 		if !reflect.DeepEqual(c.Pause, old.Pause) {
-			a.updateAppRule()
-			a.rebuildMachines()
+			a.updateVisibilityConfig(c)
 		}
 		if c.Perf != old.Perf {
 			for _, s := range a.sortedScreens() {
 				a.applyCap(s)
 			}
 		}
-		playbackChanged := c.Render.WindowsBackend != old.Render.WindowsBackend || c.Render.MpvPath != old.Render.MpvPath || c.Render.Hwdec != old.Render.Hwdec || c.Render.Muted != old.Render.Muted || c.Render.ResumePosition != old.Render.ResumePosition || c.Perf.RenderScale != old.Perf.RenderScale
+		backendChanged := c.Render.WindowsBackend != old.Render.WindowsBackend || c.Render.MpvPath != old.Render.MpvPath || c.Render.Hwdec != old.Render.Hwdec
+		playbackChanged := backendChanged || c.Render.Muted != old.Render.Muted || c.Render.ResumePosition != old.Render.ResumePosition || c.Perf.RenderScale != old.Perf.RenderScale
+		if c.Render.Muted != old.Render.Muted || c.Render.WindowsBackend != old.Render.WindowsBackend {
+			a.refreshRenditionCache()
+		}
 		if c.Privacy.AudioReactive != old.Privacy.AudioReactive || c.Privacy.MouseInput != old.Privacy.MouseInput || playbackChanged {
 			for _, s := range a.sortedScreens() {
 				if !playbackChanged && (s.item == nil || (s.item.Type != "shader" && s.item.Type != "web")) {
@@ -1623,62 +1416,47 @@ func (a *App) UpdateConfig(fn func(*config.Config)) {
 				if c.Render.WindowsBackend != old.Render.WindowsBackend {
 					a.installSystemWallpaper(s)
 				}
+				m := a.ctl.Display(s.n)
 				if s.r != nil {
-					a.closeScreen(s, false)
-					if a.ctl.Display(s.n).Level() < visibility.L4 {
+					if m != nil && m.Level() >= visibility.L4 {
+						a.setScreenL4Stopped(s)
+					} else {
+						a.closeScreen(s, false)
 						a.startScreen(s, 0)
 					}
-				} else if c.Render.MpvPath != old.Render.MpvPath && !a.d.SafeMode && s.surf != nil && s.item != nil && s.item.Type != "image" {
-					// A missing executable can exhaust retries before the user
-					// configures it. An explicit path correction starts a new retry
-					// cycle without clearing pause signals or display assignments.
-					m := a.ctl.Display(s.n)
-					if m.State() == visibility.StateFailed {
+				} else if backendChanged && !a.d.SafeMode && s.surf != nil && s.item != nil && s.item.Type != "image" {
+					// A missing executable, broken backend, or incompatible hwdec mode
+					// can exhaust retries before the user changes decoder/backend settings.
+					// Start a new retry cycle without clearing pause signals or assignments.
+					if m != nil && m.State() == visibility.StateFailed {
 						s.crashes = 0
+						s.levelFailures, s.levelExhausted, s.levelNote = 0, false, ""
 						m.Retry(a.now())
 						m.Advance(a.now())
-					} else if m.Level() < visibility.L4 {
+					} else if m != nil && m.Level() >= visibility.L4 {
+						a.setScreenL4Stopped(s)
+					} else {
 						a.startScreen(s, 0)
 					}
+				} else if m != nil && m.Level() >= visibility.L4 && s.item != nil {
+					a.setScreenL4Stopped(s)
 				}
 			}
 		}
 	})
 }
 
-func (a *App) rebuildMachines() {
+func (a *App) updateVisibilityConfig(c config.Config) {
 	now := a.now()
-	a.ctl = visibility.NewController(VisConfig(a.d.Store.Config))
+	a.ctl.Advance(now)
+	a.updateAppRule()
 	a.updateLowBattery()
-	for _, s := range a.sortedScreens() {
-		m := a.ctl.AddDisplay(now, s.n)
-		if s.item != nil && s.item.Type == "web" {
-			m.SetKind(visibility.Web)
+	for id, s := range a.screens {
+		for _, reason := range []visibility.Reason{visibility.Fullscreen, visibility.Covered} {
+			_ = a.ctl.Set(now, reason, s.n, a.perDisp[id]&reason != 0 && a.reasonEnabled(reason))
 		}
 	}
-	for r, on := range a.global {
-		if on {
-			_ = a.ctl.Set(now, r, -1, true)
-		}
-	}
-	for id, r := range a.perDisp {
-		if s := a.screens[id]; s != nil {
-			a.replayDisplay(s, r)
-		}
-	}
-	a.ctl.Advance(a.now())
-	for _, s := range a.sortedScreens() {
-		a.ctl.Display(s.n).Drain()
-		l := a.ctl.Display(s.n).Level()
-		s.machCap = a.ctl.Display(s.n).WantFPS()
-		a.applyCap(s)
-		switch {
-		case s.r == nil && l < visibility.L4:
-			a.startScreen(s, 0)
-		case s.r != nil:
-			a.applyLevel(s, l)
-		}
-	}
+	a.ctl.UpdateConfig(VisConfig(c))
 }
 
 // ExitSafeMode 清除崩溃记录并重新加载壁纸。
@@ -1735,175 +1513,6 @@ func (a *App) Next() {
 		}
 		a.assign("", after(a.d.Store.Assign.Default))
 	})
-}
-
-// Transcode 对一个“建议转码”的条目运行编码器（F-07），完成后替换入口并重启正在播放它的屏幕。
-// 原文件保留，转码失败不影响原条目。
-func (a *App) Transcode(itemID string) { a.Do(func() { a.transcode(itemID) }) }
-
-func (a *App) transcode(itemID string) {
-	it := a.d.Store.Library.Find(itemID)
-	if it == nil || a.transc[itemID] == "正在转码…" || a.transc[itemID] == "等待转码…" {
-		return
-	}
-	if a.d.Transcode == nil {
-		a.transc[itemID] = "本机没有可用的编码器"
-		return
-	}
-	if len(a.transcodeQueue) >= MaxQueuedJobs {
-		a.transc[itemID] = "转码队列已满，请稍后重试"
-		return
-	}
-	a.transc[itemID] = "等待转码…"
-	a.transcodeQueue = append(a.transcodeQueue, itemID)
-	a.startNextTranscode()
-}
-
-func (a *App) startNextTranscode() {
-	if a.transcodingID != "" || a.importing || a.cleaning || len(a.removing) > 0 || a.ctx.Err() != nil {
-		return
-	}
-	for len(a.transcodeQueue) > 0 {
-		id := a.transcodeQueue[0]
-		a.transcodeQueue = a.transcodeQueue[1:]
-		if a.d.Store.Library.Find(id) == nil {
-			delete(a.transc, id)
-			continue
-		}
-		if a.d.Transcode == nil {
-			a.transc[id] = "本机没有可用的编码器"
-			continue
-		}
-		a.beginTranscode(id)
-		if a.transcodingID != "" {
-			return
-		}
-	}
-	a.startNextRendition()
-}
-
-func (a *App) beginTranscode(itemID string) {
-	it := a.d.Store.Library.Find(itemID)
-	if it == nil {
-		return
-	}
-	dirInfo, err := os.Stat(it.Dir)
-	if err != nil {
-		a.transc[itemID] = "转码失败：" + err.Error()
-		return
-	}
-	generation := a.itemGeneration[itemID]
-	a.transcodingID = itemID
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.transcodeCancel = cancel
-	done := make(chan struct{})
-	a.transcodeDone = done
-	ext := a.d.TranscodeExt
-	if ext == "" {
-		ext = ".mp4"
-	}
-	src := filepath.Join(it.Dir, filepath.FromSlash(it.Entry))
-	sourceInfo, _ := os.Stat(src)
-	rel := "optimized" + ext
-	dst := filepath.Join(it.Dir, rel)
-	a.transc[itemID] = "正在转码…"
-	enc := a.d.Transcode
-	probe := a.d.ProbeMedia
-	strict := a.encoderInfo.Strict
-	// App 拥有转码任务；编码完成或 ctx 取消后清理临时文件并退出。
-	go func() {
-		f, err := os.CreateTemp(a.d.Store.Paths.Library, ".transcode-*"+ext)
-		tmp := ""
-		if err == nil {
-			tmp = f.Name()
-			err = f.Close()
-		}
-		if err == nil {
-			err = enc(ctx, src, tmp)
-		}
-		var info *media.Info
-		if err == nil && probe != nil {
-			info, err = probe(ctx, tmp)
-			if err == nil && (info == nil || info.Kind != "video" || (info.Codec != "h264" && info.Codec != "hevc")) {
-				err = errors.New("encoder output is not a supported video")
-			}
-		}
-		if err == nil && ctx.Err() != nil {
-			err = ctx.Err()
-		}
-		// The encoder and probe have returned and released their file handles.
-		// Removal must wait for this before renaming the source directory on Windows.
-		close(done)
-		committed := make(chan struct{})
-		a.Do(func() {
-			defer close(committed)
-			defer func() {
-				if tmp != "" {
-					_ = os.Remove(tmp)
-				}
-			}()
-
-			cancel()
-			a.transcodeCancel = nil
-			a.transcodingID = ""
-			defer a.advanceJobs()
-			p := a.d.Store.Library.Find(itemID)
-			if p == nil || a.itemGeneration[itemID] != generation {
-				return
-			}
-			currentInfo, identityErr := os.Stat(p.Dir)
-			if identityErr != nil || !os.SameFile(dirInfo, currentInfo) {
-				delete(a.transc, itemID)
-				return
-			}
-			if err == nil && sourceInfo != nil {
-				current, checkErr := os.Stat(src)
-				if checkErr != nil || !os.SameFile(sourceInfo, current) || current.Size() != sourceInfo.Size() || !current.ModTime().Equal(sourceInfo.ModTime()) {
-					err = errors.New("source media changed during encoding; retry the new source")
-				}
-			}
-			if err == nil {
-				err = os.Rename(tmp, dst)
-			}
-			if err != nil {
-				a.transc[itemID] = "转码失败：" + err.Error()
-				a.log.Warn("transcode failed", "item", itemID, "err", err)
-				return
-			}
-			delete(a.transc, itemID)
-			p.Entry, p.Transcode = rel, "done"
-			if strict {
-				p.Note = "已转码为 H.264、30 fps、无音轨"
-			} else {
-				p.Note = "转码完成；帧率和音轨依实际编码器能力"
-			}
-			if info != nil {
-				p.Codec, p.Width, p.Height, p.DurationSec = info.Codec, info.W, info.H, info.DurationSec
-			}
-			if st, err := os.Stat(dst); err == nil {
-				p.SizeBytes = st.Size()
-			}
-			a.saveLibrary()
-			a.log.Info("transcoded", "item", itemID)
-			a.refreshStorage()
-			for _, s := range a.sortedScreens() {
-				if s.item != nil && s.item.ID == itemID {
-					a.assignItem(s)
-					a.closeScreen(s, false)
-					if a.ctl.Display(s.n).Level() < visibility.L4 {
-						a.startScreen(s, 0)
-					}
-				}
-			}
-		})
-		select {
-		case <-committed:
-		case <-a.stopped:
-		}
-		if tmp != "" {
-			_ = os.Remove(tmp)
-		}
-	}()
 }
 
 // Wait 等待事件循环结束。

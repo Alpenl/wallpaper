@@ -314,3 +314,38 @@ func TestMetricRejectedL4StopIsNotSavedDuration(t *testing.T) {
 		t.Fatalf("failed L4 counted %v", got)
 	}
 }
+
+// M-15: wallElapsed == 0 (e.g. Windows 15.6ms wall-clock tick granularity) with
+// monotonic elapsed <= 1s must skip cleanly without setting ClockAdjusted, while
+// true negative wallElapsed < 0 still flags ClockAdjusted.
+func TestMetricsZeroWallElapsedDoesNotWarn(t *testing.T) {
+	var r runtimeMetrics
+	var m config.LocalMetrics
+	t0 := metricTime()
+	r.sample(t0, &m, metricSource(visibility.L1))
+	r.sample(t0, &m, metricSource(visibility.L1))
+	if r.clockAdjusted {
+		t.Fatal("zero wallElapsed must not flag ClockAdjusted")
+	}
+	if got := metricLevel(m, visibility.L1); got != 0 {
+		t.Fatalf("zero elapsed charged %v", got)
+	}
+	r.sample(t0.Add(5*time.Second), &m, metricSource(visibility.L1))
+	if r.clockAdjusted || metricLevel(m, visibility.L1) != 5*time.Second {
+		t.Fatalf("subsequent interval failed: adjusted=%v paused=%v", r.clockAdjusted, metricLevel(m, visibility.L1))
+	}
+	// True negative rollback must still flag ClockAdjusted.
+	r.sample(t0.Add(2*time.Second), &m, metricSource(visibility.L1))
+	if !r.clockAdjusted {
+		t.Fatal("negative wallElapsed must flag ClockAdjusted")
+	}
+	// Rapid back-to-back time.Now() calls on real clocks must not falsely warn.
+	var live runtimeMetrics
+	var lm config.LocalMetrics
+	now := time.Now()
+	live.sample(now, &lm, metricSource(visibility.L1))
+	live.sample(time.Now(), &lm, metricSource(visibility.L1))
+	if live.clockAdjusted {
+		t.Fatal("back-to-back time.Now() falsely flagged ClockAdjusted")
+	}
+}

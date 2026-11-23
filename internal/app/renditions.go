@@ -10,6 +10,7 @@ import (
 	"wpapp/internal/config"
 	"wpapp/internal/render"
 	"wpapp/internal/transcode"
+	"wpapp/internal/visibility"
 )
 
 type renditionJob struct {
@@ -25,8 +26,21 @@ type RenditionView struct {
 	Width, Height                  int
 }
 
-func (a *App) renditionFor(s *screen) (transcode.Rendition, bool) {
-	if s.item == nil || s.item.Type != "video" || !s.canvas.Empty() || !managedChild(a.d.Store.Paths.Cache, filepath.Join(a.d.Store.Paths.Cache, s.item.ID)) {
+func (a *App) renditionSourceKey(it *config.Item) string {
+	if it == nil || it.Type != "video" {
+		return ""
+	}
+	src := filepath.Join(it.Dir, filepath.FromSlash(it.Entry))
+	a.renditionDiskChecks.Add(1)
+	st, err := os.Stat(src)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s\x00%s\x00%d\x00%d", it.ID, it.Entry, st.Size(), st.ModTime().UnixNano())
+}
+
+func (a *App) renditionTargetFor(s *screen, source string) (transcode.Rendition, bool) {
+	if s.item == nil || s.item.Type != "video" || !s.canvas.Empty() || source == "" || !managedChild(a.d.Store.Paths.Cache, filepath.Join(a.d.Store.Paths.Cache, s.item.ID)) {
 		return transcode.Rendition{}, false
 	}
 	pb := a.effectivePlayback(s)
@@ -38,17 +52,157 @@ func (a *App) renditionFor(s *screen) (transcode.Rendition, bool) {
 	if pb.Fit != "fill" || !pb.Muted {
 		return transcode.Rendition{}, false
 	}
-	src := filepath.Join(s.item.Dir, filepath.FromSlash(s.item.Entry))
-	st, err := os.Stat(src)
-	if err != nil {
-		return transcode.Rendition{}, false
-	}
 	size := s.d.PixelSize()
 	if size.X < 2 || size.Y < 2 {
 		return transcode.Rendition{}, false
 	}
-	source := fmt.Sprintf("%s\x00%s\x00%d\x00%d", s.item.ID, s.item.Entry, st.Size(), st.ModTime().UnixNano())
 	return transcode.CoverRendition(source, size.X, size.Y), true
+}
+
+func (a *App) renditionFor(s *screen) (transcode.Rendition, bool) {
+	if s.item == nil || s.item.Type != "video" || !s.canvas.Empty() || !managedChild(a.d.Store.Paths.Cache, filepath.Join(a.d.Store.Paths.Cache, s.item.ID)) {
+		return transcode.Rendition{}, false
+	}
+	source := a.renditionSourceKey(s.item)
+	if a.itemSourceKey == nil {
+		a.itemSourceKey = map[string]string{}
+	}
+	a.itemSourceKey[s.item.ID] = source
+	return a.renditionTargetFor(s, source)
+}
+
+// renditionForItem evaluates the rendition target for (item, screen) using the
+// same active-renderer capability rules across View, OptimizeDisplays, and cache refresh.
+func (a *App) renditionForItem(s *screen, it *config.Item, useCache bool) (transcode.Rendition, bool) {
+	cp := *s
+	cp.item = it
+	if s.item == nil || s.item.ID != it.ID {
+		cp.r = nil
+	}
+	var source string
+	if useCache {
+		source = a.itemSourceKey[it.ID]
+	} else {
+		source = a.renditionSourceKey(it)
+		if a.itemSourceKey == nil {
+			a.itemSourceKey = map[string]string{}
+		}
+		a.itemSourceKey[it.ID] = source
+	}
+	return a.renditionTargetFor(&cp, source)
+}
+
+func (a *App) markRenditionReady(itemID, key string, ready bool) {
+	if itemID == "" || key == "" {
+		return
+	}
+	if a.renditionReady == nil {
+		a.renditionReady = map[string]map[string]bool{}
+	}
+	if a.renditionReady[itemID] == nil {
+		a.renditionReady[itemID] = map[string]bool{}
+	}
+	a.renditionReady[itemID][key] = ready
+}
+
+func (a *App) evictItemRenditions(itemID string) {
+	delete(a.itemSourceKey, itemID)
+	delete(a.renditionReady, itemID)
+}
+
+func (a *App) checkRenditionReadyOnDisk(r transcode.Rendition, itemID string) bool {
+	a.renditionDiskChecks.Add(1)
+	ready := r.Ready(a.d.Store.Paths.Cache, itemID)
+	a.markRenditionReady(itemID, r.Key(), ready)
+	return ready
+}
+
+func (a *App) refreshItemRenditions(itemID string) {
+	it := a.d.Store.Library.Find(itemID)
+	if it == nil || it.Type != "video" {
+		a.evictItemRenditions(itemID)
+		return
+	}
+	source := a.renditionSourceKey(it)
+	if a.itemSourceKey == nil {
+		a.itemSourceKey = map[string]string{}
+	}
+	a.itemSourceKey[itemID] = source
+	readyMap := map[string]bool{}
+	if source != "" {
+		for _, s := range a.sortedScreens() {
+			cp := *s
+			cp.item = it
+			if s.item == nil || s.item.ID != it.ID {
+				cp.r = nil
+			}
+			if r, ok := a.renditionTargetFor(&cp, source); ok {
+				key := r.Key()
+				if _, seen := readyMap[key]; !seen {
+					a.renditionDiskChecks.Add(1)
+					readyMap[key] = r.Ready(a.d.Store.Paths.Cache, itemID)
+				}
+			}
+		}
+	}
+	if a.renditionReady == nil {
+		a.renditionReady = map[string]map[string]bool{}
+	}
+	a.renditionReady[itemID] = readyMap
+}
+
+func (a *App) refreshScreenRenditions(s *screen) {
+	if s == nil || s.item == nil || s.item.Type != "video" {
+		return
+	}
+	it := a.d.Store.Library.Find(s.item.ID)
+	if it == nil {
+		return
+	}
+	source, ok := a.itemSourceKey[it.ID]
+	if !ok {
+		source = a.renditionSourceKey(it)
+		if a.itemSourceKey == nil {
+			a.itemSourceKey = map[string]string{}
+		}
+		a.itemSourceKey[it.ID] = source
+	}
+	if r, ok := a.renditionTargetFor(s, source); ok {
+		a.checkRenditionReadyOnDisk(r, it.ID)
+	}
+}
+
+func (a *App) refreshRenditionCache() {
+	a.itemSourceKey = map[string]string{}
+	a.renditionReady = map[string]map[string]bool{}
+	screens := a.sortedScreens()
+	for i := range a.d.Store.Library.Items {
+		it := &a.d.Store.Library.Items[i]
+		if it.Type != "video" {
+			continue
+		}
+		source := a.renditionSourceKey(it)
+		a.itemSourceKey[it.ID] = source
+		if source == "" {
+			continue
+		}
+		readyMap := map[string]bool{}
+		for _, s := range screens {
+			cp := *s
+			cp.item = it
+			if s.item == nil || s.item.ID != it.ID {
+				cp.r = nil
+			}
+			if r, ok := a.renditionTargetFor(&cp, source); ok {
+				key := r.Key()
+				if _, seen := readyMap[key]; !seen {
+					a.renditionDiskChecks.Add(1)
+					readyMap[key] = r.Ready(a.d.Store.Paths.Cache, it.ID)
+				}
+			}
+		}
+		a.renditionReady[it.ID] = readyMap
+	}
 }
 
 func (a *App) renditionPath(s *screen, queue bool) string {
@@ -57,7 +211,7 @@ func (a *App) renditionPath(s *screen, queue bool) string {
 	if !ok {
 		return fallback
 	}
-	if r.Ready(a.d.Store.Paths.Cache, s.item.ID) {
+	if a.checkRenditionReadyOnDisk(r, s.item.ID) {
 		return r.Path(a.d.Store.Paths.Cache, s.item.ID)
 	}
 	if queue {
@@ -101,15 +255,13 @@ func (a *App) OptimizeDisplays(id string) {
 			return
 		}
 		for _, s := range a.sortedScreens() {
-			copy := *s
-			copy.item = it
-			copy.r = nil
-			if r, ok := a.renditionFor(&copy); ok && !r.Ready(a.d.Store.Paths.Cache, id) {
+			if r, ok := a.renditionForItem(s, it, false); ok && !a.checkRenditionReadyOnDisk(r, id) {
 				a.queueRendition(it, r, true)
 			}
 		}
 	})
 }
+
 func (a *App) CancelRenditions(id string) {
 	a.Do(func() {
 		for _, j := range a.renditionJobs {
@@ -211,9 +363,14 @@ func (a *App) startNextRendition() {
 					return
 				}
 				j.state = "已优化"
+				a.markRenditionReady(j.item, j.rendition.Key(), true)
 				a.refreshStorage()
 				for _, s := range a.sortedScreens() {
 					if s.item != nil && s.item.ID == j.item {
+						if m := a.ctl.Display(s.n); m != nil && m.Level() >= visibility.L4 {
+							a.setScreenL4Stopped(s)
+							continue
+						}
 						if !a.updateScreenPlayback(s) {
 							a.restartPlayback(s)
 						}
@@ -238,6 +395,10 @@ func (a *App) updateRendition(s *screen) bool {
 	path := a.renditionPath(s, true)
 	if path == s.mediaPath {
 		return true
+	}
+	if !s.started {
+		a.capturePosition(s)
+		return false
 	}
 	updater, ok := s.r.(render.SourceUpdater)
 	if !ok {
@@ -265,21 +426,18 @@ func (a *App) updateRendition(s *screen) bool {
 
 func (a *App) renditionViews() []RenditionView {
 	var out []RenditionView
-	for _, it := range a.d.Store.Library.Items {
+	screens := a.sortedScreens()
+	for i := range a.d.Store.Library.Items {
+		it := &a.d.Store.Library.Items[i]
 		if it.Type != "video" {
 			continue
 		}
-		for _, s := range a.sortedScreens() {
-			copy := *s
-			copy.item = &it
-			if s.item == nil || s.item.ID != it.ID {
-				copy.r = nil
-			}
-			r, ok := a.renditionFor(&copy)
+		for _, s := range screens {
+			r, ok := a.renditionForItem(s, it, true)
 			state := "使用共享版本"
 			if ok {
 				state = "尚未优化"
-				if r.Ready(a.d.Store.Paths.Cache, it.ID) {
+				if a.renditionReady[it.ID][r.Key()] {
 					state = "已优化"
 				} else if j := a.renditionJobs[r.Key()]; j != nil {
 					state = j.state
@@ -324,5 +482,6 @@ func (a *App) cleanRenditions() error {
 			}
 		}
 	}
+	a.refreshRenditionCache()
 	return nil
 }

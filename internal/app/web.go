@@ -82,6 +82,7 @@ func (a *App) PreparePackageReplacement(ctx context.Context, id string) error {
 				waits = append(waits, s.ops.barrier())
 			}
 		}
+		waits = append(waits, a.takeRetiring(id)...)
 		queued <- waits
 	})
 	select {

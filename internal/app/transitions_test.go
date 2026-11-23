@@ -32,7 +32,7 @@ func TestTransitionBeginBeforeBlockingCall(t *testing.T) {
 	sink := make(transitionSink, 8)
 	a := &App{log: slog.New(slog.NewJSONHandler(sink, nil)), post: make(chan func(), 8), stopped: make(chan struct{})}
 	r := &heldLevel{fakeR: &fakeR{}, entered: make(chan struct{}), release: make(chan struct{})}
-	s := &screen{d: desktop.Display{ID: "A"}, item: &config.Item{ID: "item-x"}, r: r, gen: 7, worker: &screenWorker{}, ops: newScreenOps()}
+	s := &screen{d: desktop.Display{ID: "A"}, item: &config.Item{ID: "item-x"}, r: r, started: true, gen: 7, worker: &screenWorker{}, ops: newScreenOps()}
 	a.applyLevel(s, visibility.L1)
 	done := make(chan struct{})
 	go func() { s.ops.take()(); close(done) }()
@@ -65,5 +65,16 @@ func TestTransitionBeginBeforeBlockingCall(t *testing.T) {
 	}
 	if begin["child_pid"] != float64(456) || end["elapsed_ms"] == nil || end["queue_ms"] == nil {
 		t.Fatal(begin, end)
+	}
+}
+
+// M-12: applyLevel must not enqueue runtime SetLevel before s.started is true.
+func TestApplyLevelIgnoredBeforeStarted(t *testing.T) {
+	a := &App{log: slog.New(slog.NewTextHandler(nil, nil)), post: make(chan func(), 4), stopped: make(chan struct{})}
+	r := &heldLevel{fakeR: &fakeR{}, entered: make(chan struct{}), release: make(chan struct{})}
+	s := &screen{d: desktop.Display{ID: "A"}, item: &config.Item{ID: "item-x"}, r: r, started: false, gen: 1, worker: &screenWorker{}, ops: newScreenOps()}
+	a.applyLevel(s, visibility.L1)
+	if op := s.ops.take(); op != nil {
+		t.Fatal("applyLevel enqueued SetLevel before renderer finished started")
 	}
 }

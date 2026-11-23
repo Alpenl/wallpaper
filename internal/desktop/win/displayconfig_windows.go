@@ -3,6 +3,7 @@
 package win
 
 import (
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -107,6 +108,7 @@ func queryDisplayTargets() map[string]*dcTarget {
 	out := map[string]*dcTarget{}
 	var paths []dcPathInfo
 	var modes []dcModeInfo
+	ok := false
 	for try := 0; try < 3; try++ {
 		var np, nm uint32
 		if r, _, _ := pGetDisplayConfigBufferSizes.Call(qdcOnlyActivePaths, uintptr(unsafe.Pointer(&np)), uintptr(unsafe.Pointer(&nm))); r != 0 || np == 0 {
@@ -116,6 +118,7 @@ func queryDisplayTargets() map[string]*dcTarget {
 		modes = make([]dcModeInfo, max(nm, 1))
 		r, _, _ := pQueryDisplayConfig.Call(qdcOnlyActivePaths, uintptr(unsafe.Pointer(&np)), uintptr(unsafe.Pointer(&paths[0])),
 			uintptr(unsafe.Pointer(&nm)), uintptr(unsafe.Pointer(&modes[0])), 0)
+		runtime.KeepAlive(modes)
 		if r == errInsufficientBuff {
 			continue // 两次调用之间拓扑变了
 		}
@@ -123,7 +126,11 @@ func queryDisplayTargets() map[string]*dcTarget {
 			return out
 		}
 		paths = paths[:np]
+		ok = true
 		break
+	}
+	if !ok {
+		return out
 	}
 	for _, p := range paths {
 		src := dcSourceName{H: dcHeader{Type: dcGetSourceName, Size: uint32(unsafe.Sizeof(dcSourceName{})), Adapter: p.SrcAdapter, ID: p.SrcID}}
@@ -145,9 +152,15 @@ func queryDisplayTargets() map[string]*dcTarget {
 
 // enumMonitorDevice 返回 GDI 源下第一个显示器的 interface path 和 DeviceString。
 func enumMonitorDevice(gdi string) (path, str string) {
+	gdiPtr, err := syscall.UTF16PtrFromString(gdi)
+	if err != nil {
+		return
+	}
 	for i := uint32(0); i < 4; i++ {
 		dd := displayDevice{Cb: uint32(unsafe.Sizeof(displayDevice{}))}
-		if r, _, _ := pEnumDisplayDevicesW.Call(up(u16(gdi)), uintptr(i), uintptr(unsafe.Pointer(&dd)), eddGetDeviceIfName); r == 0 {
+		r, _, _ := pEnumDisplayDevicesW.Call(uintptr(unsafe.Pointer(gdiPtr)), uintptr(i), uintptr(unsafe.Pointer(&dd)), eddGetDeviceIfName)
+		runtime.KeepAlive(gdiPtr)
+		if r == 0 {
 			return
 		}
 		const active = 0x1 // DISPLAY_DEVICE_ACTIVE

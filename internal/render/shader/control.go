@@ -3,9 +3,47 @@
 package shader
 
 import (
+	"image"
 	"math"
 	"time"
+
+	"wpapp/internal/desktop"
 )
+
+const maxMetalTextureDim = 16384
+
+func clampMetalTextureSize(w, h int) (int, int) {
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	if w > maxMetalTextureDim || h > maxMetalTextureDim {
+		scale := math.Min(float64(maxMetalTextureDim)/float64(w), float64(maxMetalTextureDim)/float64(h))
+		w = max(1, min(maxMetalTextureDim, int(float64(w)*scale)))
+		h = max(1, min(maxMetalTextureDim, int(float64(h)*scale)))
+	}
+	return w, h
+}
+
+// metalLayout computes the clipping NSWindow rectangle, inner Metal canvas view
+// frame, and clamped physical Metal drawable dimensions for macOS.
+func metalLayout(canvas, viewport image.Rectangle, backing float64) (winRect image.Rectangle, viewX, viewY, viewW, viewH float64, physW, physH int, err error) {
+	if backing < 1 || math.IsNaN(backing) || math.IsInf(backing, 0) {
+		backing = 1
+	}
+	if !viewport.Empty() && viewport != canvas {
+		x, y, w, h, e := desktop.CanvasFrame(canvas, viewport, float64(viewport.Dx()), float64(viewport.Dy()), false)
+		if e != nil {
+			return image.Rectangle{}, 0, 0, 0, 0, 0, 0, e
+		}
+		pw, ph := clampMetalTextureSize(int(float64(canvas.Dx())*backing), int(float64(canvas.Dy())*backing))
+		return viewport, x, y, w, h, pw, ph, nil
+	}
+	pw, ph := clampMetalTextureSize(int(float64(canvas.Dx())*backing), int(float64(canvas.Dy())*backing))
+	return canvas, 0, 0, float64(canvas.Dx()), float64(canvas.Dy()), pw, ph, nil
+}
 
 // Adaptive uses consecutive samples and asymmetric thresholds to avoid scale
 // oscillation. Invalid/disjoint/unavailable GPU measurements must be ignored.

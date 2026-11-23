@@ -62,7 +62,10 @@ func (s *Session) Frame(now time.Time, fps int, raster image.Point) (Spectrum, [
 	if s.Blocked {
 		return Spectrum{}, [4]float32{}
 	}
-	if s.Audio && !s.audioFailed {
+	if !s.Audio {
+		_ = s.Capture.SetEnabled(false)
+		s.spectrum = Spectrum{}
+	} else if !s.audioFailed {
 		if e := s.Capture.SetEnabled(true); e != nil {
 			s.Status = e.Error()
 			s.audioFailed = true
@@ -79,7 +82,13 @@ func (s *Session) Frame(now time.Time, fps int, raster image.Point) (Spectrum, [
 			s.spectrum = v
 		}
 	}
-	if s.Input && !s.inputFailed {
+	if !s.Input {
+		if s.pointerActive {
+			s.Pointer.Stop()
+			s.pointerActive = false
+		}
+		s.mouse = Mouse{}
+	} else if !s.inputFailed {
 		if !s.pointerActive {
 			if e := s.Pointer.Start(); e != nil {
 				s.Status = e.Error()

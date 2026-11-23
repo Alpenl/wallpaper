@@ -62,6 +62,23 @@ class ValidationTests(unittest.TestCase):
             self.validate(BASE + entry("来自另一分支"), inherited=inherited)
         self.validate(BASE + entry("来自另一分支") + entry("合并总结"), inherited=inherited)
 
+    def test_fenced_code_blocks_are_ignored(self):
+        with_code_example = (
+            BASE + entry("包含代码示例")
+            + "```markdown\n## 2026-11-05 | 历史记录\n- 目的：示例\n```\n\n"
+        )
+        self.validate(with_code_example)
+        fenced_only = BASE + "```markdown\n" + entry("仅在代码块内") + "```\n"
+        with self.assertRaises(CHECK.SummaryError):
+            self.validate(fenced_only)
+        fenced_fields = (
+            BASE
+            + "## 2026-11-05 | 字段在代码块中\n\n"
+            + "~~~\n- 目的：a\n- 改动：b\n- 验证：c\n- 限制：d\n~~~\n"
+        )
+        with self.assertRaises(CHECK.SummaryError):
+            self.validate(fenced_fields)
+
 
 class GitHookTests(unittest.TestCase):
     def setUp(self):
@@ -180,6 +197,29 @@ class GitHookTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(ROOT / "scripts/check-commit-summary.py"),
                                  "--claude-context"], cwd=self.root, env=self.env,
                                 capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        import json
+        payload = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(payload["hookEventName"], "SessionStart")
+        self.assertIn("已配置", payload["additionalContext"])
+
+    def test_check_staged_from_subdirectory(self):
+        subdir = self.root / "nested" / "dir"
+        subdir.mkdir(parents=True)
+        self.change_code()
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/check-commit-summary.py")],
+                                cwd=subdir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.write(CHECK.SUMMARY, BASE + entry("子目录检查"))
+        self.git("add", CHECK.SUMMARY)
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/check-commit-summary.py")],
+                                cwd=subdir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_claude_summary_context_wrapper(self):
+        env = dict(self.env, CLAUDE_PROJECT_DIR=str(self.root))
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/claude-summary-context.py")],
+                                cwd=self.root, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         import json
         payload = json.loads(result.stdout)["hookSpecificOutput"]

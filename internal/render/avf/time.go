@@ -19,3 +19,19 @@ func seekTicks(seconds float64) (int64, bool) {
 	}
 	return int64(math.Round(seconds * float64(seekTimescale))), true
 }
+
+// shouldAttachFPSComposition reports whether an AVMutableVideoComposition
+// should be created for FPS capping. It requires valid non-zero track
+// dimensions and a cap strictly lower than the track's nominal frame rate.
+func shouldAttachFPSComposition(fps int, naturalW, naturalH, nominalFPS float64) bool {
+	if fps <= 0 {
+		return false
+	}
+	if math.IsNaN(naturalW) || math.IsInf(naturalW, 0) || math.IsNaN(naturalH) || math.IsInf(naturalH, 0) || naturalW <= 0 || naturalH <= 0 {
+		return false
+	}
+	if math.IsNaN(nominalFPS) || math.IsInf(nominalFPS, 0) || nominalFPS <= 0 {
+		return false
+	}
+	return float64(fps) < nominalFPS
+}

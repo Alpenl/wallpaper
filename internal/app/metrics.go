@@ -54,13 +54,19 @@ func (r *runtimeMetrics) sample(now time.Time, metrics *config.LocalMetrics, nex
 	}
 	elapsed := now.Sub(previous) // monotonic whenever supplied by time.Now
 	wallElapsed := now.Round(0).Sub(previous.Round(0))
-	if wallElapsed <= 0 {
+	if wallElapsed < 0 {
 		r.clockAdjusted = true
 		r.last = previous // retain the high-water mark; never count an interval twice
 		return changed
 	}
 	if absDuration(elapsed-wallElapsed) > time.Second {
 		r.clockAdjusted = true
+		return changed
+	}
+	if wallElapsed == 0 {
+		// Same wall-clock tick (e.g. Windows 15.6ms granularity) with monotonic
+		// delta <= 1s: skip without raising a clock-adjustment warning.
+		r.last = previous
 		return changed
 	}
 	if elapsed <= 0 || elapsed > maxMetricSampleGap || wallElapsed > maxMetricSampleGap {

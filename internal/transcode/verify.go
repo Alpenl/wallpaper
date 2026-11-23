@@ -13,6 +13,9 @@ import (
 // Sync samples are checked here; real ffprobe tests additionally verify key-frame
 // flags. These flags alone are not a complete H.264 bitstream/IDR audit.
 func VerifyOutput(path string, target Target) (*media.Info, error) {
+	if err := rejectUnsafeHostPath(path); err != nil {
+		return nil, fmt.Errorf("transcode output verification: %w", err)
+	}
 	in, err := media.ProbeFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("transcode output verification: %w", err)
@@ -31,6 +34,12 @@ func VerifyInfo(in *media.Info, target Target) (*media.Info, error) {
 	}
 	if in.HasAudio {
 		return bad("unexpected audio track")
+	}
+	if in.Rotation != 0 {
+		return bad("unexpected rotation metadata")
+	}
+	if in.BitDepth > 8 {
+		return bad("expected 8-bit H.264 output")
 	}
 	if in.W < 2 || in.H < 2 || in.W%2 != 0 || in.H%2 != 0 || in.W > target.Width || in.H > target.Height {
 		return bad("dimensions do not match the requested even-pixel target bounds")

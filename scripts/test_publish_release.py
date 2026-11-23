@@ -165,7 +165,10 @@ class AssetVerificationTests(ReleaseFixture, unittest.TestCase):
     def test_symlink_rejected(self):
         notes = self.folder / 'RELEASE-NOTES.txt'
         notes.unlink()
-        notes.symlink_to(self.folder / 'BUILD-INFO.txt')
+        try:
+            notes.symlink_to(self.folder / 'BUILD-INFO.txt')
+        except OSError as exc:
+            self.skipTest(f'symlink creation not permitted in this environment: {exc}')
         with self.assertRaisesRegex(RuntimeError, 'regular asset'):
             publisher.expected_assets(self.folder)
 

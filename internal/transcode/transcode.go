@@ -61,10 +61,23 @@ func Decide(in *media.Info, goos string) Plan {
 			add(Recommend, fmt.Sprintf("%s/%s 可能走软解，耗电较高", in.Container, in.Codec))
 		}
 	}
-	if in.W > 3840 || in.H > 2160 {
+	if in.Rotation != 0 {
+		add(Required, fmt.Sprintf("video has %d° rotation metadata and requires transcoding", in.Rotation))
+	}
+	if in.Codec == "h264" && in.BitDepth > 8 {
+		add(Required, fmt.Sprintf("H.264 %d-bit video requires transcoding to 8-bit", in.BitDepth))
+	}
+	if in.Codec != "gif" && ((in.W > 0 && in.W%2 != 0) || (in.H > 0 && in.H%2 != 0)) {
+		add(Required, fmt.Sprintf("odd video dimensions %dx%d require transcoding", in.W, in.H))
+	}
+	if in.W > 16384 || in.H > 16384 {
+		add(Required, fmt.Sprintf("video dimensions %dx%d exceed 16384 limit and require transcoding", in.W, in.H))
+	} else if in.W > 3840 || in.H > 2160 {
 		add(Recommend, fmt.Sprintf("分辨率 %dx%d 超过 4K", in.W, in.H))
 	}
-	if in.FPS > 30.5 {
+	if in.FPS > 240 {
+		add(Required, fmt.Sprintf("frame rate %.1f exceeds 240 fps limit and requires transcoding", in.FPS))
+	} else if in.FPS > 30.5 {
 		add(Recommend, fmt.Sprintf("帧率 %.0f 超过优化目标 30", in.FPS))
 	}
 	if in.HasAudio {

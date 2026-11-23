@@ -41,7 +41,7 @@ type diagnosticManifest struct {
 // ExportDiagnostics exports sanitized summaries, then newest log tails. Optional
 // snapshots must contain only diagnostic fields, never the material library.
 func ExportDiagnostics(logsDir string, configFiles []string, dst string, build buildinfo.Info, private PrivateValues, snapshots ...any) error {
-	entries, err := diagnosticEntries(logsDir, configFiles, build, snapshots, newRedactor(private))
+	entries, err := diagnosticEntries(logsDir, configFiles, build, snapshots, newRedactor(private), newKeyRedactor(private))
 	if err != nil {
 		return err
 	}
@@ -74,14 +74,60 @@ func writeDiagnostics(dst io.WriteCloser, entries []diagnosticEntry) error {
 // costs (no timestamps/extras); reserve the end-of-central-directory separately.
 func entrySize(e diagnosticEntry) int { return len(e.data) + 2*len(e.name) + 30 + 16 + 46 }
 
-func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, snapshots []any, redact func(string) string) ([]diagnosticEntry, error) {
+func sanitizeArchiveBase(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(`<>:"/\|?*`, r) {
+			b.WriteByte('_')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	clean := strings.TrimRight(strings.TrimSpace(b.String()), ". ")
+	if clean == "" || clean == "." || clean == ".." {
+		return "file"
+	}
+	return clean
+}
+
+func splitArchiveExt(base string) (stem, ext string) {
+	if strings.HasSuffix(base, ".log.1") {
+		return strings.TrimSuffix(base, ".log.1"), ".log.1"
+	}
+	ext = filepath.Ext(base)
+	return strings.TrimSuffix(base, ext), ext
+}
+
+func uniqueArchiveName(prefix, base string, used map[string]bool) string {
+	safe := sanitizeArchiveBase(base)
+	cand := prefix + safe
+	if !used[strings.ToLower(cand)] {
+		used[strings.ToLower(cand)] = true
+		return cand
+	}
+	stem, ext := splitArchiveExt(safe)
+	for n := 2; ; n++ {
+		cand = fmt.Sprintf("%s%s-%d%s", prefix, stem, n, ext)
+		if !used[strings.ToLower(cand)] {
+			used[strings.ToLower(cand)] = true
+			return cand
+		}
+	}
+}
+
+func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, snapshots []any, redact, redactKey func(string) string) ([]diagnosticEntry, error) {
 	entries := []diagnosticEntry{{"README.txt", []byte(redact(fmt.Sprintf("wallpaperd %s\nexported %s\nPaths and private fields redacted. Logs contain bounded tails. See manifest.json for omissions.\n", build.String(), time.Now().Format(time.RFC3339))))}}
+	usedNames := map[string]bool{
+		"readme.txt":    true,
+		"manifest.json": true,
+	}
 	for i, snapshot := range snapshots {
 		b, err := json.Marshal(snapshot)
 		if err != nil {
 			return nil, err
 		}
-		b, err = scrubJSONWith(b, redact)
+		b, err = scrubJSONWithKey(b, redact, redactKey)
 		if err != nil {
 			return nil, err
 		}
@@ -89,14 +135,16 @@ func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, s
 		if i > 0 {
 			name = fmt.Sprintf("assignments-%d.json", i)
 		}
+		usedNames[strings.ToLower(name)] = true
 		entries = append(entries, diagnosticEntry{name, b})
 	}
 	var sources []diagnosticSource
 	for _, p := range configs {
-		if filepath.Base(p) == "library.json" {
+		base := filepath.Base(p)
+		if strings.EqualFold(base, "library.json") {
 			continue
 		}
-		sources = append(sources, diagnosticSource{path: p, name: "config/" + filepath.Base(p), json: true})
+		sources = append(sources, diagnosticSource{path: p, name: uniqueArchiveName("config/", base, usedNames), json: true})
 	}
 	ents, err := os.ReadDir(logsDir)
 	if err != nil {
@@ -115,13 +163,16 @@ func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, s
 		if info.Size() == 0 && strings.HasPrefix(n, "crash-") && strings.HasSuffix(n, ".log") {
 			continue
 		}
-		logs = append(logs, diagnosticSource{path: filepath.Join(logsDir, n), name: "logs/" + n, modified: info.ModTime()})
+		logs = append(logs, diagnosticSource{path: filepath.Join(logsDir, n), name: n, modified: info.ModTime()})
 	}
 	sort.SliceStable(logs, func(i, j int) bool { return logs[i].modified.After(logs[j].modified) })
+	for i := range logs {
+		logs[i].name = uniqueArchiveName("logs/", logs[i].name, usedNames)
+	}
 	sources = append(sources, logs...)
 	manifest := make([]diagnosticManifest, len(sources))
 	for i, s := range sources {
-		manifest[i] = diagnosticManifest{redact(s.name), "omitted: size/read budget or unavailable"}
+		manifest[i] = diagnosticManifest{s.name, "omitted: size/read budget or unavailable"}
 	}
 	reserve, _ := json.MarshalIndent(manifest, "", "  ")
 	// Reserve ordinary and ZIP64 end records, even for very many tiny files.
@@ -138,7 +189,7 @@ func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, s
 		if readBudget < maxDiagnosticFile {
 			continue
 		}
-		b, truncated, n, err := readDiagnostic(s, redact)
+		b, truncated, n, err := readDiagnostic(s, redact, redactKey)
 		readBudget -= n
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -149,7 +200,7 @@ func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, s
 			manifest[i].Status = "omitted: unreadable or invalid JSON"
 			continue
 		}
-		e := diagnosticEntry{redact(s.name), b}
+		e := diagnosticEntry{s.name, b}
 		if used+entrySize(e) > maxDiagnosticZIP {
 			continue
 		}
@@ -165,7 +216,7 @@ func diagnosticEntries(logsDir string, configs []string, build buildinfo.Info, s
 	return entries, nil
 }
 
-func readDiagnostic(s diagnosticSource, redact func(string) string) ([]byte, bool, int64, error) {
+func readDiagnostic(s diagnosticSource, redact, redactKey func(string) string) ([]byte, bool, int64, error) {
 	f, err := os.Open(s.path)
 	if err != nil {
 		return nil, false, 0, err
@@ -193,7 +244,7 @@ func readDiagnostic(s diagnosticSource, redact func(string) string) ([]byte, boo
 		return nil, truncated, n, err
 	}
 	if s.json {
-		b, err = scrubJSONWith(b, redact)
+		b, err = scrubJSONWithKey(b, redact, redactKey)
 		return b, false, n, err
 	}
 	if truncated {
@@ -219,7 +270,7 @@ func readDiagnostic(s diagnosticSource, redact func(string) string) ([]byte, boo
 			continue
 		}
 		if !plain && !mpv {
-			clean, err := scrubJSONWith(line, redact)
+			clean, err := scrubJSONWithKey(line, redact, redactKey)
 			if err != nil {
 				out.WriteString("[omitted: invalid JSON record]\n")
 				continue

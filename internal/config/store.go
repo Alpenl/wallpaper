@@ -1,11 +1,14 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -19,7 +22,7 @@ type Migration func(raw map[string]any) error
 // ErrNewerSchema 表示文件来自更新版本的应用：已按只读方式加载已知字段，不应回写（16.3）。
 var ErrNewerSchema = errors.New("config: file written by a newer app version; loaded read-only")
 
-// WriteAtomic：写 tmp → fsync → rename；成功后把旧主文件保留为 .bak（前提是它能解析）。
+// WriteAtomic：写 tmp → fsync → 原子更新 .bak → rename 替换主文件。
 func WriteAtomic(path string, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -28,19 +31,35 @@ func WriteAtomic(path string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	var backupErr error
-	if old, err := os.ReadFile(path); err == nil && json.Valid(old) {
-		backupErr = writeSync(path+".bak", old)
-	}
+	old, readErr := os.ReadFile(path)
 	tmp := path + ".tmp"
 	if err := writeSync(tmp, b); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
+	var backupErr error
+	if readErr == nil && json.Valid(old) {
+		backupErr = writeAtomicRaw(path+".bak", old)
+	}
 	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if backupErr != nil {
 		return fmt.Errorf("config: save succeeded but backup failed: %w", backupErr)
+	}
+	return nil
+}
+
+func writeAtomicRaw(dst string, b []byte) error {
+	tmp := dst + ".tmp"
+	if err := writeSync(tmp, b); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	return nil
 }
@@ -61,39 +80,97 @@ func writeSync(path string, b []byte) error {
 	return f.Close()
 }
 
+func decodeConfigDoc(b []byte) (raw map[string]any, ver int, overflow bool, err error) {
+	if !json.Valid(b) {
+		return nil, 0, false, errors.New("invalid JSON")
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return nil, 0, false, err
+	}
+	if obj == nil {
+		return nil, 0, false, errors.New("top-level JSON value must be an object")
+	}
+	if rv, ok := obj["schemaVersion"]; ok {
+		dec := json.NewDecoder(bytes.NewReader(rv))
+		dec.UseNumber()
+		var val any
+		if err := dec.Decode(&val); err != nil {
+			return nil, 0, false, fmt.Errorf("invalid schemaVersion: %w", err)
+		}
+		num, ok := val.(json.Number)
+		if !ok {
+			return nil, 0, false, errors.New("invalid schemaVersion: expected non-negative integer")
+		}
+		s := string(num)
+		if s == "" || s[0] == '-' {
+			return nil, 0, false, fmt.Errorf("invalid schemaVersion %q", s)
+		}
+		for i := 0; i < len(s); i++ {
+			if s[i] < '0' || s[i] > '9' {
+				return nil, 0, false, fmt.Errorf("invalid schemaVersion %q", s)
+			}
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			if errors.Is(err, strconv.ErrRange) {
+				ver = math.MaxInt
+				overflow = true
+			} else {
+				return nil, 0, false, fmt.Errorf("invalid schemaVersion %q: %w", s, err)
+			}
+		} else {
+			ver = n
+		}
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, 0, false, err
+	}
+	if raw == nil {
+		return nil, 0, false, errors.New("top-level JSON value must be an object")
+	}
+	return raw, ver, overflow, nil
+}
+
 // Load 读取 path 到 v。主文件缺失返回 os.ErrNotExist（v 保持默认值）；
 // 主文件损坏时回退到 .bak；schemaVersion 较旧时依次迁移（迁移前备份为 .v<N>）；较新时返回 ErrNewerSchema。
 func Load(path string, current int, migrations map[int]Migration, v any) error {
 	b, err := os.ReadFile(path)
+	var raw map[string]any
+	var ver int
+	var overflow bool
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			if bb, e2 := os.ReadFile(path + ".bak"); e2 == nil && json.Valid(bb) {
-				b = bb
-			} else {
+			bb, e2 := os.ReadFile(path + ".bak")
+			if e2 != nil {
 				return os.ErrNotExist
 			}
+			raw, ver, overflow, e2 = decodeConfigDoc(bb)
+			if e2 != nil {
+				return os.ErrNotExist
+			}
+			b = bb
 		} else {
 			return err
 		}
-	}
-	if !json.Valid(b) {
-		bb, e2 := os.ReadFile(path + ".bak")
-		if e2 != nil || !json.Valid(bb) {
-			return fmt.Errorf("config: %s corrupt and no usable .bak", filepath.Base(path))
+	} else {
+		var parseErr error
+		raw, ver, overflow, parseErr = decodeConfigDoc(b)
+		if parseErr != nil {
+			bb, e2 := os.ReadFile(path + ".bak")
+			if e2 != nil {
+				return fmt.Errorf("config: %s corrupt and no usable .bak: %w", filepath.Base(path), parseErr)
+			}
+			raw, ver, overflow, e2 = decodeConfigDoc(bb)
+			if e2 != nil {
+				return fmt.Errorf("config: %s corrupt and no usable .bak: %w", filepath.Base(path), parseErr)
+			}
+			b = bb
 		}
-		b = bb
 	}
-	var raw map[string]any
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return err
-	}
-	ver := 0
-	if f, ok := raw["schemaVersion"].(float64); ok {
-		ver = int(f)
-	}
-	newer := ver > current
-	if ver < current {
-		if err := writeSync(fmt.Sprintf("%s.v%d", path, ver), b); err != nil {
+	newer := overflow || ver > current
+	if !newer && ver < current {
+		if err := writeAtomicRaw(fmt.Sprintf("%s.v%d", path, ver), b); err != nil {
 			return fmt.Errorf("config: migration backup: %w", err)
 		}
 		for n := ver; n < current; n++ {
@@ -108,7 +185,16 @@ func Load(path string, current int, migrations map[int]Migration, v any) error {
 			return err
 		}
 	}
-	if err := json.Unmarshal(b, v); err != nil {
+	unmarshalBytes := b
+	if overflow {
+		// Clamp huge future schemaVersion in memory only so known fields can still
+		// be decoded read-only without overflowing int struct fields.
+		raw["schemaVersion"] = math.MaxInt
+		if clamped, err := json.Marshal(raw); err == nil {
+			unmarshalBytes = clamped
+		}
+	}
+	if err := json.Unmarshal(unmarshalBytes, v); err != nil {
 		return err
 	}
 	if newer {

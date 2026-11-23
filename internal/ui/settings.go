@@ -133,7 +133,9 @@ type Settings struct {
 	renameBuf       string
 	diagMsg         string
 	thumbs          map[string]thumb
-	ambients        map[string]ambientBitmap
+	thumbSeq        uint64
+	thumbCap        int
+	thumbReads      int // test-only counter for verifying negative cache hits
 	themeKey        string
 	theme           *ui.Theme
 	resetAsk        bool
@@ -160,15 +162,22 @@ type Settings struct {
 	pickerStatus    string
 }
 
+const maxThumbCache = 128
+
 type thumb struct {
-	bm  *ui.Bitmap
-	mod time.Time
+	path    string
+	bm      *ui.Bitmap
+	mod     time.Time
+	size    int64
+	failed  bool
+	lastUse uint64
 }
 
 type updState struct {
 	busy      bool
 	installed bool
 	msg       string
+	msgArgs   []any
 	info      *UpdateInfo
 	progress  float64
 }
@@ -217,27 +226,71 @@ func (s *Settings) SetPage(p string) {
 	s.page = p
 }
 
-// thumbOf 返回条目的缩略图（首帧截图 PNG，按修改时间缓存）。
+func (s *Settings) thumbCacheCap() int {
+	if s.thumbCap > 0 {
+		return s.thumbCap
+	}
+	return maxThumbCache
+}
+
+func (s *Settings) storeThumb(id string, entry thumb) {
+	if s.thumbs == nil {
+		s.thumbs = map[string]thumb{}
+	}
+	s.thumbSeq++
+	entry.lastUse = s.thumbSeq
+	s.thumbs[id] = entry
+	limit := s.thumbCacheCap()
+	for len(s.thumbs) > limit {
+		var oldestKey string
+		var oldestSeq uint64
+		first := true
+		for k, v := range s.thumbs {
+			if k == id {
+				continue
+			}
+			if first || v.lastUse < oldestSeq {
+				oldestKey, oldestSeq, first = k, v.lastUse, false
+			}
+		}
+		if first {
+			break
+		}
+		delete(s.thumbs, oldestKey)
+	}
+}
+
+// thumbOf 返回条目的缩略图（首帧截图 PNG，按路径、修改时间与大小做有界 LRU 缓存，含损坏文件负缓存）。
 func (s *Settings) thumbOf(it config.Item) *ui.Bitmap {
 	if it.Snapshot == "" {
 		return nil
 	}
 	st, err := os.Stat(it.Snapshot)
 	if err != nil {
+		delete(s.thumbs, it.ID)
 		return nil
 	}
-	if t, ok := s.thumbs[it.ID]; ok && t.mod.Equal(st.ModTime()) {
+	if t, ok := s.thumbs[it.ID]; ok && t.path == it.Snapshot && t.mod.Equal(st.ModTime()) && t.size == st.Size() {
+		s.thumbSeq++
+		t.lastUse = s.thumbSeq
+		s.thumbs[it.ID] = t
+		if t.failed {
+			return nil
+		}
 		return t.bm
 	}
+	s.thumbReads++
 	b, err := os.ReadFile(it.Snapshot)
 	if err != nil {
+		s.storeThumb(it.ID, thumb{path: it.Snapshot, mod: st.ModTime(), size: st.Size(), failed: true})
 		return nil
 	}
 	bm, err := ui.DecodeBitmap(b)
 	if err != nil {
+		s.storeThumb(it.ID, thumb{path: it.Snapshot, mod: st.ModTime(), size: st.Size(), failed: true})
 		return nil
 	}
-	s.thumbs[it.ID] = thumb{bm: bm, mod: st.ModTime()}
+	s.storeThumb(it.ID, thumb{path: it.Snapshot, bm: bm, mod: st.ModTime(), size: st.Size()})
 	return bm
 }
 
@@ -351,7 +404,7 @@ func (s *Settings) banners(c *ui.Context, v app.View) {
 			})
 		}
 		for _, f := range v.ReadOnly {
-			banner(c.Key("ro"+f), t.Warning, "配置只读", f+" 由更新版本写入，本版本只读取，不会覆盖。", nil)
+			banner(c.Key("ro"+f), t.Warning, "配置只读", fmt.Sprintf(tr(c, "%s 由更新版本写入，本版本只读取，不会覆盖。"), f), nil)
 		}
 		if v.LastError != "" && v.LastError != s.dismissedError {
 			banner(c.Key("err"), t.Danger, "出现问题", v.LastError, func() {

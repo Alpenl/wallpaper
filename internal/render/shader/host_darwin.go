@@ -13,12 +13,12 @@ import (
 )
 
 type metalGPU struct {
-	timingKeys                                                                   [2]objc.ID
-	times                                                                        [2]float64
-	blitSize                                                                     [2]float32
-	runMode                                                                      objc.ID
-	device, queue, library, pipeline, blitPipeline, layer, window, view, texture objc.ID
-	w, h, tw, th                                                                 int
+	timingKeys                                                                               [2]objc.ID
+	times                                                                                    [2]float64
+	blitSize                                                                                 [2]float32
+	runMode                                                                                  objc.ID
+	device, queue, library, pipeline, blitPipeline, layer, window, view, canvasView, texture objc.ID
+	w, h, tw, th                                                                             int
 }
 
 func cls(name string) objc.ID { return objc.ID(objc.GetClass(name)) }
@@ -101,34 +101,61 @@ func (g *metalGPU) Load(x loadRequest, source string) error {
 	if g.queue == 0 {
 		return fmt.Errorf("shader: Metal command queue unavailable")
 	}
-	g.w = x.Bounds.Dx()
-	g.h = x.Bounds.Dy()
+	g.w, g.h = clampMetalTextureSize(x.Bounds.Dx(), x.Bounds.Dy())
 	if x.Preview {
 		return nil
 	}
-	g.window, g.view, e = mac.RendererWindow(x.Bounds)
+	winRect, _, _, _, _, _, _, e := metalLayout(x.Bounds, x.Item.Viewport, 1)
 	if e != nil {
 		return e
 	}
-	g.view.Send(sel("setWantsLayer:"), true)
+	g.window, g.view, e = mac.RendererWindow(winRect)
+	if e != nil {
+		return e
+	}
+	backing := objc.Send[float64](g.window, sel("backingScaleFactor"))
+	if backing < 1 {
+		backing = 1
+	}
+	_, vx, vy, vw, vh, physW, physH, e := metalLayout(x.Bounds, x.Item.Viewport, backing)
+	if e != nil {
+		return e
+	}
+	g.w, g.h = physW, physH
 	g.layer = cls("CAMetalLayer").Send(sel("new"))
 	g.layer.Send(sel("setDevice:"), g.device)
 	g.layer.Send(sel("setPixelFormat:"), uintptr(80))
 	g.layer.Send(sel("setFramebufferOnly:"), true)
 	g.layer.Send(sel("setDisplaySyncEnabled:"), true)
-	backing := objc.Send[float64](g.window, sel("backingScaleFactor"))
-	if backing < 1 {
-		backing = 1
-	}
-	g.w = int(float64(x.Bounds.Dx()) * backing)
-	g.h = int(float64(x.Bounds.Dy()) * backing)
 	g.layer.Send(sel("setContentsScale:"), backing)
 	g.layer.Send(sel("setDrawableSize:"), macos.CGSize{W: float64(g.w), H: float64(g.h)})
-	g.view.Send(sel("setLayer:"), g.layer)
+	targetView := g.view
+	if winRect != x.Bounds {
+		// Clip the full-canvas Metal view inside the physical display's NSWindow.
+		g.view.Send(sel("setWantsLayer:"), true)
+		if rootLayer := g.view.Send(sel("layer")); rootLayer != 0 {
+			rootLayer.Send(sel("setMasksToBounds:"), true)
+		}
+		lib, _ := purego.Dlopen("/usr/lib/libobjc.A.dylib", purego.RTLD_NOW)
+		var initView func(objc.ID, objc.SEL, macos.CGRect) objc.ID
+		purego.RegisterLibFunc(&initView, lib, "objc_msgSend")
+		g.canvasView = initView(cls("NSView").Send(sel("alloc")), sel("initWithFrame:"), macos.CGRect{
+			Origin: macos.CGPoint{X: vx, Y: vy},
+			Size:   macos.CGSize{W: vw, H: vh},
+		})
+		if g.canvasView == 0 {
+			return fmt.Errorf("shader: canvas NSView creation failed")
+		}
+		g.view.Send(sel("addSubview:"), g.canvasView)
+		targetView = g.canvasView
+	}
+	targetView.Send(sel("setWantsLayer:"), true)
+	targetView.Send(sel("setLayer:"), g.layer)
 	g.window.Send(sel("orderFrontRegardless"))
 	return nil
 }
 func (g *metalGPU) target(w, h int) error {
+	w, h = clampMetalTextureSize(w, h)
 	if w == g.tw && h == g.th {
 		return nil
 	}
@@ -171,7 +198,8 @@ func (g *metalGPU) Frame(u *Uniforms, scale float64) (float64, error) {
 	if g.layer != 0 {
 		drawable = message(g.layer, "nextDrawable")
 		if drawable == 0 {
-			return 0, fmt.Errorf("shader: Metal drawable unavailable")
+			// Lock screen or Space transitions temporarily withhold drawables; skip frame cleanly.
+			return 0, nil
 		}
 	}
 	cmd := message(g.queue, "commandBuffer")
@@ -217,7 +245,7 @@ func (g *metalGPU) Close() {
 	if g.window != 0 {
 		g.window.Send(sel("close"))
 	}
-	for _, id := range []objc.ID{g.texture, g.pipeline, g.blitPipeline, g.library, g.queue, g.layer, g.window, g.device, g.runMode, g.timingKeys[0], g.timingKeys[1]} {
+	for _, id := range []objc.ID{g.texture, g.pipeline, g.blitPipeline, g.library, g.queue, g.layer, g.canvasView, g.window, g.device, g.runMode, g.timingKeys[0], g.timingKeys[1]} {
 		if id != 0 {
 			id.Send(sel("release"))
 		}

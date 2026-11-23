@@ -12,6 +12,9 @@ import (
 	"image/gif"
 	"io"
 	"os"
+
+	xdraw "golang.org/x/image/draw"
+	"golang.org/x/image/math/f64"
 )
 
 // preflightGIF bounds every allocation before image/gif.DecodeAll is allowed
@@ -263,4 +266,25 @@ func (s *gifFrames) at(ctx context.Context, frame int) (*image.RGBA, error) {
 		s.endCS += int64(gifDelay(s.gif.Delay[next]))
 	}
 	return s.canvas, nil
+}
+
+// scaleRGBA scales src into dst. In cover mode, floating-point isotropic
+// scaling avoids integer crop-truncation distortion on low-resolution GIFs.
+func scaleRGBA(dst, src *image.RGBA, cover bool) {
+	b := src.Bounds()
+	db := dst.Bounds()
+	if !cover {
+		xdraw.BiLinear.Scale(dst, db, src, b, draw.Src, nil)
+		return
+	}
+	sw, sh := float64(b.Dx()), float64(b.Dy())
+	dw, dh := float64(db.Dx()), float64(db.Dy())
+	scale := max(dw/sw, dh/sh)
+	ox := float64(db.Min.X) + (dw-sw*scale)/2 - float64(b.Min.X)*scale
+	oy := float64(db.Min.Y) + (dh-sh*scale)/2 - float64(b.Min.Y)*scale
+	s2d := f64.Aff3{
+		scale, 0, ox,
+		0, scale, oy,
+	}
+	xdraw.BiLinear.Transform(dst, s2d, src, b, draw.Src, nil)
 }

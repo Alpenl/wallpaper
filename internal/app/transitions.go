@@ -35,12 +35,16 @@ func (a *App) closeScreenForPause(s *screen, destroySurface, policyPause bool) {
 	}
 	countStopped := policyPause
 	r, surf := s.r, s.surf
+	oldItem := s.loadedItem
+	if oldItem == "" && s.item != nil {
+		oldItem = s.item.ID
+	}
 	a.capturePosition(s)
 	if s.watchStop != nil {
 		close(s.watchStop)
 		s.watchStop = nil
 	}
-	s.r, s.started, s.metricsReady = nil, false, false
+	s.r, s.started, s.metricsReady, s.loadedItem = nil, false, false, ""
 	s.levelPending = 0
 	s.gen++
 	gen := s.gen
@@ -51,6 +55,9 @@ func (a *App) closeScreenForPause(s *screen, destroySurface, policyPause bool) {
 	queued := time.Now()
 	log := a.transitionLog(s, r, gen, "close")
 	if r == nil && (!policyPause || !s.ops.accepting()) && !destroySurface {
+		if oldItem != "" {
+			a.trackRetiring(oldItem, s.ops.barrier())
+		}
 		return
 	}
 	s.ops.cleanup(func() {
@@ -88,8 +95,32 @@ func (a *App) closeScreenForPause(s *screen, destroySurface, policyPause bool) {
 			_ = surf.Close()
 		}
 	})
+	if oldItem != "" {
+		a.trackRetiring(oldItem, s.ops.barrier())
+	}
 	if destroySurface {
 		close(s.quit)
+	}
+}
+
+// setScreenL4Stopped puts a screen uniformly into policy-L4 (snapshot/stopped):
+// hides the surface, prevents spawning a renderer, and marks L4 metrics ready
+// once any running renderer closes (or immediately if none is running).
+func (a *App) setScreenL4Stopped(s *screen) {
+	if s.item == nil || a.d.SafeMode {
+		return
+	}
+	if s.r != nil {
+		a.closeScreenForPause(s, false, true)
+	} else {
+		s.gen++
+		s.started = false
+		s.levelPending = 0
+		s.metricsReady, s.metricsLevel = true, visibility.L4
+	}
+	if s.surf != nil && s.ops.accepting() {
+		surf := s.surf
+		s.ops.enqueue(func() { _ = surf.SetVisible(false) })
 	}
 }
 
@@ -97,16 +128,12 @@ func (a *App) applyLevel(s *screen, l visibility.Level) {
 	if !s.ops.accepting() {
 		return
 	}
-	r := s.r
-	if r == nil {
+	if l >= visibility.L4 {
+		a.setScreenL4Stopped(s)
 		return
 	}
-	if l >= visibility.L4 {
-		a.closeScreenForPause(s, false, true)
-		if s.surf != nil {
-			surf := s.surf
-			s.ops.enqueue(func() { _ = surf.SetVisible(false) })
-		}
+	r := s.r
+	if r == nil || !s.started {
 		return
 	}
 	gen := s.gen

@@ -378,3 +378,69 @@ func TestFrameRateNormalizationReal(t *testing.T) {
 		})
 	}
 }
+
+func TestRejectsUNCAndDevicePaths(t *testing.T) {
+	badPaths := []string{
+		`\\attacker\share\video.mp4`,
+		`//attacker/share/video.mp4`,
+		`\\?\C:\Windows\win.ini`,
+		`\\.\pipe\evil`,
+		`\/attacker\share\video.mp4`,
+		`/\attacker/share/video.mp4`,
+	}
+	dir := t.TempDir()
+	good := filepath.Join(dir, "ok.mp4")
+	if err := os.WriteFile(good, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range badPaths {
+		if err := encodeAtomic(context.Background(), p, filepath.Join(dir, "out.mp4"), ".mp4", func(string, string) error {
+			t.Fatalf("encode callback invoked for unsafe src %q", p)
+			return nil
+		}); err == nil {
+			t.Errorf("encodeAtomic accepted unsafe src %q", p)
+		}
+		if err := encodeAtomic(context.Background(), good, p, ".mp4", func(string, string) error {
+			t.Fatalf("encode callback invoked for unsafe dst %q", p)
+			return nil
+		}); err == nil {
+			t.Errorf("encodeAtomic accepted unsafe dst %q", p)
+		}
+		if got := executable(p); got != "" {
+			t.Errorf("executable accepted unsafe path %q -> %q", p, got)
+		}
+		if _, err := VerifyOutput(p, Target{}); err == nil {
+			t.Errorf("VerifyOutput accepted unsafe path %q", p)
+		}
+		if err := CleanupTempFiles(p); err == nil {
+			t.Errorf("CleanupTempFiles accepted unsafe path %q", p)
+		}
+	}
+}
+
+func TestCleanupTempFiles(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "item", "renditions", "abc")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale1 := filepath.Join(root, ".wallpaper-transcode-111.mp4")
+	stale2 := filepath.Join(sub, ".wallpaper-transcode-222.mov")
+	keep := filepath.Join(sub, "video.mp4")
+	for _, p := range []string{stale1, stale2, keep} {
+		if err := os.WriteFile(p, []byte("data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := CleanupTempFiles(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{stale1, stale2} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("stale temp file %s still exists: %v", p, err)
+		}
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("legitimate file removed: %v", err)
+	}
+}

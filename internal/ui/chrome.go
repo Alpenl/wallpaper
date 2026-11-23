@@ -260,7 +260,7 @@ func (s *Settings) screenState(c *ui.Context, v app.View, d app.DisplayView) (st
 	if it == nil {
 		return tr(c, "未设置壁纸"), faint(t)
 	}
-	st, col := tr(c, levelNames[d.Level]), t.Success
+	st, col := tr(c, levelText(d.Level)), t.Success
 	switch {
 	case d.State == "failed":
 		st, col = tr(c, "已停用"), t.Danger

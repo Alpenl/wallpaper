@@ -20,7 +20,7 @@ import (
 // thread. File size and decoded dimensions are bounded before image allocation.
 // Missing/invalid/oversized previews simply have no color index; import survives.
 func PreviewColors(path string) []string {
-	if path == "" {
+	if path == "" || rejectUnsafeHostPath(path) != nil {
 		return nil
 	}
 	f, err := os.Open(path)

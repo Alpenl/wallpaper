@@ -7,13 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"image/draw"
 	"os"
+	"runtime"
+	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/ebitengine/purego/objc"
-	xdraw "golang.org/x/image/draw"
 )
 
 const (
@@ -29,6 +28,7 @@ type writer struct {
 	pool, colorSpace            uintptr
 	width, height               int
 	scratch                     *image.RGBA
+	row                         []byte
 	path                        string
 	owned                       os.FileInfo
 	complete                    bool
@@ -165,16 +165,16 @@ func (w *writer) buffer(ctx context.Context) (uintptr, error) {
 		}
 	}
 }
-func (w *writer) locked(p uintptr) ([]byte, int, error) {
+func (w *writer) locked(p uintptr) (uintptr, int, error) {
 	if status := cvPixelBufferLockBaseAddress(p, 0); status != 0 {
-		return nil, 0, fmt.Errorf("nativeav: cannot lock pixel buffer (%d)", status)
+		return 0, 0, fmt.Errorf("nativeav: cannot lock pixel buffer (%d)", status)
 	}
 	stride, h, base := cvPixelBufferGetBytesPerRow(p), cvPixelBufferGetHeight(p), cvPixelBufferGetBaseAddress(p)
 	if cvPixelBufferGetPixelFormatType(p) != pixelFormatBGRA || cvPixelBufferGetWidth(p) != uintptr(w.width) || base == 0 || h != uintptr(w.height) || stride < uintptr(w.width*4) || stride > uintptr(w.width*4+65536) || stride*h > 256<<20 {
 		cvPixelBufferUnlockBaseAddress(p, 0)
-		return nil, 0, fmt.Errorf("nativeav: invalid pixel buffer layout (width=%d height=%d stride=%d buffer_height=%d base_present=%t format=%x buffer_width=%d)", w.width, w.height, stride, h, base != 0, cvPixelBufferGetPixelFormatType(p), cvPixelBufferGetWidth(p))
+		return 0, 0, fmt.Errorf("nativeav: invalid pixel buffer layout (width=%d height=%d stride=%d buffer_height=%d base_present=%t format=%x buffer_width=%d)", w.width, w.height, stride, h, base != 0, cvPixelBufferGetPixelFormatType(p), cvPixelBufferGetWidth(p))
 	}
-	return unsafe.Slice((*byte)(unsafe.Pointer(base)), int(stride*h)), int(stride), nil
+	return base, int(stride), nil
 }
 func (w *writer) append(ctx context.Context, p uintptr, n int) error {
 	if err := ctx.Err(); err != nil {
@@ -191,14 +191,14 @@ func (w *writer) appendImage(ctx context.Context, im uintptr, n int) error {
 		return err
 	}
 	defer cfRelease(p)
-	b, stride, err := w.locked(p)
+	base, stride, err := w.locked(p)
 	if err != nil {
 		return err
 	}
-	clear(b)
+	cMemset(base, 0, uintptr(stride)*uintptr(w.height))
 	// BGRA bytes with an ignored alpha channel form an opaque black canvas. Core
 	// Graphics composites source transparency over that canvas and scales it.
-	cg := cgBitmapContextCreate(cvPixelBufferGetBaseAddress(p), uintptr(w.width), uintptr(w.height), 8, uintptr(stride), w.colorSpace, bitmapByteOrder32Little|bitmapAlphaNoneSkipFirst)
+	cg := cgBitmapContextCreate(base, uintptr(w.width), uintptr(w.height), 8, uintptr(stride), w.colorSpace, bitmapByteOrder32Little|bitmapAlphaNoneSkipFirst)
 	if cg == 0 {
 		cvPixelBufferUnlockBaseAddress(p, 0)
 		return errors.New("nativeav: cannot create pixel buffer drawing context")
@@ -222,26 +222,12 @@ func (w *writer) appendRGBA(ctx context.Context, im *image.RGBA, n int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if w.cover {
-		b := im.Bounds()
-		sw, sh := b.Dx(), b.Dy()
-		if sw*w.height > sh*w.width {
-			cw := max(1, sh*w.width/w.height)
-			b.Min.X += (sw - cw) / 2
-			b.Max.X = b.Min.X + cw
-		} else {
-			ch := max(1, sw*w.height/w.width)
-			b.Min.Y += (sh - ch) / 2
-			b.Max.Y = b.Min.Y + ch
-		}
-		im = im.SubImage(b).(*image.RGBA)
-	}
 	src := im
-	if im.Bounds().Dx() != w.width || im.Bounds().Dy() != w.height {
+	if im.Bounds().Dx() != w.width || im.Bounds().Dy() != w.height || im.Bounds().Min != (image.Point{}) {
 		if w.scratch == nil {
 			w.scratch = image.NewRGBA(image.Rect(0, 0, w.width, w.height))
 		}
-		xdraw.BiLinear.Scale(w.scratch, w.scratch.Bounds(), im, im.Bounds(), draw.Src, nil)
+		scaleRGBA(w.scratch, im, w.cover)
 		src = w.scratch
 	}
 	p, err := w.buffer(ctx)
@@ -249,9 +235,13 @@ func (w *writer) appendRGBA(ctx context.Context, im *image.RGBA, n int) error {
 		return err
 	}
 	defer cfRelease(p)
-	b, stride, err := w.locked(p)
+	base, stride, err := w.locked(p)
 	if err != nil {
 		return err
+	}
+	rowBytes := w.width * 4
+	if len(w.row) != rowBytes {
+		w.row = make([]byte, rowBytes)
 	}
 	// image.RGBA stores premultiplied RGB, so dropping alpha flattens it on black.
 	// Use the actual CVPixelBuffer stride, which may include alignment padding.
@@ -262,15 +252,16 @@ func (w *writer) appendRGBA(ctx context.Context, im *image.RGBA, n int) error {
 				return err
 			}
 		}
-		in := src.Pix[y*src.Stride : y*src.Stride+w.width*4]
-		out := b[y*stride : y*stride+w.width*4]
+		in := src.Pix[y*src.Stride : y*src.Stride+rowBytes]
 		for x := 0; x < len(in); x += 4 {
-			out[x] = in[x+2]
-			out[x+1] = in[x+1]
-			out[x+2] = in[x]
-			out[x+3] = 255
+			w.row[x] = in[x+2]
+			w.row[x+1] = in[x+1]
+			w.row[x+2] = in[x]
+			w.row[x+3] = 255
 		}
+		cMemcpyToNative(base+uintptr(y)*uintptr(stride), &w.row[0], uintptr(rowBytes))
 	}
+	runtime.KeepAlive(w.row)
 	if status := cvPixelBufferUnlockBaseAddress(p, 0); status != 0 {
 		return fmt.Errorf("nativeav: cannot unlock GIF pixel buffer (%d)", status)
 	}
@@ -285,15 +276,30 @@ func (w *writer) finish(ctx context.Context, count int) error {
 	msgSetTime(w.object, sel("endSessionAtSourceTime:"), frameTime(count))
 	w.input.Send(sel("markAsFinished"))
 	done := make(chan struct{})
-	block := objc.NewBlock(func(_ objc.Block) { close(done) })
-	defer block.Release()
+	// Ownership handoff prevents UAF if ctx cancels/times out before AVFoundation
+	// invokes the completion handler: state 0=pending, 1=callerTimedOut, 2=callbackDone.
+	var state atomic.Int32
+	var block objc.Block
+	block = objc.NewBlock(func(_ objc.Block) {
+		if state.CompareAndSwap(0, 2) {
+			close(done)
+			return
+		}
+		close(done)
+		block.Release()
+	})
 	w.object.Send(sel("finishWritingWithCompletionHandler:"), block)
 	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	select {
 	case <-waitCtx.Done():
+		if !state.CompareAndSwap(0, 1) {
+			<-done
+			block.Release()
+		}
 		return fmt.Errorf("nativeav: finishing MP4: %w", waitCtx.Err())
 	case <-done:
+		block.Release()
 	}
 	if err := ctx.Err(); err != nil {
 		return err

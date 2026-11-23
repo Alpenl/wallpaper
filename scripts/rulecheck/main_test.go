@@ -16,6 +16,7 @@ func TestCheck(t *testing.T) {
 		{"desktop", "internal/ui/view.go", "package ui\nimport _ \"wpapp/internal/desktop/linux\"", "forbidden direct import"},
 		{"config", "internal/config/sub/config.go", "package sub\nimport _ \"wpapp/internal/ui/pages\"", "forbidden direct import"},
 		{"app", "internal/config/config.go", "package config\nimport _ \"wpapp/internal/app\"", "forbidden direct import"},
+		{"app subpackage", "internal/config/config.go", "package config\nimport _ \"wpapp/internal/app/sub\"", "forbidden direct import"},
 		{"test import allowed", "internal/ui/view_test.go", "package ui\nimport _ \"wpapp/internal/render\"", ""},
 		{"clean imports", "internal/ui/view.go", "package ui\nimport _ \"wpapp/internal/desktop\"\nimport _ \"wpapp/internal/renderer\"", ""},
 		{"sleep", "cmd/tool/main_test.go", "package main\nimport \"time\"\nfunc f() { time.Sleep(1) }", "cmd/tool/main_test.go:3: time.Sleep requires"},
@@ -23,6 +24,9 @@ func TestCheck(t *testing.T) {
 		{"dot", "internal/ui/view_test.go", "package ui\nimport . \"time\"\nfunc f() { Sleep(1) }", "time.Sleep requires"},
 		{"above", "internal/ui/view_test.go", "package ui\nimport \"time\"\nfunc f() {\n// sleep: observation window\ntime.Sleep(1)\n}", ""},
 		{"inline", "internal/ui/view_test.go", "package ui\nimport \"time\"\nfunc f() { time.Sleep(1) /* sleep: observation window */ }", ""},
+		{"empty line sleep comment", "internal/ui/view_test.go", "package ui\nimport \"time\"\nfunc f() {\n// sleep:\ntime.Sleep(1)\n}", "time.Sleep requires"},
+		{"whitespace sleep comment", "internal/ui/view_test.go", "package ui\nimport \"time\"\nfunc f() {\n// sleep:   \t\ntime.Sleep(1)\n}", "time.Sleep requires"},
+		{"empty block sleep comment", "internal/ui/view_test.go", "package ui\nimport \"time\"\nfunc f() { time.Sleep(1) /* sleep: */ }", "time.Sleep requires"},
 		{"too far", "internal/ui/view_test.go", "package ui\nimport \"time\"\nfunc f() {\n// sleep: observation window\n\ntime.Sleep(1)\n}", "time.Sleep requires"},
 		{"string is not comment", "internal/ui/view_test.go", "package ui\nimport \"time\"\nfunc f() { _ = \"sleep:\"; time.Sleep(1) }", "time.Sleep requires"},
 	} {

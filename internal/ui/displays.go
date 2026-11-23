@@ -14,6 +14,32 @@ import (
 
 var levelNames = map[string]string{"L0": "播放中", "L1": "已暂停", "L2": "已暂停（冻结）", "L3": "已暂停（释放解码器）", "L4": "已停止（显示截图）", "-": "未运行"}
 
+// levelText returns the localized label key for a display level, falling back
+// cleanly when level is empty or unrecognized.
+func levelText(level string) string {
+	if name, ok := levelNames[level]; ok {
+		return name
+	}
+	if level == "" {
+		return "未知状态"
+	}
+	return level
+}
+
+// spanAudioLeaderID returns the display that owns audio playback in spanning mode:
+// the primary display if present, otherwise the first display in layout order.
+func spanAudioLeaderID(v app.View) string {
+	for _, d := range v.Displays {
+		if d.Primary {
+			return d.ID
+		}
+	}
+	if len(v.Displays) > 0 {
+		return v.Displays[0].ID
+	}
+	return ""
+}
+
 var reasonNames = map[string]string{
 	"Fullscreen": "其他程序全屏", "Covered": "被窗口遮挡", "Locked": "已锁屏", "Remote": "远程桌面", "Battery": "使用电池",
 	"BatterySaver": "省电模式", "ThermalSerious": "设备过热（限帧）", "ThermalCritical": "设备严重过热", "DisplayOff": "显示器关闭",
@@ -201,7 +227,7 @@ func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 		// 状态条
 		ui.Row(c.Key("state")).Wrap().Gap(8).Padding(6, 0, 10, 0).AlignItems(ui.Center).Children(func() {
 			col := t.Success
-			lv := levelNames[d.Level]
+			lv := levelText(d.Level)
 			switch {
 			case d.State == "failed":
 				col, lv = t.Danger, "已停用（崩溃次数过多）"
@@ -212,12 +238,13 @@ func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 			case d.Level != "L0":
 				col = t.Warning
 			}
-			if d.ItemID != "" && d.State != "idle" {
-				lv = d.Level + " · " + tr(c, lv)
+			label := tr(c, lv)
+			if d.ItemID != "" && d.State != "idle" && d.Level != "" {
+				label = d.Level + " · " + label
 			}
-			chip(c, lv, col)
+			chip(c, label, col)
 			if d.FPSCap > 0 {
-				chip(c, fmt.Sprintf("限帧 %d fps", d.FPSCap), t.Accent)
+				chip(c, fmt.Sprintf(tr(c, "限帧 %d fps"), d.FPSCap), t.Accent)
 			}
 			if d.Backend != "" {
 				chip(c, "后端 "+d.Backend, t.TextMuted)
@@ -286,14 +313,22 @@ func (s *Settings) displayCard(c *ui.Context, v app.View, d app.DisplayView) {
 			}
 			text(c, "倍速").FontSize(12).TextColor(t.TextMuted)
 		})
+		spanSecondaryAudio := v.Layout == "span" && len(v.Displays) > 1 && d.ID != spanAudioLeaderID(v)
 		audioNow := "播放声音"
-		if eff.Muted {
+		if eff.Muted || spanSecondaryAudio {
 			audioNow = "静音"
 		}
-		settingRow(c, "声音", fmt.Sprintf(tr(c, "默认使用壁纸自己的声音设置。当前：%s"), tr(c, audioNow)), func() {
+		audioDesc := fmt.Sprintf(tr(c, "默认使用壁纸自己的声音设置。当前：%s"), tr(c, audioNow))
+		if spanSecondaryAudio {
+			audioDesc = tr(c, "跨屏模式下由主屏统一控制声音，副屏保持静音。")
+		}
+		settingRow(c, "声音", audioDesc, func() {
 			names := map[string]string{"": follow, "mute": tr(c, "静音"), "sound": tr(c, "播放声音")}
 			audio := names[d.Options.Audio]
-			if ui.Select(c.Key("audio"+d.ID), &audio, []string{follow, tr(c, "静音"), tr(c, "播放声音")}).Label(tr(c, "这块屏的声音")).Disabled(!d.Playback.Audio).Width(180).Changed() {
+			if spanSecondaryAudio {
+				audio = tr(c, "静音")
+			}
+			if ui.Select(c.Key("audio"+d.ID), &audio, []string{follow, tr(c, "静音"), tr(c, "播放声音")}).Label(tr(c, "这块屏的声音")).Disabled(!d.Playback.Audio || spanSecondaryAudio).Width(180).Changed() {
 				o := d.Options
 				for id, n := range names {
 					if n == audio {

@@ -6,19 +6,21 @@ source scripts/package-common.sh
 package_validate
 package_require_metadata
 command -v makensis >/dev/null || { echo 'missing makensis (Debian/Ubuntu: apt-get install nsis)' >&2; exit 1; }
-mkdir -p dist/package-staging
-stage=$(mktemp -d "$PWD/dist/package-staging/windows.XXXXXX")
-trap 'rm -rf "$stage"' EXIT
 for arch in ${ARCHES:-amd64 arm64}; do
   case "$arch" in amd64|arm64) ;; *) echo "unsupported Windows arch: $arch" >&2; exit 1;; esac
   bin=dist/windows-$arch/wallpaperd.exe
   package_check_binary "$bin" "windows/$arch"
-  src="$stage/$arch"
+  # Shared signed staging directory consumed by both NSIS and package-updates.sh.
+  src="$PWD/dist/windows-packaged-$arch"
+  rm -rf "$src"
   mkdir -p "$src"
   cp "$bin" "$src/wallpaperd.exe"
   cp dist/package-metadata/LICENSE dist/package-metadata/{RELEASE-NOTES,BUILD-INFO,THIRD-PARTY-NOTICES}.txt "$src/"
   # Fresh staging never inherits third_party/mpv or a previous dist/*/mpv.
   scripts/sign-windows.sh "$src/wallpaperd.exe"
+  if [ -n "${WPAPP_SIGN_CMD:-}" ]; then
+    package_check_pe_signed "$src/wallpaperd.exe"
+  fi
   out="$RELEASE_DIR/Wallpaper-$VERSION-windows-$arch-setup.exe"
   # Git Bash's $PWD and staging paths are /c/...; native makensis.exe needs
   # Windows paths for every -D value that names a file.
@@ -35,5 +37,8 @@ for arch in ${ARCHES:-amd64 arm64}; do
   makensis -V2 -DVERSION="$VERSION" -DARCH="$arch" -DSRC="$src_arg" -DOUT="$out_arg" \
     -DICON="$icon" packaging/windows/installer.nsi
   scripts/sign-windows.sh "$out"
+  if [ -n "${WPAPP_SIGN_CMD:-}" ]; then
+    package_check_pe_signed "$out"
+  fi
   ls -la "$out"
 done

@@ -88,7 +88,7 @@ func parseFlags(args []string) *flags {
 	fs.StringVar(&f.pipe, "pipe", "", "内部：管道名")
 	fs.StringVar(&f.swap, "swap", "flip", "内部：MF 交换链模式")
 	fs.StringVar(&f.logPath, "log", "", "内部：子进程日志")
-	fs.StringVar(&f.helper, "helper", "", "内部：probe / transcode / sceneprobe")
+	fs.StringVar(&f.helper, "helper", "", "内部：probe / transcode / sceneprobe / shader-validate / palette / shader-preview")
 	fs.StringVar(&f.sceneprobe, "sceneprobe", "", "Probe a local WE scene package or project directory offline")
 	fs.StringVar(&f.in, "in", "", "内部：helper 输入文件")
 	fs.StringVar(&f.out, "out", "", "内部：helper 输出文件")
@@ -134,44 +134,18 @@ func main() {
 		os.Exit(webwall.HostMain())
 	case f.mfhost:
 		os.Exit(mf.HostMain(f.pipe, f.swap, f.logPath))
-	case f.helper == "shader-preview":
-		if err := shader.PreviewMain(f.in, f.out); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-		return
-	case f.helper == "sceneprobe":
-		os.Exit(runSceneProbeHelper(f.in))
-	case f.helper == "probe":
-		info, err := media.ProbeFile(f.in)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(3)
-		}
-		json.NewEncoder(os.Stdout).Encode(info)
-		return
-	case f.helper == "transcode":
-		os.Exit(runTranscodeHelper(f))
 	case f.helper != "":
-		fmt.Fprintln(os.Stderr, "unknown helper operation")
-		os.Exit(2)
+		code, _ := dispatchHelper(f, os.Stdout, os.Stderr)
+		os.Exit(code)
 	case f.sceneprobe != "":
 		os.Exit(runSceneProbe(f.sceneprobe))
 	case f.exportDiag:
-		e, err := setup(f, nil, nil)
+		paths, err := config.DefaultPaths()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		p, err := e.exportDiag()
-		e.store.State.CleanShutdown = true
-		e.store.State.Starts = nil
-		st := e.store.State.Clone()
-		e.store.StateSaver.Schedule(func() any { return st })
-		if flushErr := e.store.FlushAll(); flushErr != nil {
-			fmt.Fprintln(os.Stderr, "config shutdown:", flushErr)
-		}
-		e.close()
+		p, err := exportDiagnosticsReadOnly(paths)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -218,6 +192,12 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 	log := telemetry.NewLogger(w, f.debug).With("session", fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()))
 	log.Info("start", "version", build.Version, "commit", build.Revision(), "commit_time", build.CommitTime, "go", build.GoVersion, "pid", os.Getpid(), "os", runtime.GOOS, "arch", runtime.GOARCH, "headless", f.headless)
 	platInit(log)
+	if err := transcode.CleanupTempFiles(paths.Cache); err != nil {
+		log.Warn("cleanup transcode temp files", "dir", "cache", "err", err)
+	}
+	if err := transcode.CleanupTempFiles(paths.Library); err != nil {
+		log.Warn("cleanup transcode temp files", "dir", "library", "err", err)
+	}
 	store, err := config.Open(paths)
 	if err != nil {
 		if closeErr := lw.Close(); closeErr != nil {
@@ -233,8 +213,16 @@ func setup(f *flags, extraLog io.Writer, setLogin func(bool) error) (*env, error
 	exe, _ := os.Executable()
 	e := &env{paths: paths, store: store, log: log, logw: lw, exe: exe, initialConfig: store.Config.Clone()}
 	e.host = newHost(f, log)
-	imp := importer.Options{ShaderSnapshot: func(dir, dst string) error { return shader.Preview(e.exe, dir, dst) }, Library: paths.Library, Cache: paths.Cache, GOOS: runtime.GOOS, Lang: store.Config.UI.Lang,
-		Probe: e.probe}
+	imp := importer.Options{
+		ShaderSnapshot: func(dir, dst string) error { return shader.Preview(e.exe, dir, dst) },
+		ValidateShader: e.validateShader,
+		PreviewColors:  e.previewColors,
+		Library:        paths.Library,
+		Cache:          paths.Cache,
+		GOOS:           runtime.GOOS,
+		Lang:           store.Config.UI.Lang,
+		Probe:          e.probe,
+	}
 	imp.Snapshot = e.snapshot
 	enc, ext, encName := e.encoder(store.Config)
 	e.enc = encName
@@ -279,14 +267,14 @@ func (e *env) probe(path string) (*media.Info, error) {
 }
 
 func (e *env) probeContext(parent context.Context, path string) (*media.Info, error) {
-	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	ctx, cancel := context.WithTimeout(parent, helperTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, e.exe, "-helper", "probe", "-in", path)
 	hideConsole(cmd)
-	out, err := cmd.Output()
+	out, stderr, err := runBoundedHelper(cmd, maxHelperStdoutBytes, maxHelperStderrBytes)
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("probe: %s", strings.TrimSpace(string(ee.Stderr)))
+		if msg := strings.TrimSpace(string(stderr)); msg != "" {
+			return nil, fmt.Errorf("probe: %s", msg)
 		}
 		return nil, fmt.Errorf("probe helper: %w", err)
 	}
@@ -346,6 +334,7 @@ func (e *env) newRenderer(kind string, cfg config.Config, d desktop.DisplayID) r
 		r := webwall.New(e.exe)
 		r.Log = e.log.Info
 		r.Display = string(d)
+		r.CacheDir = e.paths.Cache
 		r.StderrPath = filepath.Join(e.paths.Logs, "web-"+safeName(string(d))+"-stderr.log")
 		return r
 	}
@@ -441,25 +430,7 @@ func runHeadless(f *flags) int {
 		defer cancel()
 	}
 	if f.importPath != "" {
-		// headless 拥有导入观察器；成功、失败或最多 600 次轮询后退出。
-		go func() {
-			n := len(e.app.View().Library)
-			e.app.Import(f.importPath, "")
-			for i := 0; i < 600; i++ {
-				v := e.app.View()
-				if len(v.Library) > n {
-					it := v.Library[len(v.Library)-1]
-					e.log.Info("headless: assign", "item", it.ID)
-					e.app.AssignAll(it.ID)
-					return
-				}
-				if !v.Importing && v.LastError != "" {
-					e.log.Error("headless: import failed", "err", v.LastError)
-					return
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
-		}()
+		e.app.Import(f.importPath, app.ApplyAll)
 	}
 	err = e.app.Run(ctx)
 	if ctx.Err() == context.Canceled {

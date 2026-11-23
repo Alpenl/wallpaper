@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,9 +76,91 @@ func CapabilitiesForWithHelper(goos, ffmpegPath, helperExecutable string) Capabi
 	return Capabilities{}
 }
 
+// rejectUnsafeHostPath blocks UNC paths (\\server\share, //server/share, mixed
+// leading slashes) and Windows device namespaces (\\?\, \\.\, //?/, //./)
+// before any OS filesystem call can trigger SMB/Net-NTLMv2 egress or device access.
+func rejectUnsafeHostPath(p string) error {
+	if p == "" {
+		return errors.New("transcode: empty path")
+	}
+	if strings.ContainsRune(p, 0) {
+		return errors.New("transcode: path contains NUL byte")
+	}
+	if len(p) >= 2 && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/') {
+		return fmt.Errorf("transcode: UNC or device path is not allowed: %q", p)
+	}
+	return nil
+}
+
+// CleanupTempFiles removes stale .wallpaper-transcode-* temporary files under
+// dir (including subdirectories) without following symlinks.
+func CleanupTempFiles(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	if err := rejectUnsafeHostPath(dir); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var firstErr error
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".wallpaper-transcode-") {
+			if rerr := os.Remove(p); rerr != nil && !os.IsNotExist(rerr) && firstErr == nil {
+				firstErr = rerr
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return firstErr
+}
+
+func cleanupTempDirFlat(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), ".wallpaper-transcode-") {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
 func executable(path string) string {
+	if rejectUnsafeHostPath(path) != nil {
+		return ""
+	}
 	p, err := exec.LookPath(path)
 	if err != nil {
+		return ""
+	}
+	if rejectUnsafeHostPath(p) != nil {
 		return ""
 	}
 	st, err := os.Stat(p)
@@ -241,12 +324,24 @@ func encodeAtomic(ctx context.Context, src, dst, ext string, encode func(string,
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := rejectUnsafeHostPath(src); err != nil {
+		return err
+	}
+	if err := rejectUnsafeHostPath(dst); err != nil {
+		return err
+	}
 	absSrc, err := filepath.Abs(src)
 	if err != nil {
 		return err
 	}
 	absDst, err := filepath.Abs(dst)
 	if err != nil {
+		return err
+	}
+	if err := rejectUnsafeHostPath(absSrc); err != nil {
+		return err
+	}
+	if err := rejectUnsafeHostPath(absDst); err != nil {
 		return err
 	}
 	st, err := os.Stat(absSrc)
@@ -262,6 +357,7 @@ func encodeAtomic(ctx context.Context, src, dst, ext string, encode func(string,
 	if d, err := os.Stat(absDst); err == nil && os.SameFile(st, d) {
 		return errors.New("transcode: destination refers to source")
 	}
+	cleanupTempDirFlat(filepath.Dir(absDst))
 	f, err := os.CreateTemp(filepath.Dir(absDst), ".wallpaper-transcode-*"+ext)
 	if err != nil {
 		return err
@@ -281,6 +377,9 @@ func encodeAtomic(ctx context.Context, src, dst, ext string, encode func(string,
 }
 
 func isGIF(path string) bool {
+	if rejectUnsafeHostPath(path) != nil {
+		return false
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return false
@@ -327,11 +426,7 @@ func detectCodec(ctx context.Context, path, goos string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var out boundedLog
-	cmd := exec.CommandContext(ctx, path, "-hide_banner", "-encoders")
-	hide(cmd)
-	cmd.Stdout, cmd.Stderr = &out, &out
-	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil {
+	if err := runCommand(ctx, &out, &out, path, "-hide_banner", "-encoders"); err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
@@ -385,12 +480,8 @@ func (l *boundedLog) Write(p []byte) (int, error) {
 func (l *boundedLog) String() string { return string(l.bytes) }
 
 func run(ctx context.Context, path string, args ...string) error {
-	cmd := exec.CommandContext(ctx, path, args...)
-	hide(cmd)
-	cmd.WaitDelay = time.Second
 	var out boundedLog
-	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := cmd.Run(); err != nil {
+	if err := runCommand(ctx, &out, &out, path, args...); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

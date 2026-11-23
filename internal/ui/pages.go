@@ -122,8 +122,9 @@ func (s *Settings) perf(c *ui.Context, v app.View) {
 				}
 				settingRow(c, "ffmpeg 路径", "留空使用默认编码器（macOS 优先系统 AVFoundation）；保存后重新检测", func() {
 					ui.TextInput(c.Key("ff"), &s.ffmpeg).Placeholder(tr(c, "编码器可执行文件路径")).Width(260)
-					if softButton(c.Key("ffsave"), "保存").Disabled(s.ffmpeg == cfg.Render.FFmpegPath).Clicked() {
+					if softButton(c.Key("ffsave"), "保存").Disabled(strings.TrimSpace(s.ffmpeg) == cfg.Render.FFmpegPath).Clicked() {
 						p := strings.TrimSpace(s.ffmpeg)
+						s.ffmpeg = p
 						s.set(func(x *config.Config) { x.Render.FFmpegPath = p })
 						c.Toast(tr(c, "编码器路径已提交，检测结果以状态为准"))
 					}
@@ -227,7 +228,7 @@ func (s *Settings) pause(c *ui.Context, v app.View) {
 		})
 		card(c.Key("reasons"), "当前暂停原因", "继续后仍会遵循自动暂停规则", func() {
 			for _, d := range v.Displays {
-				settingRow(c.Key(d.ID), dispLabel(c, d), reasonsText(c, d.Reasons), func() { text(c, levelNames[d.Level]).FontSize(12).TextColor(t.TextMuted) })
+				settingRow(c.Key(d.ID), dispLabel(c, d), reasonsText(c, d.Reasons), func() { text(c, levelText(d.Level)).FontSize(12).TextColor(t.TextMuted) })
 			}
 		})
 		card(c.Key("resume"), "恢复", "", func() {
@@ -437,13 +438,14 @@ func (s *Settings) startup(c *ui.Context, v app.View) {
 			}
 			settingRow(c, "更新源", "HTTPS 目录地址，包含平台清单与签名；留空时不会联网", func() {
 				ui.TextInput(c.Key("feed"), &s.feed).Placeholder(tr(c, "https://example.com/wallpaper/updates")).Width(280)
-				if softButton(c.Key("feedsave"), "保存").Disabled(s.feed == cfg.Update.FeedURL || u.busy).Clicked() {
+				if softButton(c.Key("feedsave"), "保存").Disabled(strings.TrimSpace(s.feed) == cfg.Update.FeedURL || u.busy).Clicked() {
 					f := strings.TrimSpace(s.feed)
 					if err := validateUpdateFeed(f); err != nil {
-						s.setUpd(func(u *updState) { u.msg = err.Error() })
+						s.setUpd(func(u *updState) { u.msg, u.msgArgs = err.Error(), nil })
 					} else {
+						s.feed = f
 						s.set(func(x *config.Config) { x.Update.FeedURL = f })
-						s.setUpd(func(u *updState) { u.info = nil; u.msg = "更新源已保存，尚未检查" })
+						s.setUpd(func(u *updState) { u.info, u.msg, u.msgArgs = nil, "更新源已保存，尚未检查", nil })
 					}
 				}
 			})
@@ -466,7 +468,11 @@ func (s *Settings) startup(c *ui.Context, v app.View) {
 					ui.Spinner(c).Size(14, 14)
 				}
 				if u.msg != "" {
-					text(c, u.msg).FontSize(12).TextColor(t.TextMuted).Wrap().Grow(1)
+					if len(u.msgArgs) > 0 {
+						textf(c, u.msg, u.msgArgs...).FontSize(12).TextColor(t.TextMuted).Wrap().Grow(1)
+					} else {
+						text(c, localizedError(c, u.msg)).FontSize(12).TextColor(t.TextMuted).Wrap().Grow(1)
+					}
 				}
 			})
 			if u.busy && u.progress > 0 {
@@ -486,7 +492,7 @@ func (s *Settings) startup(c *ui.Context, v app.View) {
 				text(c, "这个构建未做代码签名：Windows 可能弹出 SmartScreen 提示，macOS 需要右键“打开”。").FontSize(12).TextColor(t.TextMuted).Wrap().Padding(4, 0, 8, 0)
 			}
 		})
-		if alertDialog(c.Key("rollbackConfirm"), &s.rollbackAsk, "回滚到 "+s.rollbackVersion+"？", "应用将退出并重启为本地保存的旧版本。壁纸库不会被删除。", "取消", "回滚并重启") == 1 {
+		if alertDialog(c.Key("rollbackConfirm"), &s.rollbackAsk, fmt.Sprintf(tr(c, "回滚到 %s？"), s.rollbackVersion), "应用将退出并重启为本地保存的旧版本。壁纸库不会被删除。", "取消", "回滚并重启") == 1 {
 			s.rollback()
 		}
 
@@ -509,7 +515,7 @@ func (s *Settings) checkUpdate() {
 		s.mu.Unlock()
 		return
 	}
-	s.upd.busy, s.upd.msg, s.upd.info, s.upd.progress = true, "正在检查…", nil, 0
+	s.upd.busy, s.upd.msg, s.upd.msgArgs, s.upd.info, s.upd.progress = true, "正在检查…", nil, nil, 0
 	s.mu.Unlock()
 	s.invalidate()
 	// Settings 拥有检查任务；更新检查及状态回写完成后退出。
@@ -519,12 +525,13 @@ func (s *Settings) checkUpdate() {
 			u.busy = false
 			switch {
 			case err != nil:
-				u.msg = err.Error()
+				u.msg, u.msgArgs = err.Error(), nil
 			case info == nil:
-				u.msg = "已是最新版本"
+				u.msg, u.msgArgs = "已是最新版本", nil
 			default:
 				u.info = info
-				u.msg = fmt.Sprintf("发现新版本 %s，增量下载约 %s", info.Version, humanBytes(info.Size))
+				u.msg = "发现新版本 %s，增量下载约 %s"
+				u.msgArgs = []any{info.Version, humanBytes(info.Size)}
 			}
 		})
 	}()
@@ -537,7 +544,7 @@ func (s *Settings) beginUpdate(message string) bool {
 		s.mu.Unlock()
 		return false
 	}
-	s.upd.busy, s.upd.msg, s.upd.progress = true, message, 0
+	s.upd.busy, s.upd.msg, s.upd.msgArgs, s.upd.progress = true, message, nil, 0
 	s.mu.Unlock()
 	s.invalidate()
 	return true
@@ -562,11 +569,11 @@ func (s *Settings) applyUpdate() {
 		s.setUpd(func(u *updState) {
 			u.busy = false
 			if err != nil {
-				u.msg = "更新失败：" + err.Error()
+				u.msg, u.msgArgs = "更新失败："+err.Error(), nil
 				return
 			}
 			u.info, u.installed = nil, true
-			u.msg = "更新已安装，重启应用后生效"
+			u.msg, u.msgArgs = "更新已安装，重启应用后生效", nil
 		})
 		if err == nil && s.Restart != nil {
 			s.Restart()
@@ -587,11 +594,11 @@ func (s *Settings) rollback() {
 		s.setUpd(func(u *updState) {
 			u.busy = false
 			if err != nil {
-				u.msg = "回滚失败：" + err.Error()
+				u.msg, u.msgArgs = "回滚失败："+err.Error(), nil
 				return
 			}
 			u.installed = true
-			u.msg = "已回滚，重启应用后生效"
+			u.msg, u.msgArgs = "已回滚，重启应用后生效", nil
 		})
 		if err == nil && s.Restart != nil {
 			s.Restart()
@@ -649,7 +656,11 @@ func (s *Settings) diagSections(c *ui.Context, v app.View) {
 			d := d
 			settingRow(c.Key("rt"+d.ID), dispLabel(c, d), reasonsText(c, d.Reasons), func() {
 				ui.Row(c).Gap(6).Children(func() {
-					chip(c, d.Level+" "+tr(c, levelNames[d.Level]), t.Accent)
+					levelChip := tr(c, levelText(d.Level))
+					if d.Level != "" {
+						levelChip = d.Level + " " + levelChip
+					}
+					chip(c, levelChip, t.Accent)
 					if d.Backend != "" {
 						chip(c, d.Backend, t.TextMuted)
 					}

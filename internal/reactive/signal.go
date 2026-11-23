@@ -41,8 +41,34 @@ type Spectrum struct {
 }
 type Analyzer struct{ previous Spectrum }
 
+const maxPCMSample = 1e6
+
+func sanitizeFloat64(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	if v > maxPCMSample {
+		return maxPCMSample
+	}
+	if v < -maxPCMSample {
+		return -maxPCMSample
+	}
+	return v
+}
+
+func clampOutputFloat32(v float64) float32 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return 0
+	}
+	if v > math.MaxFloat32 {
+		return math.MaxFloat32
+	}
+	return float32(v)
+}
+
 // Analyze uses a Hann-windowed radix-2 FFT. Input is mono, normalized PCM.
-// Logarithmic bands cover 20 Hz to min(20 kHz, Nyquist), peak aggregated.
+// Logarithmic bands cover 20 Hz to min(20 kHz, Nyquist), peak aggregated with
+// linear interpolation for low-frequency bands narrower than the FFT bin spacing.
 func (a *Analyzer) Analyze(pcm []float32, rate int) (Spectrum, error) {
 	n := len(pcm)
 	if n < 256 || n > 65536 || n&(n-1) != 0 || rate < 8000 || rate > 192000 {
@@ -50,13 +76,11 @@ func (a *Analyzer) Analyze(pcm []float32, rate int) (Spectrum, error) {
 	}
 	z := make([]complex128, n)
 	sum, window := 0.0, 0.0
-	for i, v := range pcm {
-		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
-			return Spectrum{}, fmt.Errorf("reactive: non-finite PCM")
-		}
+	for i, raw := range pcm {
+		v := sanitizeFloat64(float64(raw))
 		w := .5 - .5*math.Cos(2*math.Pi*float64(i)/float64(n-1))
-		z[i] = complex(float64(v)*w, 0)
-		sum += float64(v) * float64(v)
+		z[i] = complex(v*w, 0)
+		sum += v * v
 		window += w
 	}
 	for i, j := 1, 0; i < n; i++ {
@@ -81,25 +105,76 @@ func (a *Analyzer) Analyze(pcm []float32, rate int) (Spectrum, error) {
 			}
 		}
 	}
-	var out Spectrum
-	hi := math.Min(20000, float64(rate)/2)
-	for k := 1; k <= n/2; k++ {
-		hz := float64(k*rate) / float64(n)
-		if hz < 20 || hz > hi {
-			continue
+	half := n / 2
+	mags := make([]float64, half+1)
+	if window > 0 {
+		for k := 1; k <= half; k++ {
+			m := 2 * math.Hypot(real(z[k]), imag(z[k])) / window
+			if math.IsNaN(m) || math.IsInf(m, 0) || m < 0 {
+				m = 0
+			}
+			mags[k] = m
 		}
-		b := min(Bins-1, int(math.Log(hz/20)/math.Log(hi/20)*Bins))
-		out.Bins[b] = max(out.Bins[b], float32(2*math.Hypot(real(z[k]), imag(z[k]))/window))
+	}
+	var rawBins [Bins]float64
+	hi := math.Min(20000, float64(rate)/2)
+	df := float64(rate) / float64(n)
+	if hi > 20 && df > 0 {
+		ratio := hi / 20.0
+		for b := 0; b < Bins; b++ {
+			f0 := 20.0 * math.Pow(ratio, float64(b)/float64(Bins))
+			f1 := 20.0 * math.Pow(ratio, float64(b+1)/float64(Bins))
+			lo := int(math.Ceil(f0 / df))
+			hiK := int(math.Floor(f1 / df))
+			if lo < 1 {
+				lo = 1
+			}
+			if hiK > half {
+				hiK = half
+			}
+			if lo <= hiK && float64(lo)*df <= f1+1e-9 && float64(hiK)*df >= f0-1e-9 {
+				peak := 0.0
+				for k := lo; k <= hiK; k++ {
+					if mags[k] > peak {
+						peak = mags[k]
+					}
+				}
+				rawBins[b] = peak
+			} else {
+				// Band is narrower than Δf: linearly interpolate at the band center frequency.
+				fc := math.Sqrt(f0 * f1)
+				kf := fc / df
+				kLow := int(math.Floor(kf))
+				frac := kf - float64(kLow)
+				if kLow < 0 {
+					kLow = 0
+					frac = 0
+				} else if kLow > half {
+					kLow = half
+					frac = 0
+				}
+				kHigh := min(kLow+1, half)
+				rawBins[b] = mags[kLow]*(1-frac) + mags[kHigh]*frac
+			}
+		}
 	}
 	// Fixed exponential smoothing at the delivery cadence (attack .65, release .2).
-	for i, v := range out.Bins {
-		alpha := float32(.2)
-		if v > a.previous.Bins[i] {
-			alpha = .65
+	var out Spectrum
+	for i, cur := range rawBins {
+		prev := float64(a.previous.Bins[i])
+		if math.IsNaN(prev) || math.IsInf(prev, 0) || prev < 0 {
+			prev = 0
 		}
-		out.Bins[i] = a.previous.Bins[i] + alpha*(v-a.previous.Bins[i])
+		if math.IsNaN(cur) || math.IsInf(cur, 0) || cur < 0 {
+			cur = 0
+		}
+		alpha := 0.2
+		if cur > prev {
+			alpha = 0.65
+		}
+		out.Bins[i] = clampOutputFloat32(prev + alpha*(cur-prev))
 	}
-	out.RMS = float32(math.Sqrt(sum / float64(n)))
+	out.RMS = clampOutputFloat32(math.Sqrt(sum / float64(n)))
 	a.previous = out
 	return out, nil
 }

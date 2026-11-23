@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -33,24 +34,31 @@ var (
 	pConvertSDDL              = advapi32.NewProc("ConvertStringSecurityDescriptorToSecurityDescriptorW")
 )
 
-// U16 转 UTF-16 指针。
-func U16(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
-
-// UP 把 *uint16 转成 uintptr。
-func UP(p *uint16) uintptr { return uintptr(unsafe.Pointer(p)) }
+const (
+	jobLimitBreakawayOK    = 0x0800 // JOB_OBJECT_LIMIT_BREAKAWAY_OK
+	jobLimitKillOnJobClose = 0x2000 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	jobLimitFlags          = jobLimitBreakawayOK | jobLimitKillOnJobClose
+)
 
 // SetupJob 让本进程加入一个 KILL_ON_JOB_CLOSE 作业（02 章 2.2）：之后启动的 mpv / mfhost 子进程自动继承，
-// 本进程退出或被杀时它们随之结束。返回的错误只用于记录（例如已在不允许嵌套的作业里）。
+// 本进程退出或被杀时它们随之结束；同时允许 relaunch 以 CREATE_BREAKAWAY_FROM_JOB 脱离。
+// 返回的错误只用于记录（例如已在不允许嵌套的作业里）。
 func SetupJob() error {
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		return fmt.Errorf("32-bit not supported")
+	}
 	job, _, err := pCreateJobObjectW.Call(0, 0)
 	if job == 0 {
 		return fmt.Errorf("CreateJobObject: %v", err)
 	}
+	assigned := false
+	defer func() {
+		if !assigned {
+			_ = syscall.CloseHandle(syscall.Handle(job))
+		}
+	}()
 	var info [144]byte // JOBOBJECT_EXTENDED_LIMIT_INFORMATION（64 位 144 字节，LimitFlags 偏移 16）
-	if unsafe.Sizeof(uintptr(0)) == 4 {
-		return fmt.Errorf("32-bit not supported")
-	}
-	*(*uint32)(unsafe.Pointer(&info[16])) = 0x2000 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	*(*uint32)(unsafe.Pointer(&info[16])) = jobLimitFlags
 	if r, _, err := pSetInformationJobObject.Call(job, 9, uintptr(unsafe.Pointer(&info[0])), uintptr(len(info))); r == 0 {
 		return fmt.Errorf("SetInformationJobObject: %v", err)
 	}
@@ -58,12 +66,18 @@ func SetupJob() error {
 	if r, _, err := pAssignProcessToJobObject.Call(job, self); r == 0 {
 		return fmt.Errorf("AssignProcessToJobObject: %v", err)
 	}
+	assigned = true
 	return nil // 作业句柄有意不关闭：关闭即结束全部进程
 }
 
 // RegisterRestart 调用 RegisterApplicationRestart（2.5 第 3 条，交给 WER 在崩溃/无响应后重启）。
 func RegisterRestart(args string) error {
-	r, _, _ := pRegisterAppRestart.Call(UP(U16(args)), 0)
+	p, err := syscall.UTF16PtrFromString(args)
+	if err != nil {
+		return fmt.Errorf("RegisterApplicationRestart: invalid args: %w", err)
+	}
+	r, _, _ := pRegisterAppRestart.Call(uintptr(unsafe.Pointer(p)), 0)
+	runtime.KeepAlive(p)
 	if r != 0 {
 		return fmt.Errorf("RegisterApplicationRestart hr=0x%x", r)
 	}
@@ -94,19 +108,35 @@ func NewPipeServer() (*PipeServer, error) {
 	var sess uint32
 	pProcessIdToSessionId.Call(uintptr(os.Getpid()), uintptr(unsafe.Pointer(&sess)))
 	rb := make([]byte, 16)
-	_, _ = rand.Read(rb)
-	name := fmt.Sprintf(`\\.\pipe\wpd-%d-%s`, sess, hex.EncodeToString(rb))
-	var sa *syscall.SecurityAttributes
-	if sid, err := currentUserSID(); err == nil {
-		var sd uintptr
-		sddl := "D:P(A;;GA;;;" + sid + ")"
-		if r, _, _ := pConvertSDDL.Call(UP(U16(sddl)), 1, uintptr(unsafe.Pointer(&sd)), 0); r != 0 {
-			defer pLocalFree.Call(sd)
-			sa = &syscall.SecurityAttributes{Length: uint32(unsafe.Sizeof(syscall.SecurityAttributes{})), SecurityDescriptor: sd}
-		}
+	if _, err := rand.Read(rb); err != nil {
+		return nil, fmt.Errorf("pipe random name: %w", err)
 	}
-	h, _, err := pCreateNamedPipeW.Call(UP(U16(name)), 0x3|0x00080000|syscall.FILE_FLAG_OVERLAPPED /*DUPLEX|FIRST_PIPE_INSTANCE|OVERLAPPED*/, 0, 1, 64<<10, 64<<10, 0,
+	name := fmt.Sprintf(`\\.\pipe\wpd-%d-%s`, sess, hex.EncodeToString(rb))
+	sid, err := currentUserSID()
+	if err != nil {
+		return nil, fmt.Errorf("current user SID: %w", err)
+	}
+	sddl := "D:P(A;;GA;;;" + sid + ")"
+	sddlPtr, err := syscall.UTF16PtrFromString(sddl)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SDDL: %w", err)
+	}
+	var sd uintptr
+	r, _, callErr := pConvertSDDL.Call(uintptr(unsafe.Pointer(sddlPtr)), 1, uintptr(unsafe.Pointer(&sd)), 0)
+	runtime.KeepAlive(sddlPtr)
+	if r == 0 || sd == 0 {
+		return nil, fmt.Errorf("ConvertStringSecurityDescriptorToSecurityDescriptorW: %v", callErr)
+	}
+	defer pLocalFree.Call(sd)
+	sa := &syscall.SecurityAttributes{Length: uint32(unsafe.Sizeof(syscall.SecurityAttributes{})), SecurityDescriptor: sd}
+	namePtr, err := syscall.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pipe name: %w", err)
+	}
+	h, _, err := pCreateNamedPipeW.Call(uintptr(unsafe.Pointer(namePtr)), 0x3|0x00080000|syscall.FILE_FLAG_OVERLAPPED /*DUPLEX|FIRST_PIPE_INSTANCE|OVERLAPPED*/, 0, 1, 64<<10, 64<<10, 0,
 		uintptr(unsafe.Pointer(sa)))
+	runtime.KeepAlive(namePtr)
+	runtime.KeepAlive(sa)
 	if syscall.Handle(h) == syscall.InvalidHandle {
 		return nil, fmt.Errorf("CreateNamedPipe: %v", err)
 	}
@@ -173,10 +203,15 @@ func (p *PipeServer) Close() {
 
 // DialPipe 以客户端身份连接命名管道（mpv 的 --input-ipc-server 由 mpv 创建），最多等 timeout。
 func DialPipe(name string, timeout time.Duration) (*os.File, error) {
+	namePtr, err := syscall.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, fmt.Errorf("pipe %q: %w", name, err)
+	}
 	deadline := time.Now().Add(timeout)
 	for {
-		pWaitNamedPipeW.Call(UP(U16(name)), 100)
-		h, err := syscall.CreateFile(U16(name), syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_EXISTING, syscall.FILE_FLAG_OVERLAPPED, 0)
+		pWaitNamedPipeW.Call(uintptr(unsafe.Pointer(namePtr)), 100)
+		h, err := syscall.CreateFile(namePtr, syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_EXISTING, syscall.FILE_FLAG_OVERLAPPED, 0)
+		runtime.KeepAlive(namePtr)
 		if err == nil {
 			return os.NewFile(uintptr(h), name), nil
 		}

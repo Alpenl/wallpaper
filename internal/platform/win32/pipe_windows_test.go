@@ -133,3 +133,18 @@ func TestPipeClosePendingRead(t *testing.T) {
 		})
 	}
 }
+
+func TestJobLimitFlagsIncludeBreakaway(t *testing.T) {
+	if jobLimitFlags != (0x0800 | 0x2000) {
+		t.Fatalf("jobLimitFlags = 0x%x, want 0x%x", jobLimitFlags, 0x0800|0x2000)
+	}
+}
+
+func TestRejectsNULStrings(t *testing.T) {
+	if err := RegisterRestart("bad\x00arg"); err == nil {
+		t.Fatal("RegisterRestart accepted NUL byte")
+	}
+	if _, err := DialPipe(`\\.\pipe\bad`+"\x00"+`name`, 10*time.Millisecond); err == nil {
+		t.Fatal("DialPipe accepted NUL byte")
+	}
+}

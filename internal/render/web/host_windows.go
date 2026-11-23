@@ -5,7 +5,6 @@ package web
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"runtime"
 	"sync"
 	"syscall"
@@ -19,7 +18,28 @@ import (
 var ole = syscall.NewLazyDLL("ole32.dll")
 var user = syscall.NewLazyDLL("user32.dll")
 
+var (
+	iidIUnknown                   = syscall.GUID{Data1: 0x00000000, Data2: 0x0000, Data3: 0x0000, Data4: [8]byte{0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}}
+	iidEnvCompletedHandler        = syscall.GUID{Data1: 0x4e8a3389, Data2: 0xc9d8, Data3: 0x4bd2, Data4: [8]byte{0xb6, 0xb5, 0x12, 0x4f, 0xee, 0x6c, 0xc1, 0x4d}}
+	iidControllerCompletedHandler = syscall.GUID{Data1: 0x6c4819f3, Data2: 0xc9b7, Data3: 0x4260, Data4: [8]byte{0x81, 0x27, 0xc9, 0xf5, 0xbd, 0xe7, 0xf6, 0x8c}}
+	iidNavigationStartingHandler  = syscall.GUID{Data1: 0x9adbe429, Data2: 0xf36d, Data3: 0x432b, Data4: [8]byte{0x9d, 0xdc, 0xf8, 0x88, 0x1f, 0xbd, 0x76, 0xe3}}
+	iidNewWindowRequestedHandler  = syscall.GUID{Data1: 0xd4c185fe, Data2: 0xc81c, Data3: 0x4989, Data4: [8]byte{0x97, 0xaf, 0x2d, 0x3f, 0xa7, 0xab, 0x56, 0x51}}
+	iidPermissionRequestedHandler = syscall.GUID{Data1: 0x15e1c6a3, Data2: 0xc72a, Data3: 0x4df3, Data4: [8]byte{0x91, 0xd7, 0xd0, 0x97, 0xfb, 0xec, 0x6b, 0xfd}}
+	iidDownloadStartingHandler    = syscall.GUID{Data1: 0xefedc989, Data2: 0xc396, Data3: 0x41ca, Data4: [8]byte{0x83, 0xf7, 0x07, 0xf8, 0x45, 0xa5, 0x57, 0x24}}
+	iidWebResourceRequested       = syscall.GUID{Data1: 0xab00b74c, Data2: 0x15f1, Data3: 0x4646, Data4: [8]byte{0x80, 0xe8, 0xe7, 0x63, 0x41, 0xd2, 0x5d, 0x71}}
+	iidNavigationCompletedHandler = syscall.GUID{Data1: 0xd33a35bf, Data2: 0x1c49, Data3: 0x4f98, Data4: [8]byte{0x93, 0xab, 0x00, 0x6e, 0x05, 0x33, 0xfe, 0x1c}}
+	iidAddScriptCompletedHandler  = syscall.GUID{Data1: 0xb99369f3, Data2: 0x9b11, Data3: 0x47b5, Data4: [8]byte{0xbc, 0x6f, 0x8e, 0x78, 0x95, 0xfc, 0xea, 0x17}}
+	iidTrySuspendCompletedHandler = syscall.GUID{Data1: 0x00f206a7, Data2: 0x9d17, Data3: 0x4605, Data4: [8]byte{0x91, 0xf6, 0x4e, 0x8e, 0x4d, 0xe1, 0x92, 0xe3}}
+	iidCapturePreviewCompleted    = syscall.GUID{Data1: 0x697e05e9, Data2: 0x3d8f, Data3: 0x45fa, Data4: [8]byte{0x96, 0xf4, 0x8f, 0xfe, 0x1e, 0xde, 0xda, 0xf5}}
+	iidProcessFailedHandler       = syscall.GUID{Data1: 0x79e0aea4, Data2: 0x990b, Data3: 0x42d9, Data4: [8]byte{0xaa, 0x1d, 0x0f, 0xcc, 0x2e, 0x5b, 0xc7, 0xf1}}
+)
+
 var nativeRoots []any
+
+// rawPtr reinterprets a native (non-Go) address as unsafe.Pointer for COM/Win32 FFI.
+func rawPtr(addr uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&addr))
+}
 
 func ptr[T any](v *T) uintptr {
 	nativeRoots = append(nativeRoots, v)
@@ -27,8 +47,8 @@ func ptr[T any](v *T) uintptr {
 }
 func wide(s string) uintptr { p, _ := syscall.UTF16PtrFromString(s); return ptr(p) }
 func com(o uintptr, index int, args ...uintptr) uintptr {
-	v := *(*uintptr)(unsafe.Pointer(o))
-	fn := *(*uintptr)(unsafe.Pointer(v + uintptr(index)*unsafe.Sizeof(v)))
+	v := *(*uintptr)(rawPtr(o))
+	fn := *(*uintptr)(unsafe.Add(rawPtr(v), uintptr(index)*unsafe.Sizeof(v)))
 	r, _, _ := syscall.SyscallN(fn, append([]uintptr{o}, args...)...)
 	return r
 }
@@ -63,7 +83,7 @@ func comString(o uintptr, index int) string {
 }
 func utf16Len(p *uint16) int {
 	for n := 0; n < 32768; n++ {
-		if *(*uint16)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) + uintptr(n*2))) == 0 {
+		if *(*uint16)(unsafe.Add(unsafe.Pointer(p), uintptr(n*2))) == 0 {
 			return n
 		}
 	}
@@ -75,6 +95,7 @@ func utf16Len(p *uint16) int {
 type callback struct {
 	vtable *[4]uintptr
 	fn     func(uintptr, uintptr) uintptr
+	iid    syscall.GUID
 	refs   int
 }
 
@@ -99,14 +120,21 @@ func callbackRef(self uintptr, delta int) uintptr {
 var callbackTable = [4]uintptr{
 	syscall.NewCallback(func(self, iid, out uintptr) uintptr {
 		if out == 0 {
+			return 0x80004003 // E_POINTER
+		}
+		if iid == 0 {
+			*(*uintptr)(rawPtr(out)) = 0
 			return 0x80004003
 		}
-		g := *(*syscall.GUID)(unsafe.Pointer(iid))
-		if g.Data1 == 0x00000003 || g.Data1 == 0x94ea2b94 || g.Data1 == 0xecc8691b {
-			*(*uintptr)(unsafe.Pointer(out)) = 0
-			return 0x80004002
+		callbackMu.Lock()
+		c := callbacks[self]
+		callbackMu.Unlock()
+		g := *(*syscall.GUID)(rawPtr(iid))
+		if c == nil || (g != iidIUnknown && g != c.iid) {
+			*(*uintptr)(rawPtr(out)) = 0
+			return 0x80004002 // E_NOINTERFACE
 		}
-		*(*uintptr)(unsafe.Pointer(out)) = self
+		*(*uintptr)(rawPtr(out)) = self
 		callbackRef(self, 1)
 		return 0
 	}),
@@ -123,8 +151,8 @@ var callbackTable = [4]uintptr{
 	}),
 }
 
-func handler(fn func(uintptr, uintptr) uintptr) uintptr {
-	c := &callback{&callbackTable, fn, 1}
+func handler(iid syscall.GUID, fn func(uintptr, uintptr) uintptr) uintptr {
+	c := &callback{vtable: &callbackTable, fn: fn, iid: iid, refs: 1}
 	p := ptr(c)
 	callbackMu.Lock()
 	callbacks[p] = c
@@ -156,10 +184,18 @@ func await(done *bool) error {
 	end := time.Now().Add(15 * time.Second)
 	for !*done {
 		pump()
-		if time.Now().After(end) {
+		if *done {
+			return nil
+		}
+		rem := time.Until(end)
+		if rem <= 0 {
 			return fmt.Errorf("WebView2 operation timed out")
 		}
-		time.Sleep(time.Millisecond)
+		waitMs := uint32(min(rem.Milliseconds(), 50))
+		if waitMs == 0 {
+			waitMs = 1
+		}
+		procMsgWaitObjects.Call(0, 0, 0, uintptr(waitMs), 0x04FF) // QS_ALLINPUT
 	}
 	return nil
 }
@@ -169,13 +205,16 @@ type winView struct {
 	parent, snapshotWindow, snapshotBitmap uintptr
 	paused                                 bool
 	env, ctl, wv, wv3, wv4                 uintptr
-	dir                                    string
+	userData                               *userDataDir
 	origin                                 string
 	network                                bool
+	allowedHosts                           []string
 	props                                  string
 	fps                                    int
 	ready                                  bool
 	navigationErr                          error
+	processFailed                          error
+	onFatal                                func()
 }
 
 func (w *winView) Load(x loadRequest) error {
@@ -190,12 +229,13 @@ func (w *winView) Load(x loadRequest) error {
 	w.token = x.Token
 	w.origin = Origin(m.ID, "windows")
 	w.network = x.Item.NetworkGranted
+	w.allowedHosts = normalizeAllowedHosts(m.Web.NetworkAllow)
 	w.fps = EffectiveFPS(m.Web.FPSCap, x.Item.FPSCap)
 	w.props, e = PropertyScript(m.Properties, x.Item.Properties)
 	if e != nil {
 		return e
 	}
-	w.dir, e = os.MkdirTemp("", "wpk-webview2-*")
+	w.userData, e = prepareUserDataDir(x.CacheDir)
 	if e != nil {
 		return e
 	}
@@ -238,7 +278,9 @@ func (w *winView) createEnvironment(l *winLoadState) error {
 	if e != nil {
 		return e
 	}
-	h := handler(func(result, env uintptr) uintptr {
+	opts := newEnvOptions(browserArgs(w.network))
+	l.refs = append(l.refs, opts)
+	h := handler(iidEnvCompletedHandler, func(result, env uintptr) uintptr {
 		l.asyncErr = hr(result)
 		if l.asyncErr == nil {
 			w.env = env
@@ -248,7 +290,7 @@ func (w *winView) createEnvironment(l *winLoadState) error {
 		return 0
 	})
 	l.refs = append(l.refs, h)
-	v := create(w.dir, h)
+	v := create(w.userData.path, opts, h)
 	if e = hr(v); e != nil {
 		return e
 	}
@@ -264,7 +306,7 @@ func (w *winView) createEnvironment(l *winLoadState) error {
 func (w *winView) createController(l *winLoadState, parent uintptr) error {
 	var e error
 	l.done = false
-	h := handler(func(result, ctl uintptr) uintptr {
+	h := handler(iidControllerCompletedHandler, func(result, ctl uintptr) uintptr {
 		l.asyncErr = hr(result)
 		if l.asyncErr == nil {
 			w.ctl = ctl
@@ -314,7 +356,8 @@ func (w *winView) configureSecurity(l *winLoadState, x loadRequest, m *wpk.Manif
 	if e = hr(com(w.wv3, 71, wide(m.ID+".wpk.invalid"), wide(contentDir(x, m)), 2)); e != nil {
 		return e
 	}
-	if e = addWebHandler(w.wv, 7, func(_, args uintptr) uintptr {
+	// ICoreWebView2::add_NavigationStarting (index 7)
+	if e = addWebHandler(w.wv, 7, iidNavigationStartingHandler, func(_, args uintptr) uintptr {
 		if !AllowNavigation(w.origin, comString(args, 3), false) {
 			return com(args, 8, 1)
 		}
@@ -322,7 +365,8 @@ func (w *winView) configureSecurity(l *winLoadState, x loadRequest, m *wpk.Manif
 	}); e != nil {
 		return e
 	}
-	if e = addWebHandler(w.wv, 11, func(_, args uintptr) uintptr {
+	// ICoreWebView2::add_FrameNavigationStarting (index 17)
+	if e = addWebHandler(w.wv, 17, iidNavigationStartingHandler, func(_, args uintptr) uintptr {
 		if !AllowNavigation(w.origin, comString(args, 3), false) {
 			return com(args, 8, 1)
 		}
@@ -330,21 +374,38 @@ func (w *winView) configureSecurity(l *winLoadState, x loadRequest, m *wpk.Manif
 	}); e != nil {
 		return e
 	}
-	if e = addWebHandler(w.wv, 44, func(_, args uintptr) uintptr { return com(args, 6, 1) }); e != nil {
+	// ICoreWebView2::add_NewWindowRequested (index 44)
+	if e = addWebHandler(w.wv, 44, iidNewWindowRequestedHandler, func(_, args uintptr) uintptr { return com(args, 6, 1) }); e != nil {
 		return e
 	}
-	if e = addWebHandler(w.wv, 23, func(_, args uintptr) uintptr { return com(args, 7, 2) }); e != nil {
+	// ICoreWebView2::add_PermissionRequested (index 23)
+	if e = addWebHandler(w.wv, 23, iidPermissionRequestedHandler, func(_, args uintptr) uintptr { return com(args, 7, 2) }); e != nil {
 		return e
 	}
-	if e = addWebHandler(w.wv4, 75, func(_, args uintptr) uintptr { return com(args, 5, 1) }); e != nil {
+	// ICoreWebView2::add_ProcessFailed (index 25)
+	if e = addWebHandler(w.wv, 25, iidProcessFailedHandler, func(_, args uintptr) uintptr {
+		var kind int32
+		_ = com(args, 3, ptr(&kind))
+		if w.processFailed == nil {
+			w.processFailed = fmt.Errorf("WebView2 process failed (kind=%d)", kind)
+		}
+		if w.onFatal != nil {
+			w.onFatal()
+		}
+		return 0
+	}); e != nil {
+		return e
+	}
+	// ICoreWebView2_4::add_DownloadStarting (index 75)
+	if e = addWebHandler(w.wv4, 75, iidDownloadStartingHandler, func(_, args uintptr) uintptr { return com(args, 5, 1) }); e != nil {
 		return e
 	}
 	return nil
 }
 
-func addWebHandler(obj uintptr, index int, fn func(uintptr, uintptr) uintptr) error {
+func addWebHandler(obj uintptr, index int, iid syscall.GUID, fn func(uintptr, uintptr) uintptr) error {
 	var token int64
-	h := handler(fn)
+	h := handler(iid, fn)
 	defer release(h)
 	return hr(com(obj, index, h, ptr(&token)))
 }
@@ -358,13 +419,13 @@ func (w *winView) configureRequests(l *winLoadState) error {
 	if e = hr(com(filter, 123, wide("*"), 0, 0xffffffff)); e != nil {
 		return e
 	}
-	if e = addWebHandler(w.wv, 55, func(_, args uintptr) uintptr {
+	if e = addWebHandler(w.wv, 55, iidWebResourceRequested, func(_, args uintptr) uintptr {
 		var req uintptr
 		if hr(com(args, 3, ptr(&req))) != nil {
 			return 0x80004005
 		}
 		defer release(req)
-		if AllowRequest(w.origin, comString(req, 3), w.network) {
+		if AllowRequest(w.origin, comString(req, 3), w.network, w.allowedHosts) {
 			return 0
 		}
 		var response uintptr
@@ -382,7 +443,7 @@ func (w *winView) configureRequests(l *winLoadState) error {
 
 func (w *winView) configureNavigation(l *winLoadState, transparent bool) error {
 	var e error
-	if e = addWebHandler(w.wv, 15, func(_, args uintptr) uintptr {
+	if e = addWebHandler(w.wv, 15, iidNavigationCompletedHandler, func(_, args uintptr) uintptr {
 		var success int32
 		if hr(com(args, 3, ptr(&success))) != nil || success == 0 {
 			w.navigationErr = fmt.Errorf("WebView2 navigation failed")
@@ -422,9 +483,9 @@ func (w *winView) navigateInitial(l *winLoadState, x loadRequest, m *wpk.Manifes
 	var e error
 	l.done = false
 	l.asyncErr = nil
-	h := handler(func(result, _ uintptr) uintptr { l.asyncErr = hr(result); l.done = true; return 0 })
+	h := handler(iidAddScriptCompletedHandler, func(result, _ uintptr) uintptr { l.asyncErr = hr(result); l.done = true; return 0 })
 	l.refs = append(l.refs, h)
-	if e = hr(com(w.wv, 27, wide(bootstrapScript(w.token, w.fps)), h)); e != nil {
+	if e = hr(com(w.wv, 27, wide(bootstrapScript(w.token, w.fps, w.network)), h)); e != nil {
 		return e
 	}
 	if e = await(&l.done); e != nil {
@@ -479,11 +540,9 @@ func (w *winView) Resume() error { return hr(com(w.wv3, 69)) }
 func (w *winView) Suspend() error {
 	done := false
 	var err error
-	h := handler(func(result, ok uintptr) uintptr {
+	// TrySuspend returning FALSE (ok == 0) is a benign soft decline; do not fail.
+	h := handler(iidTrySuspendCompletedHandler, func(result, _ uintptr) uintptr {
 		err = hr(result)
-		if err == nil && ok == 0 {
-			err = fmt.Errorf("WebView2 refused suspension")
-		}
 		done = true
 		return 0
 	})
@@ -504,10 +563,35 @@ func (w *winView) Close() {
 	for _, o := range []uintptr{w.wv4, w.wv3, w.wv, w.ctl, w.env} {
 		release(o)
 	}
-	if w.dir != "" {
-		_ = os.RemoveAll(w.dir)
+	w.wv4, w.wv3, w.wv, w.ctl, w.env = 0, 0, 0, 0, 0
+	if w.userData != nil {
+		w.userData.Close()
+		w.userData = nil
 	}
 }
+
+func (h *hostSession) activeSignals() bool {
+	return h.loaded && !h.paused && !h.blocked && h.signals != nil && (h.signals.Audio || h.signals.Input)
+}
+
+func (h *hostSession) signalWaitTimeoutMs() uintptr {
+	if !h.activeSignals() {
+		return 0xFFFFFFFF // INFINITE
+	}
+	fps := h.fps
+	if fps <= 0 {
+		fps = 30
+	}
+	ms := 1000 / fps
+	if ms < 4 {
+		ms = 4
+	}
+	if ms > 100 {
+		ms = 100
+	}
+	return uintptr(ms)
+}
+
 func runHost(p pipeIO) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -527,34 +611,85 @@ func runHost(p pipeIO) error {
 		return e
 	}
 	defer ole.NewProc("CoUninitialize").Call()
-	w := &winView{}
+
+	wakeEvent, _, wakeErr := procCreateEventW.Call(0, 0, 0, 0)
+	if wakeEvent == 0 {
+		return fmt.Errorf("web: create wake event: %w", wakeErr)
+	}
+	defer procCloseHandle.Call(wakeEvent)
+	wake := func() { procSetEvent.Call(wakeEvent) }
+
+	w := &winView{onFatal: wake}
 	defer w.Close()
 	h := &hostSession{view: w}
 	defer h.closeSignals()
-	jobs := make(chan func())
+
+	hostDone := make(chan struct{})
+	defer close(hostDone)
+
+	jobs := make(chan func(), 16)
 	c := ipc.New(p, func(m string, b json.RawMessage) (any, *ipc.Error) {
 		var result any
 		var e *ipc.Error
 		done := make(chan struct{})
-		jobs <- func() { result, e = h.handle(m, b); close(done) }
-		<-done
-		return result, e
+		select {
+		case jobs <- func() { result, e = h.handle(m, b); close(done) }:
+			wake()
+		case <-hostDone:
+			return nil, &ipc.Error{Code: "E_STATE", Msg: "web host shutting down", Fatal: true}
+		}
+		select {
+		case <-done:
+			return result, e
+		case <-hostDone:
+			return nil, &ipc.Error{Code: "E_STATE", Msg: "web host shutting down", Fatal: true}
+		}
 	}, nil)
 	defer c.Close()
+
+	// runHost owns this watcher; it exits when IPC closes or runHost returns.
+	go func() {
+		select {
+		case <-c.Done():
+			wake()
+		case <-hostDone:
+		}
+	}()
+
 	for {
+		// Drain pending control jobs before waiting.
+		for draining := true; draining; {
+			select {
+			case <-c.Done():
+				return nil
+			case job := <-jobs:
+				job()
+				nativeRoots = nil
+			default:
+				draining = false
+			}
+		}
+		if w.processFailed != nil {
+			return w.processFailed
+		}
+		pump()
+		if w.processFailed != nil {
+			return w.processFailed
+		}
+		h.signalFrame(time.Now())
+		h.reportSignalStatus(c)
+		nativeRoots = nil
+
 		select {
 		case <-c.Done():
 			return nil
-		case job := <-jobs:
-			job()
-			nativeRoots = nil
 		default:
-			h.signalFrame(time.Now())
-			h.reportSignalStatus(c)
-			pump()
-			nativeRoots = nil
-			time.Sleep(time.Millisecond)
 		}
+		if len(jobs) > 0 {
+			continue
+		}
+		waitHandle := wakeEvent
+		procMsgWaitObjects.Call(1, uintptr(unsafe.Pointer(&waitHandle)), 0, h.signalWaitTimeoutMs(), 0x04FF) // QS_ALLINPUT
 	}
 }
 

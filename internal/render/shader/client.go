@@ -2,6 +2,7 @@ package shader
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"io"
@@ -68,14 +69,19 @@ func (r *Renderer) Configure(o render.PlaybackOptions) error {
 	if o.Scale < .5 {
 		return fmt.Errorf("shader: scale must be 0.5–1.0")
 	}
+	r.mu.Lock()
 	r.scale = o.Scale
+	r.mu.Unlock()
 	return nil
 }
 func (r *Renderer) UpdatePlayback(o render.PlaybackOptions) error {
 	if e := r.Configure(o); e != nil {
 		return e
 	}
-	return r.call("scale", o.Scale)
+	r.mu.Lock()
+	scale := r.scale
+	r.mu.Unlock()
+	return r.call("scale", scale)
 }
 func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	if it.Kind != "shader" {
@@ -175,9 +181,16 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		}
 		close(exited)
 	}()
-	if e = r.call("load", loadRequest{Item: it, Native: s.Native(), Bounds: s.Bounds(), Paused: paused, Scale: r.scale}); e != nil {
+	r.mu.Lock()
+	scale := r.scale
+	r.mu.Unlock()
+	if e = r.call("load", loadRequest{Item: it, Native: s.Native(), Bounds: s.Bounds(), Paused: paused, Scale: scale}); e != nil {
 		_ = r.Close()
 		return e
+	}
+	if runtime.GOOS == "darwin" {
+		// Shader host owns an independent child NSWindow; keep parent desktop surface hidden.
+		_ = s.SetVisible(false)
 	}
 	r.statsMu.Lock()
 	r.heartbeat = time.Now()
@@ -207,6 +220,16 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	}()
 	return nil
 }
+func shouldKillOnCallError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ipcErr *ipc.Error
+	if errors.As(err, &ipcErr) {
+		return ipcErr.Fatal || ipcErr.Code == "E_TIMEOUT" || ipcErr.Code == "E_PROTO"
+	}
+	return true
+}
 func (r *Renderer) call(method string, v any) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -222,7 +245,7 @@ func (r *Renderer) call(method string, v any) error {
 	if method == "load" && e == nil {
 		r.Log.Log("helper_identity", "display", r.Display, "child_pid", reply.PID, "build", reply.Build)
 	}
-	if e != nil {
+	if shouldKillOnCallError(e) && r.cmd != nil && r.cmd.Process != nil {
 		_ = r.cmd.Process.Kill()
 	}
 	return e

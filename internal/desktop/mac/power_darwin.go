@@ -3,6 +3,7 @@
 package mac
 
 import (
+	"sync"
 	"time"
 
 	"github.com/ebitengine/purego"
@@ -14,32 +15,31 @@ import (
 )
 
 var (
-	iopsCopyInfo         func() uintptr
-	iopsProvidingType    func(uintptr) uintptr
-	cfStringGetCString   func(uintptr, *byte, int, uint32) bool
-	cfRelease            func(uintptr)
-	iokitLoaded, iokitOK bool
+	iopsCopyInfo       func() uintptr
+	iopsProvidingType  func(uintptr) uintptr
+	cfStringGetCString func(uintptr, *byte, int, uint32) bool
+	cfRelease          func(uintptr)
+	iokitOnce          sync.Once
+	iokitOK            bool
 )
 
 func loadIOKit() bool {
-	if iokitLoaded {
-		return iokitOK
-	}
-	iokitLoaded = true
-	io, err := purego.Dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", purego.RTLD_GLOBAL|purego.RTLD_NOW)
-	if err != nil {
-		return false
-	}
-	cf, err := purego.Dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", purego.RTLD_GLOBAL|purego.RTLD_NOW)
-	if err != nil {
-		return false
-	}
-	purego.RegisterLibFunc(&iopsCopyInfo, io, "IOPSCopyPowerSourcesInfo")
-	purego.RegisterLibFunc(&iopsProvidingType, io, "IOPSGetProvidingPowerSourceType")
-	purego.RegisterLibFunc(&cfStringGetCString, cf, "CFStringGetCString")
-	purego.RegisterLibFunc(&cfRelease, cf, "CFRelease")
-	iokitOK = true
-	return true
+	iokitOnce.Do(func() {
+		io, err := purego.Dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", purego.RTLD_GLOBAL|purego.RTLD_NOW)
+		if err != nil {
+			return
+		}
+		cf, err := purego.Dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", purego.RTLD_GLOBAL|purego.RTLD_NOW)
+		if err != nil {
+			return
+		}
+		purego.RegisterLibFunc(&iopsCopyInfo, io, "IOPSCopyPowerSourcesInfo")
+		purego.RegisterLibFunc(&iopsProvidingType, io, "IOPSGetProvidingPowerSourceType")
+		purego.RegisterLibFunc(&cfStringGetCString, cf, "CFStringGetCString")
+		purego.RegisterLibFunc(&cfRelease, cf, "CFRelease")
+		iokitOK = true
+	})
+	return iokitOK
 }
 
 // onBatteryIOKit 用 IOPSGetProvidingPowerSourceType 判断是否电池供电（无子进程，可 1 s 轮询，满足 F-05 ≤ 1 s）。
@@ -70,15 +70,19 @@ func onBatteryIOKit() (bool, bool) {
 // powerLoop：1 s 采样 AC/电池（IOKit）、低电量模式、thermalState（NSProcessInfo，属性线程安全）。
 // 未在真机验证【推断】。
 func (h *Host) powerLoop() {
-	pi := objc.ID(macos.Class("NSProcessInfo")).Send(macos.Sel("processInfo"))
 	var lastSaver, lastSer, lastCrit, lastBatt, first = false, false, false, false, true
 	lastThermal := -1
 	for {
+		pool := macos.Class("NSAutoreleasePool").Send(macos.Sel("new"))
+		pi := objc.ID(macos.Class("NSProcessInfo")).Send(macos.Sel("processInfo"))
 		low := false
 		th := 0
 		if pi != 0 {
 			low = objc.Send[bool](pi, macos.Sel("isLowPowerModeEnabled"))
 			th = int(objc.Send[int64](pi, macos.Sel("thermalState")))
+		}
+		if pool != 0 {
+			pool.Send(macos.Sel("drain"))
 		}
 		saver, ser, crit := PowerSignals(low, th)
 		emit := func(r visibility.Reason, on bool, last *bool) {

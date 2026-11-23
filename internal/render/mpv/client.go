@@ -4,6 +4,7 @@ package mpv
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,29 +16,39 @@ import (
 	"wpapp/internal/render"
 )
 
+type loadWaiter struct {
+	seq     uint64
+	reqID   int
+	acked   bool
+	entryID int64
+	ch      chan struct{}
+}
+
 // client 是 mpv JSON IPC 的最小客户端（每行一个 JSON，带 request_id）。
 type client struct {
-	log     render.LogFunc
-	rw      io.ReadWriteCloser
-	mu      sync.Mutex
-	writeMu sync.Mutex
-	next    int
-	pending map[int]chan resp
-	loaded  chan struct{}
-	loops   atomic.Int64 // playback-restart 事件计数（循环回到开头会触发）
-	first   chan struct{}
-	once    sync.Once
-	closed  chan struct{}
+	log      render.LogFunc
+	rw       io.ReadWriteCloser
+	mu       sync.Mutex
+	writeMu  sync.Mutex
+	next     int
+	loadSeq  uint64
+	pending  map[int]chan resp
+	loadWait *loadWaiter
+	loops    atomic.Int64 // playback-restart 事件计数（循环回到开头会触发）
+	first    chan struct{}
+	once     sync.Once
+	closed   chan struct{}
 }
 
 type resp struct {
-	Error     string          `json:"error"`
-	Data      json.RawMessage `json:"data"`
-	RequestID int             `json:"request_id"`
-	Event     string          `json:"event"`
-	Prefix    string          `json:"prefix"`
-	Level     string          `json:"level"`
-	Text      string          `json:"text"`
+	Error           string          `json:"error"`
+	Data            json.RawMessage `json:"data"`
+	RequestID       int             `json:"request_id"`
+	Event           string          `json:"event"`
+	Prefix          string          `json:"prefix"`
+	Level           string          `json:"level"`
+	Text            string          `json:"text"`
+	PlaylistEntryID int64           `json:"playlist_entry_id"`
 }
 
 func newClient(rw io.ReadWriteCloser, logs ...render.LogFunc) *client {
@@ -65,9 +76,10 @@ func (c *client) readLoop() {
 			}
 			if r.Event == "file-loaded" {
 				c.mu.Lock()
-				if c.loaded != nil {
-					close(c.loaded)
-					c.loaded = nil
+				w := c.loadWait
+				if w != nil && w.acked && (w.entryID == 0 || r.PlaylistEntryID == 0 || w.entryID == r.PlaylistEntryID) {
+					close(w.ch)
+					c.loadWait = nil
 				}
 				c.mu.Unlock()
 			}
@@ -78,6 +90,19 @@ func (c *client) readLoop() {
 			continue
 		}
 		c.mu.Lock()
+		if w := c.loadWait; w != nil && w.reqID == r.RequestID {
+			if r.Error == "success" {
+				w.acked = true
+				var meta struct {
+					PlaylistEntryID int64 `json:"playlist_entry_id"`
+				}
+				if len(r.Data) > 0 && json.Unmarshal(r.Data, &meta) == nil && meta.PlaylistEntryID > 0 {
+					w.entryID = meta.PlaylistEntryID
+				}
+			} else {
+				c.loadWait = nil
+			}
+		}
 		ch := c.pending[r.RequestID]
 		delete(c.pending, r.RequestID)
 		c.mu.Unlock()
@@ -93,20 +118,37 @@ func (c *client) readLoop() {
 	c.mu.Unlock()
 }
 
-var errClosed = errors.New("mpv: ipc closed")
+var (
+	errClosed      = errors.New("mpv: ipc closed")
+	errUnavailable = errors.New("mpv: property unavailable")
+)
 
 func (c *client) cmd(args ...any) (json.RawMessage, error) {
+	op := ""
+	lifecycle := false
+	if len(args) > 0 {
+		if s, ok := args[0].(string); ok {
+			op = s
+		}
+		lifecycle = op == "loadfile" || op == "stop" || (op == "set_property" && len(args) > 1 && args[1] == "pause")
+	}
+	return c.sendCmd(op, lifecycle, args, nil)
+}
+
+func (c *client) sendCmd(op string, lifecycle bool, command any, beforeUnlock func(reqID int)) (json.RawMessage, error) {
 	c.mu.Lock()
 	c.next++
 	id := c.next
 	ch := make(chan resp, 1)
 	c.pending[id] = ch
-	b, _ := json.Marshal(map[string]any{"command": args, "request_id": id})
+	if beforeUnlock != nil {
+		beforeUnlock(id)
+	}
+	b, _ := json.Marshal(map[string]any{"command": command, "request_id": id})
 	c.mu.Unlock()
-	lifecycle := len(args) > 0 && (args[0] == "loadfile" || args[0] == "stop" || (args[0] == "set_property" && len(args) > 1 && args[1] == "pause"))
 	stage := func(name string, fields ...any) {
 		if lifecycle {
-			c.log.Log(name, append([]any{"request_id", id, "op", args[0]}, fields...)...)
+			c.log.Log(name, append([]any{"request_id", id, "op", op}, fields...)...)
 		}
 	}
 	begin := time.Now()
@@ -154,6 +196,9 @@ func (c *client) cmd(args ...any) (json.RawMessage, error) {
 			return nil, errClosed
 		}
 		if r.Error != "success" {
+			if r.Error == "property unavailable" {
+				return r.Data, errUnavailable
+			}
 			return r.Data, errors.New("mpv: " + r.Error)
 		}
 		return r.Data, nil
@@ -171,8 +216,14 @@ func (c *client) getString(p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	trimmed := bytes.TrimSpace(d)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return "", errUnavailable
+	}
 	var s string
-	_ = json.Unmarshal(d, &s)
+	if err := json.Unmarshal(trimmed, &s); err != nil {
+		return "", errUnavailable
+	}
 	return s, nil
 }
 
@@ -213,25 +264,40 @@ func (d *stallDetector) observe(paused bool, loops int64, pos float64) bool {
 	return d.same >= 2
 }
 
-// A command reply only acknowledges loadfile; per-file options are applied later.
-// Subscribe before sending so an early file-loaded event cannot be lost.
+// loadFile uses named-argument JSON loadfile (compatible with mpv 0.30+ through
+// 0.38+) and correlates file-loaded with the loadfile request so stale events
+// from a prior file cannot falsely unblock a new load.
 func (c *client) loadFile(path string, options map[string]string, paused bool) error {
-	loaded := make(chan struct{})
-	c.mu.Lock()
-	c.loaded = loaded
-	c.mu.Unlock()
+	var waiter *loadWaiter
 	defer func() {
+		if waiter == nil {
+			return
+		}
 		c.mu.Lock()
-		if c.loaded == loaded {
-			c.loaded = nil
+		if c.loadWait != nil && c.loadWait.seq == waiter.seq {
+			c.loadWait = nil
 		}
 		c.mu.Unlock()
 	}()
-	if _, err := c.cmd("loadfile", path, "replace", -1, options); err != nil {
+	command := map[string]any{
+		"name":    "loadfile",
+		"url":     path,
+		"flags":   "replace",
+		"options": options,
+	}
+	if _, err := c.sendCmd("loadfile", true, command, func(reqID int) {
+		c.loadSeq++
+		waiter = &loadWaiter{
+			seq:   c.loadSeq,
+			reqID: reqID,
+			ch:    make(chan struct{}),
+		}
+		c.loadWait = waiter
+	}); err != nil {
 		return err
 	}
 	select {
-	case <-loaded:
+	case <-waiter.ch:
 		return c.setPause(paused)
 	case <-c.closed:
 		return errClosed

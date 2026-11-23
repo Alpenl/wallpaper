@@ -63,3 +63,29 @@ func TestCollectSourcesBoundsPackagesAndMedia(t *testing.T) {
 		})
 	}
 }
+
+// L-06: Symlinked root folder must be resolved and traversed while interior
+// symlinks remain skipped.
+func TestCollectSourcesSymlinkedRootFolder(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := filepath.Join(realDir, "a.mp4")
+	if err := os.WriteFile(a, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(base, "link-root")
+	if err := os.Symlink(realDir, linkRoot); err != nil {
+		t.Skip(err)
+	}
+	_ = os.Symlink(a, filepath.Join(realDir, "inner-link.mp4"))
+	got, err := CollectSources(linkRoot)
+	if err != nil {
+		t.Fatalf("symlinked root folder rejected: %v", err)
+	}
+	if len(got) != 1 || filepath.Base(got[0]) != "a.mp4" {
+		t.Fatalf("expected only a.mp4 (not inner symlink), got %v", got)
+	}
+}

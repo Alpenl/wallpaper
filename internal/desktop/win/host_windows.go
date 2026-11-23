@@ -9,6 +9,8 @@
 //   - 系统壁纸兜底：IDesktopWallpaper::SetWallpaper 按显示器设置，失败时退回 SPI_SETDESKWALLPAPER（2.5）。
 //
 // 只用标准库 syscall，CGO_ENABLED=0。代码来自原型 prototype/proto_windows.go（第 19 轮），改成 desktop.Host 接口。
+// Kept as one file (>1000 lines): Win32 FFI declarations, dedicated UI thread message loop,
+// monitor/surface lifecycle, and shell/power event handlers share the same thread-confined state.
 package win
 
 import (
@@ -38,61 +40,66 @@ var (
 	wtsapi32 = syscall.NewLazyDLL("wtsapi32.dll")
 	ole32    = syscall.NewLazyDLL("ole32.dll")
 
-	pFindWindowW               = user32.NewProc("FindWindowW")
-	pFindWindowExW             = user32.NewProc("FindWindowExW")
-	pSendMessageTimeoutW       = user32.NewProc("SendMessageTimeoutW")
-	pEnumWindows               = user32.NewProc("EnumWindows")
-	pGetWindowLongPtrW         = user32.NewProc("GetWindowLongPtrW")
-	pSetWindowPos              = user32.NewProc("SetWindowPos")
-	pRegisterClassExW          = user32.NewProc("RegisterClassExW")
-	pCreateWindowExW           = user32.NewProc("CreateWindowExW")
-	pDestroyWindow             = user32.NewProc("DestroyWindow")
-	pDefWindowProcW            = user32.NewProc("DefWindowProcW")
-	pGetMessageW               = user32.NewProc("GetMessageW")
-	pTranslateMessage          = user32.NewProc("TranslateMessage")
-	pDispatchMessageW          = user32.NewProc("DispatchMessageW")
-	pPostMessageW              = user32.NewProc("PostMessageW")
-	pPostQuitMessage           = user32.NewProc("PostQuitMessage")
-	pRegisterWindowMessageW    = user32.NewProc("RegisterWindowMessageW")
-	pSetLayeredWindowAttrs     = user32.NewProc("SetLayeredWindowAttributes")
-	pMapWindowPoints           = user32.NewProc("MapWindowPoints")
-	pEnumDisplayMonitors       = user32.NewProc("EnumDisplayMonitors")
-	pGetMonitorInfoW           = user32.NewProc("GetMonitorInfoW")
-	pMonitorFromWindow         = user32.NewProc("MonitorFromWindow")
-	pGetForegroundWindow       = user32.NewProc("GetForegroundWindow")
-	pGetWindowThreadProcessID  = user32.NewProc("GetWindowThreadProcessId")
-	pGetWindowRect             = user32.NewProc("GetWindowRect")
-	pGetClientRect             = user32.NewProc("GetClientRect")
-	pGetClassNameW             = user32.NewProc("GetClassNameW")
-	pIsWindow                  = user32.NewProc("IsWindow")
-	pIsWindowVisible           = user32.NewProc("IsWindowVisible")
-	pIsIconic                  = user32.NewProc("IsIconic")
-	pIsZoomed                  = user32.NewProc("IsZoomed")
-	pGetParent                 = user32.NewProc("GetParent")
-	pShowWindow                = user32.NewProc("ShowWindow")
-	pSetWinEventHook           = user32.NewProc("SetWinEventHook")
-	pSetTimer                  = user32.NewProc("SetTimer")
-	pKillTimer                 = user32.NewProc("KillTimer")
-	pGetSystemMetrics          = user32.NewProc("GetSystemMetrics")
-	pSystemParametersInfoW     = user32.NewProc("SystemParametersInfoW")
-	pRegisterPowerSettingNotif = user32.NewProc("RegisterPowerSettingNotification")
-	pSetProcessDpiAwarenessCtx = user32.NewProc("SetProcessDpiAwarenessContext")
-	pGetDpiForMonitor          = syscall.NewLazyDLL("shcore.dll").NewProc("GetDpiForMonitor")
-	pGetModuleHandleW          = kernel32.NewProc("GetModuleHandleW")
-	pGetSystemPowerStatus      = kernel32.NewProc("GetSystemPowerStatus")
-	pOpenProcess               = kernel32.NewProc("OpenProcess")
-	pQueryFullProcessImageName = kernel32.NewProc("QueryFullProcessImageNameW")
-	pDwmGetWindowAttribute     = dwmapi.NewProc("DwmGetWindowAttribute")
-	pSHQueryUserNotifState     = shell32.NewProc("SHQueryUserNotificationState")
-	pWTSRegisterSessionNotif   = wtsapi32.NewProc("WTSRegisterSessionNotification")
-	pCoInitializeEx            = ole32.NewProc("CoInitializeEx")
-	pCoCreateInstance          = ole32.NewProc("CoCreateInstance")
-	pCoTaskMemFree             = ole32.NewProc("CoTaskMemFree")
+	pFindWindowW                 = user32.NewProc("FindWindowW")
+	pFindWindowExW               = user32.NewProc("FindWindowExW")
+	pSendMessageTimeoutW         = user32.NewProc("SendMessageTimeoutW")
+	pEnumWindows                 = user32.NewProc("EnumWindows")
+	pGetWindowLongPtrW           = user32.NewProc("GetWindowLongPtrW")
+	pSetWindowPos                = user32.NewProc("SetWindowPos")
+	pRegisterClassExW            = user32.NewProc("RegisterClassExW")
+	pCreateWindowExW             = user32.NewProc("CreateWindowExW")
+	pDestroyWindow               = user32.NewProc("DestroyWindow")
+	pDefWindowProcW              = user32.NewProc("DefWindowProcW")
+	pGetMessageW                 = user32.NewProc("GetMessageW")
+	pTranslateMessage            = user32.NewProc("TranslateMessage")
+	pDispatchMessageW            = user32.NewProc("DispatchMessageW")
+	pPostMessageW                = user32.NewProc("PostMessageW")
+	pPostQuitMessage             = user32.NewProc("PostQuitMessage")
+	pRegisterWindowMessageW      = user32.NewProc("RegisterWindowMessageW")
+	pSetLayeredWindowAttrs       = user32.NewProc("SetLayeredWindowAttributes")
+	pMapWindowPoints             = user32.NewProc("MapWindowPoints")
+	pEnumDisplayMonitors         = user32.NewProc("EnumDisplayMonitors")
+	pGetMonitorInfoW             = user32.NewProc("GetMonitorInfoW")
+	pMonitorFromWindow           = user32.NewProc("MonitorFromWindow")
+	pGetForegroundWindow         = user32.NewProc("GetForegroundWindow")
+	pGetWindowThreadProcessID    = user32.NewProc("GetWindowThreadProcessId")
+	pGetWindowRect               = user32.NewProc("GetWindowRect")
+	pGetClientRect               = user32.NewProc("GetClientRect")
+	pGetClassNameW               = user32.NewProc("GetClassNameW")
+	pIsWindow                    = user32.NewProc("IsWindow")
+	pIsWindowVisible             = user32.NewProc("IsWindowVisible")
+	pIsIconic                    = user32.NewProc("IsIconic")
+	pIsZoomed                    = user32.NewProc("IsZoomed")
+	pGetParent                   = user32.NewProc("GetParent")
+	pShowWindow                  = user32.NewProc("ShowWindow")
+	pSetWinEventHook             = user32.NewProc("SetWinEventHook")
+	pUnhookWinEvent              = user32.NewProc("UnhookWinEvent")
+	pSetTimer                    = user32.NewProc("SetTimer")
+	pKillTimer                   = user32.NewProc("KillTimer")
+	pGetSystemMetrics            = user32.NewProc("GetSystemMetrics")
+	pSystemParametersInfoW       = user32.NewProc("SystemParametersInfoW")
+	pRegisterPowerSettingNotif   = user32.NewProc("RegisterPowerSettingNotification")
+	pUnregisterPowerSettingNotif = user32.NewProc("UnregisterPowerSettingNotification")
+	pSetProcessDpiAwarenessCtx   = user32.NewProc("SetProcessDpiAwarenessContext")
+	pGetDpiForMonitor            = syscall.NewLazyDLL("shcore.dll").NewProc("GetDpiForMonitor")
+	pGetModuleHandleW            = kernel32.NewProc("GetModuleHandleW")
+	pGetSystemPowerStatus        = kernel32.NewProc("GetSystemPowerStatus")
+	pOpenProcess                 = kernel32.NewProc("OpenProcess")
+	pQueryFullProcessImageName   = kernel32.NewProc("QueryFullProcessImageNameW")
+	pDwmGetWindowAttribute       = dwmapi.NewProc("DwmGetWindowAttribute")
+	pSHQueryUserNotifState       = shell32.NewProc("SHQueryUserNotificationState")
+	pWTSRegisterSessionNotif     = wtsapi32.NewProc("WTSRegisterSessionNotification")
+	pWTSUnRegisterSessionNotif   = wtsapi32.NewProc("WTSUnRegisterSessionNotification")
+	pCoInitializeEx              = ole32.NewProc("CoInitializeEx")
+	pCoUninitialize              = ole32.NewProc("CoUninitialize")
+	pCoCreateInstance            = ole32.NewProc("CoCreateInstance")
+	pCoTaskMemFree               = ole32.NewProc("CoTaskMemFree")
 )
 
 const (
 	wsChild, wsVisible, wsClipChildren, wsPopup                    = 0x40000000, 0x10000000, 0x02000000, 0x80000000
 	wsExLayered, wsExNoRedirBitmap, wsExToolWindow, wsExNoActivate = 0x00080000, 0x00200000, 0x00000080, 0x08000000
+	wsExTransparent                                                = 0x00000020
 	swpNoSize, swpNoMove, swpNoActivate                            = 0x1, 0x2, 0x10
 	lwaAlpha                                                       = 0x2
 	wmTimer, wmClose                                               = 0x0113, 0x0010
@@ -153,8 +160,40 @@ type msgT struct {
 	_                             uint32
 }
 
-func u16(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
-func up(p *uint16) uintptr { return uintptr(unsafe.Pointer(p)) }
+func mustUTF16Ptr(s string) *uint16 {
+	p, err := syscall.UTF16PtrFromString(s)
+	if err != nil {
+		panic("win: invalid UTF-16 literal: " + err.Error())
+	}
+	return p
+}
+
+var (
+	u16SurfaceClass   = mustUTF16Ptr(surfaceClass)
+	u16MsgClass       = mustUTF16Ptr(msgClass)
+	u16MsgTitle       = mustUTF16Ptr("wpd-msg")
+	u16TaskbarCreated = mustUTF16Ptr("TaskbarCreated")
+	u16Progman        = mustUTF16Ptr("Progman")
+	u16DefView        = mustUTF16Ptr("SHELLDLL_DefView")
+	u16WorkerW        = mustUTF16Ptr("WorkerW")
+	u16CanvasTitle    = mustUTF16Ptr("wallpaperd-canvas")
+	u16WallpaperTitle = mustUTF16Ptr("wallpaperd")
+	dpiOnce           sync.Once
+)
+
+func initDPIAwareness() {
+	dpiOnce.Do(func() {
+		pSetProcessDpiAwarenessCtx.Call(^uintptr(3)) // PER_MONITOR_AWARE_V2
+	})
+}
+
+type comObject struct {
+	vtbl unsafe.Pointer
+}
+
+func comMethod(obj *comObject, idx int) uintptr {
+	return *(*uintptr)(unsafe.Add(obj.vtbl, uintptr(idx)*unsafe.Sizeof(uintptr(0))))
+}
 
 // Options 是宿主参数。
 type Options struct {
@@ -180,21 +219,24 @@ type Host struct {
 	events  chan desktop.Event
 	dropped atomic.Uint64
 
-	calls   chan func()
-	msgWnd  uintptr
-	ready   chan error
-	stopped chan struct{}
+	started      atomic.Bool
+	msgWndHandle atomic.Uintptr
+	calls        chan func()
+	msgWnd       uintptr
+	ready        chan error
+	stopped      chan struct{}
 
 	// 以下只在 UI 线程上读写
 	hInst                     uintptr
 	msgTaskbarCreated         uintptr
 	progman, defView, workerw uintptr
 	raised                    bool
+	pendingShellRestart       string
 	surfaces                  map[uintptr]*surface
 	mons                      []*mon
 	onBattery                 bool
 	saver                     bool
-	wall                      uintptr // IDesktopWallpaper*
+	wall                      *comObject // IDesktopWallpaper*
 	covGrids                  []covGrid
 	pollN, pollSumUs, pollMax int64
 	foreground                desktop.ForegroundTracker
@@ -216,6 +258,8 @@ var (
 
 // New 创建宿主（每个进程只能有一个）。
 func New(o Options) *Host {
+	// Set process DPI awareness early on the caller's thread before any windows are created.
+	initDPIAwareness()
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
@@ -242,6 +286,7 @@ func (h *Host) Start() error {
 		return errors.New("win: host already started")
 	}
 	hostSingleton = h
+	h.started.Store(true)
 	// Host 拥有消息线程；启动失败或 Close 投递退出消息后退出。
 	go h.uiThread()
 	return <-h.ready
@@ -249,13 +294,18 @@ func (h *Host) Start() error {
 
 // call 在 UI 线程上执行 fn 并等待（超时 5 s）。
 func (h *Host) call(fn func()) error {
+	if !h.started.Load() {
+		return errors.New("win: host not started")
+	}
 	done := make(chan struct{})
 	select {
 	case h.calls <- func() { fn(); close(done) }:
 	case <-h.stopped:
 		return errors.New("win: host stopped")
 	}
-	pPostMessageW.Call(h.msgWnd, wmAppCall, 0, 0)
+	if hw := h.msgWndHandle.Load(); hw != 0 {
+		pPostMessageW.Call(hw, wmAppCall, 0, 0)
+	}
 	select {
 	case <-done:
 		return nil
@@ -279,12 +329,17 @@ func (h *Host) Displays() []desktop.Display {
 
 // Close 结束 UI 线程（销毁全部表面）。
 func (h *Host) Close() error {
+	if !h.started.Load() {
+		return nil
+	}
 	select {
 	case <-h.stopped:
 		return nil
 	default:
 	}
-	pPostMessageW.Call(h.msgWnd, wmClose, 0, 0)
+	if hw := h.msgWndHandle.Load(); hw != 0 {
+		pPostMessageW.Call(hw, wmClose, 0, 0)
+	}
 	select {
 	case <-h.stopped:
 	case <-time.After(3 * time.Second):
@@ -294,29 +349,54 @@ func (h *Host) Close() error {
 
 func (h *Host) uiThread() {
 	runtime.LockOSThread()
-	defer close(h.stopped)
+	defer func() {
+		hostSingleton = nil
+		close(h.stopped)
+	}()
 	h.foregroundSupported = pGetForegroundWindow.Find() == nil && pGetWindowThreadProcessID.Find() == nil &&
 		pOpenProcess.Find() == nil && pQueryFullProcessImageName.Find() == nil
-	pSetProcessDpiAwarenessCtx.Call(^uintptr(3)) // PER_MONITOR_AWARE_V2
-	pCoInitializeEx.Call(0, 2 /*COINIT_APARTMENTTHREADED*/)
+	initDPIAwareness()
+	coHR, _, _ := pCoInitializeEx.Call(0, 2 /*COINIT_APARTMENTTHREADED*/)
+	if int32(coHR) >= 0 {
+		defer pCoUninitialize.Call()
+	}
 	h.hInst, _, _ = pGetModuleHandleW.Call(0)
 	if cbWndProc == 0 {
 		cbWndProc = syscall.NewCallback(wndProc)
 	}
-	for _, cn := range []string{surfaceClass, msgClass} {
-		wc := wndClassEx{Size: uint32(unsafe.Sizeof(wndClassEx{})), WndProc: cbWndProc, Instance: h.hInst, ClassName: u16(cn)}
+	for _, cn := range []*uint16{u16SurfaceClass, u16MsgClass} {
+		wc := wndClassEx{Size: uint32(unsafe.Sizeof(wndClassEx{})), WndProc: cbWndProc, Instance: h.hInst, ClassName: cn}
 		pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
+		runtime.KeepAlive(&wc)
 	}
-	h.msgWnd, _, _ = pCreateWindowExW.Call(wsExToolWindow, up(u16(msgClass)), up(u16("wpd-msg")), wsPopup, 0, 0, 0, 0, 0, 0, h.hInst, 0)
+	h.msgWnd, _, _ = pCreateWindowExW.Call(wsExToolWindow, uintptr(unsafe.Pointer(u16MsgClass)), uintptr(unsafe.Pointer(u16MsgTitle)), wsPopup, 0, 0, 0, 0, 0, 0, h.hInst, 0)
 	if h.msgWnd == 0 {
 		h.ready <- errors.New("win: cannot create message window")
 		return
 	}
-	h.msgTaskbarCreated, _, _ = pRegisterWindowMessageW.Call(up(u16("TaskbarCreated")))
-	var wp uintptr
+	h.msgWndHandle.Store(h.msgWnd)
+	defer func() {
+		for hw := range h.surfaces {
+			pDestroyWindow.Call(hw)
+			delete(h.surfaces, hw)
+		}
+		if h.msgWnd != 0 {
+			pDestroyWindow.Call(h.msgWnd)
+			h.msgWnd = 0
+			h.msgWndHandle.Store(0)
+		}
+	}()
+	h.msgTaskbarCreated, _, _ = pRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(u16TaskbarCreated)))
+	var wp *comObject
 	if r, _, _ := pCoCreateInstance.Call(uintptr(unsafe.Pointer(&clsidDesktopWallpaper)), 0, 4 /*CLSCTX_LOCAL_SERVER*/ |1,
-		uintptr(unsafe.Pointer(&iidIDesktopWallpaper)), uintptr(unsafe.Pointer(&wp))); int32(r) >= 0 {
+		uintptr(unsafe.Pointer(&iidIDesktopWallpaper)), uintptr(unsafe.Pointer(&wp))); int32(r) >= 0 && wp != nil {
 		h.wall = wp
+		defer func() {
+			if h.wall != nil {
+				syscall.SyscallN(comMethod(h.wall, 2), uintptr(unsafe.Pointer(h.wall))) // IUnknown::Release
+				h.wall = nil
+			}
+		}()
 	} else {
 		h.log.Info("IDesktopWallpaper unavailable; falling back to SPI_SETDESKWALLPAPER", "hr", fmt.Sprintf("0x%08x", uint32(r)))
 	}
@@ -329,10 +409,22 @@ func (h *Host) uiThread() {
 	// 信号源
 	r1, _, e1 := pWTSRegisterSessionNotif.Call(h.msgWnd, 0)
 	h.log.Info("register wts", "ok", r1 != 0, "err", e1)
+	if r1 != 0 {
+		defer pWTSUnRegisterSessionNotif.Call(h.msgWnd)
+	}
+	var powerHandles []uintptr
 	for name, g := range map[string]*guid{"acdc": &guidACDCPowerSource, "pct": &guidBatteryPercentage, "saver": &guidPowerSavingStatus, "display": &guidConsoleDisplayState} {
 		r, _, e := pRegisterPowerSettingNotif.Call(h.msgWnd, uintptr(unsafe.Pointer(g)), 0)
 		h.log.Info("register power", "setting", name, "ok", r != 0, "err", e)
+		if r != 0 {
+			powerHandles = append(powerHandles, r)
+		}
 	}
+	defer func() {
+		for _, ph := range powerHandles {
+			pUnregisterPowerSettingNotif.Call(ph)
+		}
+	}()
 	if cbHook == 0 {
 		cbHook = syscall.NewCallback(func(_, ev, _, _, _, _, _ uintptr) uintptr {
 			if hs := hostSingleton; hs != nil && (ev == eventSystemForeground || ev == eventSystemMoveSizeEnd || ev == eventSystemMinimizeStart || ev == eventSystemMinimizeEnd) {
@@ -341,9 +433,17 @@ func (h *Host) uiThread() {
 			return 0
 		})
 	}
-	pSetWinEventHook.Call(eventSystemForeground, eventSystemMinimizeEnd, 0, cbHook, 0, 0, 0 /*OUTOFCONTEXT*/)
+	hook, _, _ := pSetWinEventHook.Call(eventSystemForeground, eventSystemMinimizeEnd, 0, cbHook, 0, 0, 0 /*OUTOFCONTEXT*/)
+	if hook != 0 {
+		defer pUnhookWinEvent.Call(hook)
+	}
 	pSetTimer.Call(h.msgWnd, timerPoll, uintptr(h.o.PollEvery.Milliseconds()), 0)
 	pSetTimer.Call(h.msgWnd, timerHealth, 3000, 0)
+	defer func() {
+		pKillTimer.Call(h.msgWnd, timerPoll)
+		pKillTimer.Call(h.msgWnd, timerHealth)
+		pKillTimer.Call(h.msgWnd, timerDisplays)
+	}()
 	h.ready <- nil
 	// 初始状态
 	if r, _, _ := pGetSystemMetrics.Call(smRemoteSession); r != 0 {
@@ -361,13 +461,9 @@ func (h *Host) uiThread() {
 		pTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
 		pDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
 	}
-	for hw := range h.surfaces {
-		pDestroyWindow.Call(hw)
-	}
 	if h.pollN > 0 {
 		h.log.Info("probe cost", "n", h.pollN, "avgUs", h.pollSumUs/h.pollN, "maxUs", h.pollMax)
 	}
-	hostSingleton = nil
 }
 
 type systemPowerStatus struct {
@@ -464,6 +560,7 @@ func (h *Host) refreshMonitors() {
 		}
 	}
 	sortMons(mons)
+	preserveMonSignals(h.mons, mons)
 	h.mons = mons
 	ds := make([]desktop.Display, len(mons))
 	for i, m := range mons {
@@ -474,31 +571,38 @@ func (h *Host) refreshMonitors() {
 	h.mu.Unlock()
 }
 
-func vcall(obj uintptr, idx int, args ...uintptr) uint32 {
-	vt := *(*uintptr)(unsafe.Pointer(obj))
-	fn := *(*uintptr)(unsafe.Pointer(vt + uintptr(idx)*unsafe.Sizeof(uintptr(0))))
-	r, _, _ := syscall.SyscallN(fn, append([]uintptr{obj}, args...)...)
-	return uint32(r)
+// preserveMonSignals retains last fullscreen/covered signal state across
+// monitor refreshes so geometry or display changes do not drop false transitions.
+func preserveMonSignals(previous, current []*mon) {
+	byID := make(map[desktop.DisplayID]*mon, len(previous))
+	for _, m := range previous {
+		byID[m.d.ID] = m
+	}
+	for _, m := range current {
+		if old := byID[m.d.ID]; old != nil {
+			m.lastFS, m.lastCov = old.lastFS, old.lastCov
+		}
+	}
 }
 
 // IDesktopWallpaper vtable：3 SetWallpaper，5 GetMonitorDevicePathAt，6 GetMonitorDevicePathCount，7 GetMonitorRECT。
 func (h *Host) wallpaperMonitorPaths() map[rect]string {
 	out := map[rect]string{}
-	if h.wall == 0 {
+	if h.wall == nil {
 		return out
 	}
 	var n uint32
-	if int32(vcall(h.wall, 6, uintptr(unsafe.Pointer(&n)))) < 0 {
+	if hr, _, _ := syscall.SyscallN(comMethod(h.wall, 6), uintptr(unsafe.Pointer(h.wall)), uintptr(unsafe.Pointer(&n))); int32(hr) < 0 {
 		return out
 	}
 	for i := uint32(0); i < n; i++ {
 		var p *uint16
-		if int32(vcall(h.wall, 5, uintptr(i), uintptr(unsafe.Pointer(&p)))) < 0 || p == nil {
+		if hr, _, _ := syscall.SyscallN(comMethod(h.wall, 5), uintptr(unsafe.Pointer(h.wall)), uintptr(i), uintptr(unsafe.Pointer(&p))); int32(hr) < 0 || p == nil {
 			continue
 		}
 		s := utf16PtrToString(p)
 		var r rect
-		if int32(vcall(h.wall, 7, uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&r)))) >= 0 {
+		if hr, _, _ := syscall.SyscallN(comMethod(h.wall, 7), uintptr(unsafe.Pointer(h.wall)), uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&r))); int32(hr) >= 0 {
 			out[r] = s
 		}
 		pCoTaskMemFree.Call(uintptr(unsafe.Pointer(p)))
@@ -523,25 +627,37 @@ func utf16PtrToString(p *uint16) string {
 
 // SetSystemWallpaper 按显示器设置系统壁纸（首帧截图兜底，2.5）。
 func (h *Host) SetSystemWallpaper(id desktop.DisplayID, path string) error {
-	var err error
+	pathPtr, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return fmt.Errorf("win: invalid wallpaper path: %w", err)
+	}
 	cerr := h.call(func() {
-		if h.wall != 0 {
+		if h.wall != nil {
 			paths := h.wallpaperMonitorPaths()
 			for _, m := range h.mons {
 				if m.d.ID != id {
 					continue
 				}
 				if p, ok := paths[m.r]; ok {
-					if hr := vcall(h.wall, 3, up(u16(p)), up(u16(path))); int32(hr) >= 0 {
-						return
-					} else {
-						err = fmt.Errorf("IDesktopWallpaper::SetWallpaper hr=0x%08x", hr)
+					pPtr, pErr := syscall.UTF16PtrFromString(p)
+					if pErr != nil {
+						err = fmt.Errorf("win: invalid monitor device path: %w", pErr)
+						continue
 					}
+					hr, _, _ := syscall.SyscallN(comMethod(h.wall, 3), uintptr(unsafe.Pointer(h.wall)), uintptr(unsafe.Pointer(pPtr)), uintptr(unsafe.Pointer(pathPtr)))
+					runtime.KeepAlive(pPtr)
+					runtime.KeepAlive(pathPtr)
+					if int32(hr) >= 0 {
+						return
+					}
+					err = fmt.Errorf("IDesktopWallpaper::SetWallpaper hr=0x%08x", uint32(hr))
 				}
 			}
 		}
 		// 回退：所有显示器同一张（SPIF_UPDATEINIFILE|SPIF_SENDCHANGE）
-		if r, _, e := pSystemParametersInfoW.Call(0x0014, 0, up(u16(path)), 3); r == 0 {
+		r, _, e := pSystemParametersInfoW.Call(0x0014, 0, uintptr(unsafe.Pointer(pathPtr)), 3)
+		runtime.KeepAlive(pathPtr)
+		if r == 0 {
 			err = fmt.Errorf("SPI_SETDESKWALLPAPER: %v", e)
 		} else {
 			err = nil
@@ -556,7 +672,7 @@ func (h *Host) SetSystemWallpaper(id desktop.DisplayID, path string) error {
 // ---- 桌面层级（参照 Lively WinDesktopCore.cs）----
 
 func (h *Host) findDesktop() error {
-	h.progman, _, _ = pFindWindowW.Call(up(u16("Progman")), 0)
+	h.progman, _, _ = pFindWindowW.Call(uintptr(unsafe.Pointer(u16Progman)), 0)
 	if h.progman == 0 {
 		return errors.New("Progman not found")
 	}
@@ -566,15 +682,15 @@ func (h *Host) findDesktop() error {
 	h.raised = ex&wsExNoRedirBitmap != 0
 	h.workerw, h.defView = 0, 0
 	if h.raised { // 24H2+：DefView 和 WorkerW 都是 Progman 的子窗口
-		h.defView, _, _ = pFindWindowExW.Call(h.progman, 0, up(u16("SHELLDLL_DefView")), 0)
-		h.workerw, _, _ = pFindWindowExW.Call(h.progman, 0, up(u16("WorkerW")), 0)
+		h.defView, _, _ = pFindWindowExW.Call(h.progman, 0, uintptr(unsafe.Pointer(u16DefView)), 0)
+		h.workerw, _, _ = pFindWindowExW.Call(h.progman, 0, uintptr(unsafe.Pointer(u16WorkerW)), 0)
 	} else {
 		if cbFind == 0 {
 			cbFind = syscall.NewCallback(func(top, _ uintptr) uintptr {
 				hs := hostSingleton
-				if p, _, _ := pFindWindowExW.Call(top, 0, up(u16("SHELLDLL_DefView")), 0); p != 0 && hs != nil {
+				if p, _, _ := pFindWindowExW.Call(top, 0, uintptr(unsafe.Pointer(u16DefView)), 0); p != 0 && hs != nil {
 					hs.defView = p
-					hs.workerw, _, _ = pFindWindowExW.Call(0, top, up(u16("WorkerW")), 0)
+					hs.workerw, _, _ = pFindWindowExW.Call(0, top, uintptr(unsafe.Pointer(u16WorkerW)), 0)
 				}
 				return 1
 			})
@@ -583,6 +699,9 @@ func (h *Host) findDesktop() error {
 	}
 	h.log.Info("desktop", "progman", fmt.Sprintf("0x%x", h.progman), "raised24H2", h.raised,
 		"defView", fmt.Sprintf("0x%x", h.defView), "workerw", fmt.Sprintf("0x%x", h.workerw))
+	if h.raised && h.defView == 0 {
+		return errors.New("SHELLDLL_DefView not found")
+	}
 	if h.workerw == 0 {
 		return errors.New("WorkerW not found")
 	}
@@ -706,7 +825,7 @@ func (h *Host) createCanvasSurface(id desktop.DisplayID, canvas image.Rectangle)
 	if err != nil {
 		return nil, err
 	}
-	hw, _, callErr := pCreateWindowExW.Call(wsExNoActivate, up(u16(surfaceClass)), up(u16("wallpaperd-canvas")),
+	hw, _, callErr := pCreateWindowExW.Call(wsExNoActivate, uintptr(unsafe.Pointer(u16SurfaceClass)), uintptr(unsafe.Pointer(u16CanvasTitle)),
 		wsChild|wsVisible|wsClipChildren, uintptr(int32(math.Round(x))), uintptr(int32(math.Round(y))),
 		uintptr(int32(math.Round(w))), uintptr(int32(math.Round(ht))), s.hwnd, 0, h.hInst, 0)
 	if hw == 0 {
@@ -732,19 +851,33 @@ func (h *Host) createSurface(id desktop.DisplayID) (*surface, error) {
 		if w > 1280 {
 			w, ht = 1280, 720
 		}
-		hw, _, err := pCreateWindowExW.Call(0, up(u16(surfaceClass)), up(u16("wallpaperd-standalone-"+m.d.Device)),
+		titlePtr, err := syscall.UTF16PtrFromString("wallpaperd-standalone-" + m.d.Device)
+		if err != nil {
+			titlePtr = u16WallpaperTitle
+		}
+		hw, _, callErr := pCreateWindowExW.Call(0, uintptr(unsafe.Pointer(u16SurfaceClass)), uintptr(unsafe.Pointer(titlePtr)),
 			wsVisible|0x00C00000 /*WS_CAPTION*/, uintptr(m.r.L), uintptr(m.r.T), uintptr(w), uintptr(ht), 0, 0, h.hInst, 0)
+		runtime.KeepAlive(titlePtr)
 		if hw == 0 {
-			return nil, fmt.Errorf("CreateWindowEx(standalone): %v", err)
+			return nil, fmt.Errorf("CreateWindowEx(standalone): %v", callErr)
 		}
 		s := &surface{h: h, hwnd: hw, b: image.Rect(int(m.r.L), int(m.r.T), int(m.r.L+w), int(m.r.T+ht))}
 		h.surfaces[hw] = s
 		return s, nil
 	}
-	if ok, _, _ := pIsWindow.Call(h.parent()); h.parent() == 0 || ok == 0 {
+	parentOK, _, _ := pIsWindow.Call(h.parent())
+	defViewMissing := false
+	if h.raised {
+		dvOK, _, _ := pIsWindow.Call(h.defView)
+		defViewMissing = h.defView == 0 || dvOK == 0
+	}
+	if h.parent() == 0 || parentOK == 0 || defViewMissing {
 		if err := h.findDesktop(); err != nil {
 			return nil, err
 		}
+	}
+	if h.raised && h.defView == 0 {
+		return nil, errors.New("win: SHELLDLL_DefView not found")
 	}
 	parent := h.parent()
 	r := m.r
@@ -753,15 +886,18 @@ func (h *Host) createSurface(id desktop.DisplayID) (*surface, error) {
 	if h.raised {
 		ex |= wsExLayered
 	}
-	hw, _, err := pCreateWindowExW.Call(ex, up(u16(surfaceClass)), up(u16("wallpaperd")),
+	hw, _, err := pCreateWindowExW.Call(ex, uintptr(unsafe.Pointer(u16SurfaceClass)), uintptr(unsafe.Pointer(u16WallpaperTitle)),
 		wsChild|wsVisible|wsClipChildren, uintptr(r.L), uintptr(r.T), uintptr(r.R-r.L), uintptr(r.B-r.T), parent, 0, h.hInst, 0)
 	if hw == 0 {
 		return nil, fmt.Errorf("CreateWindowEx: %v", err)
 	}
 	if h.raised {
 		pSetLayeredWindowAttrs.Call(hw, 0, 255, lwaAlpha)
+		// Never call SetWindowPos(hw, 0, ...), because 0 == HWND_TOP would cover desktop icons.
 		pSetWindowPos.Call(hw, h.defView, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate)
-		pSetWindowPos.Call(h.workerw, 1 /*HWND_BOTTOM*/, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate)
+		if h.workerw != 0 {
+			pSetWindowPos.Call(h.workerw, 1 /*HWND_BOTTOM*/, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate)
+		}
 	}
 	s := &surface{h: h, hwnd: hw, b: m.d.Bounds}
 	h.surfaces[hw] = s
@@ -781,6 +917,12 @@ func (h *Host) Health() error {
 func (h *Host) health() error {
 	if h.o.Standalone {
 		return nil
+	}
+	if h.raised {
+		dvOK, _, _ := pIsWindow.Call(h.defView)
+		if h.defView == 0 || dvOK == 0 {
+			return fmt.Errorf("%w: defView=0x%x invalid", desktop.ErrDetached, h.defView)
+		}
 	}
 	want := h.parent()
 	for hw, s := range h.surfaces {
@@ -867,6 +1009,17 @@ type covGrid struct {
 	hit        bool
 }
 
+func shouldIgnoreCoverageWindow(ex uintptr, class string, isCloaked bool) bool {
+	if ex&wsExToolWindow != 0 {
+		return true
+	}
+	// Click-through layered overlays (eye-care tint, HUDs) do not visually occlude the desktop.
+	if ex&(wsExLayered|wsExTransparent) == (wsExLayered | wsExTransparent) {
+		return true
+	}
+	return shellClasses[class] || isCloaked
+}
+
 // 遮挡判定（07 章 7.4，Lively 算法）：50 px 网格，未覆盖 tile ≤ 5%；或该屏上有最大化窗口；或单个窗口覆盖 ≥ 95%。
 // EnumWindows 回调只建一次（NewCallback 不释放且总数有上限，第 19 轮修复的泄漏）。
 func (h *Host) coverage() []bool {
@@ -890,7 +1043,7 @@ func (h *Host) coverage() []bool {
 				return 1
 			}
 			ex, _, _ := pGetWindowLongPtrW.Call(hw, gwlExStyle)
-			if ex&wsExToolWindow != 0 || shellClasses[className(hw)] || cloaked(hw) {
+			if shouldIgnoreCoverageWindow(ex, className(hw), cloaked(hw)) {
 				return 1
 			}
 			var r rect
@@ -964,7 +1117,13 @@ func (h *Host) onPower(w, l uintptr) {
 	case pbtAPMResumeAutomatic:
 		h.global(visibility.Suspend, false, "pbt")
 	case pbtPowerSettingChange:
-		ps := (*powerBroadcastSetting)(unsafe.Pointer(l))
+		if l == 0 {
+			return
+		}
+		ps := *(**powerBroadcastSetting)(unsafe.Pointer(&l))
+		if ps == nil || ps.DataLength < 4 {
+			return
+		}
 		switch ps.Guid {
 		case guidACDCPowerSource:
 			h.onBattery = ps.Data != 0 // 0=交流，1=电池，2=短时 UPS
@@ -988,6 +1147,26 @@ func (h *Host) pollScreensaver() {
 	}
 }
 
+func (h *Host) commitShellRestart(source string, destroy func(uintptr)) bool {
+	if !h.emit(desktop.Event{Kind: desktop.EventShellRestarted, Source: source}) {
+		h.pendingShellRestart = source
+		return false
+	}
+	h.pendingShellRestart = ""
+	for s := range h.surfaces {
+		if destroy != nil {
+			destroy(s)
+		}
+		delete(h.surfaces, s)
+	}
+	h.progman, h.workerw, h.defView = 0, 0, 0
+	return true
+}
+
+func destroyNativeWindow(hw uintptr) {
+	pDestroyWindow.Call(hw)
+}
+
 func wndProc(hw, m, w, l uintptr) uintptr {
 	h := hostSingleton
 	if h == nil || hw != h.msgWnd {
@@ -1008,26 +1187,21 @@ func wndProc(hw, m, w, l uintptr) uintptr {
 		return 0
 	case m == h.msgTaskbarCreated && h.msgTaskbarCreated != 0:
 		h.log.Info("TaskbarCreated (Explorer restarted)")
-		for s := range h.surfaces {
-			pDestroyWindow.Call(s)
-			delete(h.surfaces, s)
-		}
-		h.progman, h.workerw, h.defView = 0, 0, 0
-		h.emit(desktop.Event{Kind: desktop.EventShellRestarted, Source: "TaskbarCreated"})
+		h.commitShellRestart("TaskbarCreated", destroyNativeWindow)
 		return 0
 	case m == wmTimer && w == timerPoll:
 		h.evalVisibility()
 		h.pollScreensaver()
 		return 0
 	case m == wmTimer && w == timerHealth:
+		if h.pendingShellRestart != "" {
+			h.commitShellRestart(h.pendingShellRestart, destroyNativeWindow)
+			return 0
+		}
 		if len(h.surfaces) > 0 {
 			if err := h.health(); err != nil {
 				h.log.Warn("health", "err", err)
-				for s := range h.surfaces {
-					pDestroyWindow.Call(s)
-					delete(h.surfaces, s)
-				}
-				h.emit(desktop.Event{Kind: desktop.EventShellRestarted, Source: "health"})
+				h.commitShellRestart("health", destroyNativeWindow)
 			}
 		}
 		return 0

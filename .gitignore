@@ -11,6 +11,8 @@ docs/design/prototype/bin/
 *.zip
 *.key
 .update/
+.claude/settings.local.json
+.claude/worktrees/
 
 __pycache__/
 *.pyc

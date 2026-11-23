@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/egoist/mygo"
@@ -11,20 +13,65 @@ import (
 
 type trayController struct {
 	Controller
-	v            app.View
-	optionsCalls int
-	nextCalls    int
-	assignedID   string
-	assignCalls  int
+	mu             sync.Mutex
+	v              app.View
+	optionsCalls   int
+	nextCalls      int
+	assignedID     string
+	assignCalls    int
+	networkAnswers []bool
+	signalAnswers  []bool
 }
 
-func (c *trayController) View() app.View                       { return c.v }
-func (c *trayController) SetPausedAll(v bool)                  { c.v.PausedAll = v }
-func (c *trayController) ExitSafeMode()                        { c.v.SafeMode = false }
-func (c *trayController) AssignAll(id string)                  { c.assignedID = id; c.assignCalls++ }
-func (c *trayController) Next()                                { c.nextCalls++ }
-func (c *trayController) UpdateConfig(fn func(*config.Config)) { fn(&c.v.Config) }
+func (c *trayController) View() app.View {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v := c.v
+	v.Displays = append([]app.DisplayView(nil), c.v.Displays...)
+	v.Library = append([]config.Item(nil), c.v.Library...)
+	return v
+}
+func (c *trayController) SetPausedAll(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.v.PausedAll = v
+}
+func (c *trayController) ExitSafeMode() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.v.SafeMode = false
+}
+func (c *trayController) AssignAll(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.assignedID = id
+	c.assignCalls++
+}
+func (c *trayController) Next() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nextCalls++
+}
+func (c *trayController) UpdateConfig(fn func(*config.Config)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fn(&c.v.Config)
+}
+func (c *trayController) ResolveNetworkConsent(allow bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.networkAnswers = append(c.networkAnswers, allow)
+	c.v.NetworkConsent = nil
+}
+func (c *trayController) ResolveSignalConsent(allow bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.signalAnswers = append(c.signalAnswers, allow)
+	c.v.SignalConsent = nil
+}
 func (c *trayController) SetDisplayOptions(id string, options config.DisplayOptions) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.optionsCalls++
 	for i := range c.v.Displays {
 		if c.v.Displays[i].ID == id {
@@ -279,5 +326,152 @@ func TestTrayChangedIgnoresMetrics(t *testing.T) {
 	sh.Changed() // No native tray or main loop is needed for unrelated changes.
 	if !sh.lastMenu.equal(trayState(c.v)) {
 		t.Fatal("menu state changed")
+	}
+}
+
+func TestShellChangedOpensWindowForNetworkAndSignalConsent(t *testing.T) {
+	for _, kind := range []string{"network", "signal"} {
+		t.Run(kind, func(t *testing.T) {
+			sh, c := trayFixture()
+			var mainCalls, openCalls int
+			sh.runOnMain = func(fn func()) { mainCalls++; fn() }
+			sh.openWin = func() { openCalls++ }
+			if kind == "network" {
+				c.v.NetworkConsent = &app.NetworkConsent{Title: "Web", Hosts: []string{"example.com"}}
+			} else {
+				c.v.SignalConsent = &app.SignalConsent{Title: "Audio", Permission: "audio"}
+			}
+			sh.Changed()
+			if mainCalls != 1 || openCalls != 1 {
+				t.Fatalf("mainCalls=%d openCalls=%d, want 1, 1", mainCalls, openCalls)
+			}
+		})
+	}
+}
+
+func TestShellWindowCloseDeniesPendingConsents(t *testing.T) {
+	sh, c := trayFixture()
+	w := &mygo.Window{}
+	sh.win = w
+	c.v.NetworkConsent = &app.NetworkConsent{Title: "Web"}
+	c.v.SignalConsent = &app.SignalConsent{Title: "Input", Permission: "input"}
+
+	sh.onWindowClosed(w)
+
+	if sh.win != nil {
+		t.Fatal("closed window reference was not cleared")
+	}
+	if len(c.networkAnswers) != 1 || c.networkAnswers[0] {
+		t.Fatalf("networkAnswers = %v, want [false]", c.networkAnswers)
+	}
+	if len(c.signalAnswers) != 1 || c.signalAnswers[0] {
+		t.Fatalf("signalAnswers = %v, want [false]", c.signalAnswers)
+	}
+
+	// Closing again with no pending consents must not send extra resolutions.
+	sh.onWindowClosed(w)
+	if len(c.networkAnswers) != 1 || len(c.signalAnswers) != 1 {
+		t.Fatalf("unexpected extra consent resolutions: net=%v sig=%v", c.networkAnswers, c.signalAnswers)
+	}
+}
+
+func TestShellChangedSerializesTrayUpdatesOnMain(t *testing.T) {
+	sh, c := trayFixture()
+	sh.tray = &mygo.Tray{}
+	sh.updateTrayState(c.View())
+
+	// Simulated single-threaded main loop with explicit gating (no fixed sleeps).
+	mainCh := make(chan func(), 32)
+	posted := make(chan struct{}, 32)
+	gate := make(chan struct{})
+	doneMain := make(chan struct{})
+	var onMainThread atomic.Bool
+	go func() {
+		defer close(doneMain)
+		<-gate
+		for fn := range mainCh {
+			onMainThread.Store(true)
+			fn()
+			onMainThread.Store(false)
+		}
+	}()
+	sh.runOnMain = func(fn func()) {
+		done := make(chan struct{})
+		mainCh <- func() {
+			defer close(done)
+			fn()
+		}
+		posted <- struct{}{}
+		<-done
+	}
+
+	var applied []app.View
+	sh.applyTray = func(_ *mygo.Tray, rebuild, tipChanged bool, v app.View) {
+		if !onMainThread.Load() {
+			t.Error("applyTray ran off the main thread")
+		}
+		if rebuild || tipChanged {
+			applied = append(applied, v)
+		}
+	}
+
+	// Trigger state transition S0 -> S1 while main is blocked; lastMenu must NOT
+	// be updated before the main thread runs.
+	c.SetPausedAll(true)
+	g1Done := make(chan struct{})
+	go func() {
+		defer close(g1Done)
+		sh.Changed()
+	}()
+	<-posted
+	sh.mu.Lock()
+	premature := sh.lastMenu.PausedAll
+	sh.mu.Unlock()
+	if premature {
+		t.Fatal("lastMenu was mutated before main thread executed")
+	}
+
+	// Concurrently transition S1 -> S2 (different profile and unpaused) before main runs.
+	c.SetPausedAll(false)
+	c.UpdateConfig(func(cfg *config.Config) { cfg.Perf.Profile = "saver" })
+	g2Done := make(chan struct{})
+	go func() {
+		defer close(g2Done)
+		sh.Changed()
+	}()
+
+	close(gate)
+	<-g1Done
+	<-g2Done
+
+	// Burst concurrent notifications from multiple goroutines under -race.
+	var wg sync.WaitGroup
+	profiles := []string{"smooth", "balanced", "saver"}
+	for i := 0; i < 12; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.UpdateConfig(func(cfg *config.Config) { cfg.Perf.Profile = profiles[i%len(profiles)] })
+			sh.Changed()
+		}()
+	}
+	wg.Wait()
+	c.UpdateConfig(func(cfg *config.Config) { cfg.Perf.Profile = "smooth" })
+	c.SetPausedAll(true)
+	sh.Changed()
+
+	close(mainCh)
+	<-doneMain
+
+	if len(applied) == 0 {
+		t.Fatal("expected at least one tray update on main")
+	}
+	last := applied[len(applied)-1]
+	if last.Config.Perf.Profile != "smooth" || !last.PausedAll {
+		t.Fatalf("final applied tray state = (profile=%q, paused=%v), want (smooth, true)", last.Config.Perf.Profile, last.PausedAll)
+	}
+	if !sh.lastMenu.equal(trayState(c.View())) {
+		t.Fatal("shell lastMenu diverged from final controller state")
 	}
 }

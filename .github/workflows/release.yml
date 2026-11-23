@@ -38,8 +38,34 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.resolve.outputs.commit }}
-  build:
+  preflight:
+    # GitHub's GET /repos/{repo}/releases omits draft releases unless contents: write
+    # is granted. Isolate that visibility check here so the macOS build/signing job
+    # never needs contents: write and still never rebuilds over a partial draft.
     needs: [resolve, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      restored: ${{ steps.check.outputs.restored }}
+      needs_build: ${{ steps.check.outputs.needs_build }}
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+      - name: Check existing artifacts and draft/published releases
+        id: check
+        run: python3 scripts/restore-release.py --check
+  build:
+    needs: [resolve, verify, preflight]
+    if: needs.preflight.outputs.needs_build == 'true'
     runs-on: macos-latest
     timeout-minutes: 60
     permissions:
@@ -109,7 +135,8 @@ jobs:
           if-no-files-found: error
           retention-days: 90
   publish:
-    needs: [resolve, build]
+    needs: [resolve, preflight, build]
+    if: always() && needs.resolve.result == 'success' && needs.preflight.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write

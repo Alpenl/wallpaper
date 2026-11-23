@@ -95,8 +95,8 @@ func (a *App) ClearCache() {
 		if a.ctx.Err() != nil {
 			return
 		}
-		if a.cleaning || a.importing {
-			a.lastErr = "请等待导入或清理完成后再清理缓存"
+		if a.cleaning || a.importing || a.transcodingID != "" || len(a.removing) > 0 {
+			a.lastErr = "请等待导入、转码或清理完成后再清理缓存"
 			return
 		}
 		if err := a.cleanRenditions(); err != nil {
@@ -145,6 +145,7 @@ func (a *App) ClearCache() {
 				} else {
 					a.lastImp = fmt.Sprintf("已清理 %d 项无引用缓存；保留正在使用的壁纸预览", removed)
 				}
+				a.refreshRenditionCache()
 				a.refreshStorage()
 			})
 		}()

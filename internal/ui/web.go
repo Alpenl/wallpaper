@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -96,12 +97,29 @@ func (s *Settings) webProps(c *ui.Context, v app.View, it config.Item) {
 						set(p.Key, x)
 					}
 				case "slider":
+					minV, maxV := 0.0, 1.0
+					if p.Min != nil && !math.IsNaN(*p.Min) && !math.IsInf(*p.Min, 0) {
+						minV = *p.Min
+					}
+					if p.Max != nil && !math.IsNaN(*p.Max) && !math.IsInf(*p.Max, 0) {
+						maxV = *p.Max
+					} else if p.Min != nil && maxV <= minV {
+						maxV = minV + 1
+					}
+					if maxV <= minV {
+						ui.Text(c, fmt.Sprintf("%g", values[p.Key])).FontSize(12).TextColor(c.Theme().TextMuted)
+						break
+					}
 					x, _ := values[p.Key].(float64)
-					if ui.Slider(c.Key(p.Key), &x, *p.Min, *p.Max).Label(label).Width(130).Changed() {
-						if p.Step != nil {
-							x = *p.Min + math.Round((x-*p.Min) / *p.Step)**p.Step
+					if math.IsNaN(x) || math.IsInf(x, 0) {
+						x = minV
+					}
+					x = max(minV, min(maxV, x))
+					if ui.Slider(c.Key(p.Key), &x, minV, maxV).Label(label).Width(130).Changed() {
+						if p.Step != nil && *p.Step > 0 && !math.IsNaN(*p.Step) && !math.IsInf(*p.Step, 0) {
+							x = minV + math.Round((x-minV) / *p.Step)**p.Step
 						}
-						set(p.Key, max(*p.Min, min(*p.Max, x)))
+						set(p.Key, max(minV, min(maxV, x)))
 					}
 				case "select":
 					opts := p.OptionValues()
@@ -118,8 +136,7 @@ func (s *Settings) webProps(c *ui.Context, v app.View, it config.Item) {
 						if n := named.Label.Pick(v.Config.UI.Lang); n != "" {
 							labels[j] = n
 						}
-						b, _ := json.Marshal(values[p.Key])
-						if string(b) == string(o) {
+						if jsonValuesEqual(values[p.Key], o) {
 							selected = labels[j]
 						}
 					}
@@ -157,4 +174,21 @@ func (s *Settings) webProps(c *ui.Context, v app.View, it config.Item) {
 			})
 		}
 	})
+}
+
+// jsonValuesEqual compares a decoded property value against a raw JSON option
+// value using normalized JSON decoding so e.g. 1.0 equals 1.
+func jsonValuesEqual(val any, raw json.RawMessage) bool {
+	b, err := json.Marshal(val)
+	if err != nil {
+		return false
+	}
+	var left, right any
+	if err := json.Unmarshal(b, &left); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(raw, &right); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
 }

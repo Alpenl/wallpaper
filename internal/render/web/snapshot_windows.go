@@ -22,7 +22,7 @@ func (w *winView) capture() error {
 	defer release(stream)
 	done := false
 	var result error
-	callback := handler(func(hrCode, _ uintptr) uintptr { result = hr(hrCode); done = true; return 0 })
+	callback := handler(iidCapturePreviewCompleted, func(hrCode, _ uintptr) uintptr { result = hr(hrCode); done = true; return 0 })
 	defer release(callback)
 	if e := hr(com(w.wv, 30, 0, stream, callback)); e != nil {
 		return e
@@ -47,7 +47,7 @@ func (w *winView) capture() error {
 	if mem == 0 {
 		return fmt.Errorf("web: snapshot lock failed")
 	}
-	raw := append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(mem)), int(size))...)
+	raw := append([]byte(nil), unsafe.Slice((*byte)(rawPtr(mem)), int(size))...)
 	kernel.NewProc("GlobalUnlock").Call(global)
 	frame, e := png.Decode(bytes.NewReader(raw))
 	if e != nil {
@@ -72,7 +72,7 @@ func (w *winView) capture() error {
 	if bitmap == 0 || bits == 0 {
 		return fmt.Errorf("web: snapshot bitmap failed")
 	}
-	pixels := unsafe.Slice((*byte)(unsafe.Pointer(bits)), width*height*4)
+	pixels := unsafe.Slice((*byte)(rawPtr(bits)), width*height*4)
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			r, g, b, a := frame.At(x+b.Min.X, y+b.Min.Y).RGBA()

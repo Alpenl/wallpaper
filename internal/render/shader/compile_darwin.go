@@ -35,6 +35,12 @@ func metalDevice() (objc.ID, error) {
 	}
 	return d, nil
 }
+
+// rawPtr reinterprets a native (non-Go) address as unsafe.Pointer for ObjC/Metal FFI.
+func rawPtr(addr uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&addr))
+}
+
 func compileMetal(device objc.ID, source string) (objc.ID, error) {
 	var failure objc.ID
 	lib := device.Send(sel("newLibraryWithSource:options:error:"), ns(source), objc.ID(0), unsafe.Pointer(&failure))
@@ -44,7 +50,7 @@ func compileMetal(device objc.ID, source string) (objc.ID, error) {
 			str := failure.Send(sel("localizedDescription"))
 			ptr := str.Send(sel("UTF8String"))
 			if ptr != 0 {
-				b := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), 16384)
+				b := unsafe.Slice((*byte)(rawPtr(uintptr(ptr))), 16384)
 				for i, c := range b {
 					if c == 0 {
 						message = string(b[:i])

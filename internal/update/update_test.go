@@ -88,6 +88,8 @@ func TestIncrementalUpdateBootRollback(t *testing.T) {
 	if read(t, inst, "wallpaperd") != "v2-binary!" || read(t, inst, "new.dat") != "added" || read(t, inst, "old.txt") != "<missing>" {
 		t.Fatal("替换结果不对")
 	}
+	// Simulate restart into the updated version.
+	c.Current = "0.2.0"
 	if v, ok := c.CanRollback(); !ok || v != "0.1.0-mvp" {
 		t.Fatal("应可回滚")
 	}
@@ -123,7 +125,14 @@ func TestMarkGoodAndManualRollback(t *testing.T) {
 	if _, err := c.Apply(context.Background(), m, nil); err != nil {
 		t.Fatal(err)
 	}
-	c.MarkGood()
+	// Simulate restart into 0.2.0, boot once, then confirm stable.
+	c.Current = "0.2.0"
+	if rb, err := c.Boot(); rb || err != nil {
+		t.Fatal("首次启动新版本不应回滚", rb, err)
+	}
+	if err := c.MarkGood(); err != nil {
+		t.Fatal("确认稳定失败", err)
+	}
 	for i := 0; i < 5; i++ {
 		if rb, _ := c.Boot(); rb {
 			t.Fatal("确认后不应自动回滚")
@@ -136,7 +145,6 @@ func TestMarkGoodAndManualRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 已是最新
-	c.Current = "0.2.0"
 	if _, err := c.Check(context.Background()); err != ErrNoUpdate {
 		t.Fatal(err)
 	}

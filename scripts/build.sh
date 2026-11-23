@@ -16,5 +16,5 @@ for t in $TARGETS; do
   echo "build $os/$arch"
   GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "$ld" -o "$out/$bin" ./cmd/wallpaperd
 done
-( cd dist && find . -type f \( -name wallpaperd -o -name wallpaperd.exe -o -name '*-setup.exe' -o -name '*.app.zip' \) -not -path './*/mpv/*' -not -path './macos-*' | sort | xargs sha256sum > SHA256SUMS )
+( cd dist && find . -type f \( -name wallpaperd -o -name wallpaperd.exe -o -name '*-setup.exe' -o -name '*.app.zip' \) -not -path './*/mpv/*' -not -path './macos-*' -not -path './windows-packaged-*' | sort | xargs sha256sum > SHA256SUMS )
 cat dist/SHA256SUMS

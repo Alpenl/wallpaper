@@ -19,30 +19,61 @@ class SummaryError(Exception):
     pass
 
 
-def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], capture_output=True, check=check)
+def git(*args: str, check: bool = True, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=check)
 
 
-def blob(revision: str) -> str:
+def repo_root() -> Path:
+    out = git("rev-parse", "--show-toplevel").stdout.decode("utf-8").strip()
+    return Path(out)
+
+
+def blob(revision: str, cwd: Path | None = None) -> str:
     # 只读取 Git 对象，不读取可能尚未暂存的工作区文件。
-    result = git("show", f"{revision}:{SUMMARY}", check=False)
+    result = git("show", f"{revision}:{SUMMARY}", check=False, cwd=cwd)
     if result.returncode:
         # 文件不存在合法；其他 Git 故障不能伪装成空历史。
-        tree = git("ls-tree", "--name-only", revision, "--", SUMMARY)
+        tree = git("ls-tree", "--name-only", revision, "--", SUMMARY, cwd=cwd)
         if tree.stdout.strip():
             raise SummaryError(f"Cannot read {revision}:{SUMMARY}")
         return ""
     return result.stdout.decode("utf-8").replace("\r\n", "\n")
 
 
+def strip_fenced_code(text: str) -> str:
+    """Mask fenced code blocks with spaces while preserving exact offsets."""
+    out: list[str] = []
+    fence_char = ""
+    fence_len = 0
+    for raw in text.splitlines(keepends=True):
+        body = raw.rstrip("\r\n")
+        ending = raw[len(body):]
+        if not fence_char:
+            open_match = re.match(r"^\s{0,3}(`{3,}|~{3,})(.*)$", body)
+            if open_match and not (open_match.group(1)[0] == "`" and "`" in open_match.group(2)):
+                fence_char = open_match.group(1)[0]
+                fence_len = len(open_match.group(1))
+                out.append(" " * len(body) + ending)
+            else:
+                out.append(raw)
+        else:
+            close_match = re.match(rf"^\s{{0,3}}{re.escape(fence_char)}{{{fence_len},}}\s*$", body)
+            out.append(" " * len(body) + ending)
+            if close_match:
+                fence_char = ""
+                fence_len = 0
+    return "".join(out)
+
+
 def entries(text: str) -> list[re.Match]:
-    return list(ENTRY.finditer(text))
+    return list(ENTRY.finditer(strip_fenced_code(text)))
 
 
 def validate(previous: str, current: str, inherited: set[str], required: bool) -> None:
     if not current.startswith(previous):
         raise SummaryError(f"Append to {SUMMARY}; do not rewrite or delete existing records.")
-    matches = entries(current)
+    masked = strip_fenced_code(current)
+    matches = list(ENTRY.finditer(masked))
     titles = [m.group(0) for m in matches]
     if len(set(titles)) != len(titles):
         raise SummaryError("Each summary heading must be unique.")
@@ -54,39 +85,44 @@ def validate(previous: str, current: str, inherited: set[str], required: bool) -
     for match in new:
         datetime.date.fromisoformat(match.group(1))
         index = matches.index(match)
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(current)
-        section = current[match.end():end]
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(masked)
+        section = masked[match.end():end]
         for field in FIELDS:
             if not re.search(rf"^- {field}：[^\S\r\n]*\S[^\r\n]*$", section, re.MULTILINE):
                 raise SummaryError(f"{match.group(0)} needs a non-empty '- {field}：' line.")
 
 
 def check_staged() -> None:
+    root = repo_root()
     # --no-renames 将重命名视为删除+新增，避免路径解析歧义。
-    paths = git("diff", "--cached", "--name-only", "--no-renames", "-z").stdout.split(b"\0")
+    paths = git("diff", "--cached", "--name-only", "--no-renames", "-z", cwd=root).stdout.split(b"\0")
     paths = [p.decode("utf-8") for p in paths if p]
     if not paths:
         return
     required = any(not p.lower().endswith(".md") for p in paths)
     if not required and SUMMARY not in paths:
         return
-    head = git("rev-parse", "--verify", "HEAD", check=False)
-    previous = blob("HEAD") if head.returncode == 0 else ""
+    head = git("rev-parse", "--verify", "HEAD", check=False, cwd=root)
+    previous = blob("HEAD", cwd=root) if head.returncode == 0 else ""
     inherited = {m.group(0) for m in entries(previous)}
-    merge_path = Path(git("rev-parse", "--git-path", "MERGE_HEAD").stdout.decode().strip())
+    merge_raw = git("rev-parse", "--git-path", "MERGE_HEAD", cwd=root).stdout.decode().strip()
+    merge_path = Path(merge_raw)
+    if not merge_path.is_absolute():
+        merge_path = root / merge_path
     if merge_path.exists():
         for parent in merge_path.read_text(encoding="ascii").splitlines():
-            inherited.update(m.group(0) for m in entries(blob(parent)))
-    mode = git("ls-files", "--stage", "--", SUMMARY).stdout
+            inherited.update(m.group(0) for m in entries(blob(parent, cwd=root)))
+    mode = git("ls-files", "--stage", "--", SUMMARY, cwd=root).stdout
     if not mode.startswith((b"100644 ", b"100755 ")):
         raise SummaryError(f"Stage a regular UTF-8 file at {SUMMARY}.")
-    current = git("show", f":{SUMMARY}").stdout.decode("utf-8").replace("\r\n", "\n")
+    current = git("show", f":{SUMMARY}", cwd=root).stdout.decode("utf-8").replace("\r\n", "\n")
     validate(previous, current, inherited, required)
 
 
 def claude_context() -> None:
     # 不修改配置；Git 原生钩子才是提交时读取最终暂存区的检查点。
-    configured = git("config", "--get", "core.hooksPath", check=False).stdout.decode().strip()
+    root = repo_root()
+    configured = git("config", "--get", "core.hooksPath", check=False, cwd=root).stdout.decode().strip()
     active = configured == ".githooks"
     message = (
         f"每次代码提交前必须在 {SUMMARY} 末尾追加总结并一同暂存。"

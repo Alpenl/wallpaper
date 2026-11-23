@@ -36,14 +36,14 @@ func (a *App) SetDisplayOptions(display string, options config.DisplayOptions) {
 		a.d.Store.Assign.Options[display] = options
 		a.saveAssign()
 		id := desktop.DisplayID(display)
+		s := a.screens[id]
+		if s == nil {
+			return
+		}
 		if options.Paused {
 			a.perDisp[id] |= visibility.User
 		} else {
 			a.perDisp[id] &^= visibility.User
-		}
-		s := a.screens[id]
-		if s == nil {
-			return
 		}
 		_ = a.ctl.Set(a.now(), visibility.User, s.n, options.Paused)
 		if old.Fit != options.Fit || old.Speed != options.Speed || old.Audio != options.Audio {
@@ -59,6 +59,9 @@ func (a *App) SetDisplayOptions(display string, options config.DisplayOptions) {
 					a.restartPlayback(output)
 				}
 			}
+		}
+		if old.Fit != options.Fit || old.Audio != options.Audio || sharedChanged {
+			a.refreshRenditionCache()
 		}
 	})
 }
@@ -88,11 +91,21 @@ func (a *App) SetItemProps(itemID string, props config.ItemProps) {
 		oldProps := it.Props
 		it.Props = props
 		a.saveLibrary()
+		if oldProps.Fit != props.Fit || oldProps.Audio != props.Audio {
+			a.refreshItemRenditions(itemID)
+		}
 		for _, s := range a.sortedScreens() {
 			if s.item == nil || s.item.ID != itemID {
 				continue
 			}
 			s.item.Props = props
+			if !s.canvas.Empty() && oldProps.Fit != props.Fit {
+				a.installSystemWallpaper(s)
+			}
+			if m := a.ctl.Display(s.n); m != nil && m.Level() >= visibility.L4 {
+				a.setScreenL4Stopped(s)
+				continue
+			}
 			if it.Type == "shader" {
 				if !s.started {
 					a.restartPlayback(s)
@@ -126,10 +139,12 @@ func (a *App) SetItemProps(itemID string, props config.ItemProps) {
 }
 
 func (a *App) restartPlayback(s *screen) {
-	a.closeScreen(s, false)
-	if a.ctl.Display(s.n).Level() < visibility.L4 {
-		a.startScreen(s, 0)
+	if m := a.ctl.Display(s.n); m != nil && m.Level() >= visibility.L4 {
+		a.setScreenL4Stopped(s)
+		return
 	}
+	a.closeScreen(s, false)
+	a.startScreen(s, 0)
 }
 
 // Updates are serialized with renderer loads/pauses. Unsupported backends retain

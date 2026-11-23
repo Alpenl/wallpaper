@@ -3,11 +3,14 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/egoist/mygo"
 
@@ -41,7 +44,14 @@ func macSnapshot(src, dst string) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	if out, err := exec.Command("/usr/bin/qlmanage", "-t", "-s", "1920", "-o", dir, src).CombinedOutput(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/bin/qlmanage", "-t", "-s", "1920", "-o", dir, src)
+	cmd.WaitDelay = time.Second
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("qlmanage timed out: %w", ctx.Err())
+		}
 		return errors.New("qlmanage: " + string(out))
 	}
 	return os.Rename(filepath.Join(dir, filepath.Base(src)+".png"), dst)

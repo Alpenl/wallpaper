@@ -32,6 +32,12 @@ type Shell struct {
 	tray        *mygo.Tray
 	lastMenu    trayMenuState
 	lastToolTip string
+	mainQueued  int
+
+	// Unexported test hooks for exercising main-thread serialization without a native loop.
+	runOnMain func(func())
+	openWin   func()
+	applyTray func(t *mygo.Tray, rebuild, tipChanged bool, v app.View)
 }
 
 // Icon 生成托盘图标：与应用图标一致的简化层叠壁纸卡片。
@@ -168,12 +174,27 @@ func trayToolTip(v app.View) string {
 	return translate(v.Config.UI.Lang, label)
 }
 
-// updateTrayState 在 sh.mu 保护下比较并保存本次快照。
+// trayChangedLocked reports whether v differs from the last applied tray state
+// without mutating lastMenu or lastToolTip. Caller must hold sh.mu.
+func (sh *Shell) trayChangedLocked(v app.View) bool {
+	state, tip := trayState(v), trayToolTip(v)
+	return !state.equal(sh.lastMenu) || tip != sh.lastToolTip
+}
+
+// updateTrayState 在 sh.mu 保护下比较并保存本次快照（仅在主线程调用）。
 func (sh *Shell) updateTrayState(v app.View) (menuChanged, tipChanged bool) {
 	state, tip := trayState(v), trayToolTip(v)
 	menuChanged, tipChanged = !state.equal(sh.lastMenu), tip != sh.lastToolTip
 	sh.lastMenu, sh.lastToolTip = state, tip
 	return
+}
+
+func (sh *Shell) onMain(fn func()) {
+	if sh.runOnMain != nil {
+		sh.runOnMain(fn)
+		return
+	}
+	mygo.RunOnMain(fn)
 }
 
 func (sh *Shell) menu(v app.View) *mygo.Menu {
@@ -287,12 +308,14 @@ func (sh *Shell) Start(openWindow bool) error {
 	sh.S.SetLanguage = mygo.App.SetLocale
 	mygo.App.SetLocale(sh.S.view0().Config.UI.Lang)
 	sh.S.Invalidate = func() {
-		sh.mu.Lock()
-		w := sh.win
-		sh.mu.Unlock()
-		if w != nil && !w.IsDestroyed() {
-			w.Invalidate()
-		}
+		sh.onMain(func() {
+			sh.mu.Lock()
+			w := sh.win
+			sh.mu.Unlock()
+			if w != nil && !w.IsDestroyed() {
+				w.Invalidate()
+			}
+		})
 	}
 	sh.S.PickFolder = func() string {
 		sh.mu.Lock()
@@ -337,11 +360,42 @@ func (sh *Shell) Start(openWindow bool) error {
 }
 
 // Changed 在编排器快照变化时调用（任意 goroutine）。
+// Snapshot reading, tray diffing/updates, and window invalidation are serialized
+// on the main thread so concurrent notifications cannot apply stale menus or race
+// with window teardown.
 func (sh *Shell) Changed() {
 	sh.S.Refresh()
 	v := sh.S.view0()
-	if v.NetworkConsent != nil {
-		sh.Open()
+	needOpen := v.NetworkConsent != nil || v.SignalConsent != nil
+	sh.mu.Lock()
+	hasWin := sh.win != nil
+	hasTray := sh.tray != nil
+	trayDirty := hasTray && sh.trayChangedLocked(v)
+	needMain := needOpen || hasWin || trayDirty || (hasTray && sh.mainQueued > 0)
+	if needMain {
+		sh.mainQueued++
+	}
+	sh.mu.Unlock()
+	if !needMain {
+		return
+	}
+	sh.onMain(func() {
+		sh.applyChangedOnMain()
+	})
+}
+
+func (sh *Shell) applyChangedOnMain() {
+	defer func() {
+		sh.mu.Lock()
+		if sh.mainQueued > 0 {
+			sh.mainQueued--
+		}
+		sh.mu.Unlock()
+	}()
+	sh.S.Refresh()
+	v := sh.S.view0()
+	if v.NetworkConsent != nil || v.SignalConsent != nil {
+		sh.openOnMain()
 	}
 	sh.mu.Lock()
 	w := sh.win
@@ -357,38 +411,71 @@ func (sh *Shell) Changed() {
 	if t == nil || (!rebuild && !tipChanged) {
 		return
 	}
-	mygo.RunOnMain(func() {
-		if rebuild {
-			t.SetMenu(sh.menu(v))
-			if w != nil && !w.IsDestroyed() {
-				w.SetTitle("")
-			}
+	if sh.applyTray != nil {
+		sh.applyTray(t, rebuild, tipChanged, v)
+		return
+	}
+	if rebuild {
+		t.SetMenu(sh.menu(v))
+		if w != nil && !w.IsDestroyed() {
+			w.SetTitle("")
 		}
-		if tipChanged {
-			t.SetToolTip(trayToolTip(v))
-		}
-	})
+	}
+	if tipChanged {
+		t.SetToolTip(trayToolTip(v))
+	}
 }
 
 // OpenPage 打开设置窗口并切到某一页。
 func (sh *Shell) OpenPage(p string) {
-	mygo.RunOnMain(func() { sh.S.SetPage(p) })
-	sh.Open()
+	sh.onMain(func() {
+		sh.S.SetPage(p)
+		sh.openOnMain()
+	})
 }
 
 // Open 显示设置窗口（已打开则聚焦）。
 func (sh *Shell) Open() {
-	mygo.RunOnMain(func() {
-		sh.mu.Lock()
-		defer sh.mu.Unlock()
-		if sh.win != nil && !sh.win.IsDestroyed() {
-			sh.win.Show()
-			sh.win.Focus()
-			return
-		}
-		sh.win = mygo.NewWindow(mygo.WindowOptions{Title: "", TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: 38, Width: 1120, Height: 740, MinWidth: 900, MinHeight: 600, Content: ui.View(sh.S.View)})
-		// MyGo substitutes App.Name for an empty creation title; clear it for
-		// desktop backends that fall back to a conventional title bar.
-		sh.win.SetTitle("")
+	sh.onMain(func() {
+		sh.openOnMain()
 	})
+}
+
+func (sh *Shell) openOnMain() {
+	if sh.openWin != nil {
+		sh.openWin()
+		return
+	}
+	sh.mu.Lock()
+	w := sh.win
+	if w != nil && !w.IsDestroyed() {
+		sh.mu.Unlock()
+		w.Show()
+		w.Focus()
+		return
+	}
+	w = mygo.NewWindow(mygo.WindowOptions{Title: "", TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: 38, Width: 1120, Height: 740, MinWidth: 900, MinHeight: 600, Content: ui.View(sh.S.View)})
+	sh.win = w
+	sh.mu.Unlock()
+	w.OnClosed(func() {
+		sh.onWindowClosed(w)
+	})
+	// MyGo substitutes App.Name for an empty creation title; clear it for
+	// desktop backends that fall back to a conventional title bar.
+	w.SetTitle("")
+}
+
+func (sh *Shell) onWindowClosed(w *mygo.Window) {
+	sh.mu.Lock()
+	if sh.win == w {
+		sh.win = nil
+	}
+	sh.mu.Unlock()
+	v := sh.S.ctl.View()
+	if v.NetworkConsent != nil {
+		sh.S.ctl.ResolveNetworkConsent(false)
+	}
+	if v.SignalConsent != nil {
+		sh.S.ctl.ResolveSignalConsent(false)
+	}
 }

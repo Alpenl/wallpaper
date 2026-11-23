@@ -226,3 +226,45 @@ func TestGIFLocalPaletteDoesNotRedefineGlobalBackground(t *testing.T) {
 	}
 	assertPixel(t, im, 0, 0, color.Transparent)
 }
+
+// L-04: Cover scaling of a low-resolution GIF (e.g. 10x10 -> 160x90) must use
+// floating-point isotropic scaling instead of truncating the source crop height
+// to 5 pixels (which previously stretched vertically by 12.5%).
+func TestScaleRGBACoverPreservesAspectOnLowRes(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	white := color.RGBA{255, 255, 255, 255}
+	black := color.RGBA{0, 0, 0, 255}
+	// Fill background black, then draw a centered 4x4 white square at [3,7)x[3,7).
+	for y := 0; y < 10; y++ {
+		for x := 0; x < 10; x++ {
+			if x >= 3 && x < 7 && y >= 3 && y < 7 {
+				src.SetRGBA(x, y, white)
+			} else {
+				src.SetRGBA(x, y, black)
+			}
+		}
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, 160, 90))
+	scaleRGBA(dst, src, true)
+	// Isotropic cover scale = max(160/10, 90/10) = 16.0.
+	// The 4x4 centered square must remain a square of ~64x64 pixels (not 64x72!).
+	rowBright := 0
+	for x := 0; x < 160; x++ {
+		if dst.RGBAAt(x, 45).R > 128 {
+			rowBright++
+		}
+	}
+	colBright := 0
+	for y := 0; y < 90; y++ {
+		if dst.RGBAAt(80, y).R > 128 {
+			colBright++
+		}
+	}
+	diff := rowBright - colBright
+	if diff < 0 {
+		diff = -diff
+	}
+	if rowBright < 58 || rowBright > 70 || diff > 2 {
+		t.Fatalf("cover scaling distorted aspect ratio: bright width=%d, height=%d", rowBright, colBright)
+	}
+}

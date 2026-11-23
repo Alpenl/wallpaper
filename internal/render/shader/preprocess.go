@@ -11,6 +11,11 @@ type macro struct {
 	function bool
 }
 
+const (
+	maxExpandedLineTokens  = 100000
+	maxExpandedTotalTokens = 250000
+)
+
 // preprocess is bounded and intentionally rejects includes, conditional
 // directives, token pasting and stringification instead of invoking a compiler
 // preprocessor with filesystem access to untrusted package directives.
@@ -22,6 +27,7 @@ func preprocess(src string) (string, error) {
 	}
 	macros := map[string]macro{}
 	var out strings.Builder
+	totalTokens := 0
 	for i, line := range strings.Split(src, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "#") {
@@ -71,6 +77,9 @@ func preprocess(src string) (string, error) {
 			for j := 0; j < len(ts); j++ {
 				m, ok := macros[ts[j].text]
 				if !ok {
+					if len(next)+1 > maxExpandedLineTokens || totalTokens+len(next)+1 > maxExpandedTotalTokens {
+						return "", fmt.Errorf("shader line %d: macro expansion limit", i+1)
+					}
 					next = append(next, ts[j])
 					continue
 				}
@@ -113,14 +122,20 @@ func preprocess(src string) (string, error) {
 				}
 				for _, t := range m.body {
 					if a, ok := args[t.text]; ok {
+						if len(next)+len(a) > maxExpandedLineTokens || totalTokens+len(next)+len(a) > maxExpandedTotalTokens {
+							return "", fmt.Errorf("shader line %d: macro expansion limit", i+1)
+						}
 						next = append(next, a...)
 					} else {
+						if len(next)+1 > maxExpandedLineTokens || totalTokens+len(next)+1 > maxExpandedTotalTokens {
+							return "", fmt.Errorf("shader line %d: macro expansion limit", i+1)
+						}
 						next = append(next, t)
 					}
 				}
 			}
 			ts = next
-			if len(ts) > 100000 {
+			if len(ts) > maxExpandedLineTokens || totalTokens+len(ts) > maxExpandedTotalTokens {
 				return "", fmt.Errorf("shader line %d: macro expansion limit", i+1)
 			}
 			if !changed {
@@ -129,6 +144,10 @@ func preprocess(src string) (string, error) {
 			if depth == 31 {
 				return "", fmt.Errorf("shader line %d: recursive macro", i+1)
 			}
+		}
+		totalTokens += len(ts)
+		if totalTokens > maxExpandedTotalTokens {
+			return "", fmt.Errorf("shader line %d: macro expansion limit", i+1)
 		}
 		for _, t := range ts {
 			if out.Len()+len(t.text) > 2<<20 {

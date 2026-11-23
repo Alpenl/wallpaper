@@ -2,11 +2,17 @@ package wpk
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
+	"compress/flate"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -107,28 +113,50 @@ func Extract(zipPath, libraryDir string) (*Result, error) {
 	return ExtractChecked(zipPath, libraryDir, nil)
 }
 
+// renameDir is a package-internal hook for atomic-swap failure-injection tests.
+var renameDir = os.Rename
+
 // ExtractChecked calls beforePublish only after all files have passed validation.
 func ExtractChecked(zipPath, libraryDir string, beforePublish func(*Manifest) error) (*Result, error) {
+	if beforePublish == nil {
+		return ExtractCheckedDir(zipPath, libraryDir, nil)
+	}
+	return ExtractCheckedDir(zipPath, libraryDir, func(m *Manifest, _ string) error {
+		return beforePublish(m)
+	})
+}
+
+// ExtractCheckedDir calls beforePublish with the parsed manifest and the staged
+// temporary directory after all files are unpacked and validated, before publishing
+// into libraryDir/<id>.
+func ExtractCheckedDir(zipPath, libraryDir string, beforePublish func(*Manifest, string) error) (*Result, error) {
+	st, err := os.Stat(zipPath)
+	if err != nil {
+		return nil, fmt.Errorf("wpk: stat: %w", err)
+	}
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return nil, fmt.Errorf("wpk: open: %w", err)
 	}
 	defer zr.Close()
-	return extractReader(&zr.Reader, libraryDir, beforePublish)
+	return extractReader(&zr.Reader, st.Size(), libraryDir, beforePublish)
 }
 
-// precheck 做与内容无关的检查：条目数、路径、重名、链接、可执行扩展名。返回 NFC 小写名集合。
+// precheck validates entry count, NFC normalization, path rules, case-insensitive
+// uniqueness, symlinks/special files, and executable extensions.
 func precheck(zr *zip.Reader) (map[string]*zip.File, error) {
 	if len(zr.File) > MaxEntries {
 		return nil, unsafeErr("too many entries (%d)", len(zr.File))
 	}
 	seen := map[string]*zip.File{}
 	for _, f := range zr.File {
-		name := norm.NFC.String(f.Name)
-		if err := CheckPath(name); err != nil {
+		if !norm.NFC.IsNormalString(f.Name) {
+			return nil, unsafeErr("%q: non-NFC filename is not allowed", f.Name)
+		}
+		if err := CheckPath(f.Name); err != nil {
 			return nil, unsafeErr("%q: %v", f.Name, err)
 		}
-		key := strings.ToLower(strings.TrimSuffix(name, "/"))
+		key := strings.ToLower(strings.TrimSuffix(f.Name, "/"))
 		if seen[key] != nil {
 			return nil, unsafeErr("duplicate name (case-insensitive) %q", f.Name)
 		}
@@ -137,17 +165,39 @@ func precheck(zr *zip.Reader) (map[string]*zip.File, error) {
 		if mode&fs.ModeSymlink != 0 || mode&(fs.ModeType&^fs.ModeDir) != 0 {
 			return nil, unsafeErr("%q: links and special files are not allowed", f.Name)
 		}
-		if !f.FileInfo().IsDir() && execExts[strings.ToLower(path.Ext(name))] {
+		if !f.FileInfo().IsDir() && execExts[strings.ToLower(path.Ext(f.Name))] {
 			return nil, unsafeErr("%q: executable files are not allowed", f.Name)
 		}
 	}
 	return seen, nil
 }
 
-// unpack 把全部条目写进 root（流式计数、魔数和压缩比检查）。
-func unpack(zr *zip.Reader, root *os.Root) (files int, total int64, err error) {
+func entryLimit(name string) int64 {
+	lower := strings.ToLower(name)
+	if !strings.Contains(lower, "/") {
+		if lower == "preview.webp" || lower == "preview.png" {
+			return MaxPreview
+		}
+		if lower == "thumb.webp" || lower == "thumb.png" {
+			return MaxThumb
+		}
+		if strings.HasPrefix(lower, "preview.") && !IsVideoExt(name) {
+			return MaxPreview
+		}
+		if strings.HasPrefix(lower, "thumb.") && !IsVideoExt(name) {
+			return MaxThumb
+		}
+	}
+	if IsVideoExt(name) {
+		return MaxTotal
+	}
+	return MaxNonVideo
+}
+
+// unpack writes all archive entries into root with streaming size, magic, and ratio checks.
+func unpack(zr *zip.Reader, root *os.Root, archiveSize int64) (files int, total int64, err error) {
 	for _, f := range zr.File {
-		name := norm.NFC.String(f.Name)
+		name := f.Name
 		if f.FileInfo().IsDir() {
 			if err := root.MkdirAll(strings.TrimSuffix(name, "/"), 0o755); err != nil {
 				return 0, 0, err
@@ -159,16 +209,8 @@ func unpack(zr *zip.Reader, root *os.Root) (files int, total int64, err error) {
 				return 0, 0, err
 			}
 		}
-		limit := int64(MaxNonVideo)
-		switch {
-		case IsVideoExt(name):
-			limit = MaxTotal
-		case name == "preview.webp" || name == "preview.png":
-			limit = MaxPreview
-		case name == "thumb.webp" || name == "thumb.png":
-			limit = MaxThumb
-		}
-		n, err := copyEntry(root, name, f, limit, MaxTotal-total)
+		limit := entryLimit(name)
+		n, err := copyEntry(root, name, f, limit, MaxTotal-total, archiveSize)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -178,8 +220,12 @@ func unpack(zr *zip.Reader, root *os.Root) (files int, total int64, err error) {
 	return files, total, nil
 }
 
-// SafeUnzip 按 10.4 的全部规则（路径、链接、可执行、规模）把任意 zip（例如 Lively 包）解到 dst（必须不存在或为空）。
+// SafeUnzip extracts any zip archive (e.g. a Lively package) into dst under all WPK safety rules.
 func SafeUnzip(zipPath, dst string) error {
+	st, err := os.Stat(zipPath)
+	if err != nil {
+		return err
+	}
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return err
@@ -196,20 +242,39 @@ func SafeUnzip(zipPath, dst string) error {
 		return err
 	}
 	defer root.Close()
-	_, _, err = unpack(&zr.Reader, root)
+	_, _, err = unpack(&zr.Reader, root, st.Size())
 	return err
 }
 
-func extractReader(zr *zip.Reader, libraryDir string, beforePublish func(*Manifest) error) (*Result, error) {
+func checkWPKRootNames(zr *zip.Reader) error {
+	for _, f := range zr.File {
+		trimmed := strings.TrimSuffix(f.Name, "/")
+		if strings.Contains(trimmed, "/") {
+			continue
+		}
+		lower := strings.ToLower(f.Name)
+		if (lower == "manifest.json" || strings.HasPrefix(lower, "preview.") || strings.HasPrefix(lower, "thumb.")) && f.Name != lower {
+			return unsafeErr("%q: root metadata/preview filenames must be lowercase", f.Name)
+		}
+	}
+	return nil
+}
+
+func extractReader(zr *zip.Reader, archiveSize int64, libraryDir string, beforePublish func(*Manifest, string) error) (*Result, error) {
 	seen, err := precheck(zr)
 	if err != nil {
 		return nil, err
 	}
+	if err := checkWPKRootNames(zr); err != nil {
+		return nil, err
+	}
 	manifestFile := seen["manifest.json"]
-	if manifestFile == nil {
+	if manifestFile == nil || manifestFile.FileInfo().IsDir() || manifestFile.Name != "manifest.json" {
 		return nil, errors.New("wpk: manifest.json missing")
 	}
-	if seen["preview.webp"] == nil && seen["preview.png"] == nil {
+	hasPreview := (seen["preview.webp"] != nil && !seen["preview.webp"].FileInfo().IsDir() && seen["preview.webp"].Name == "preview.webp") ||
+		(seen["preview.png"] != nil && !seen["preview.png"].FileInfo().IsDir() && seen["preview.png"].Name == "preview.png")
+	if !hasPreview {
 		return nil, errors.New("wpk: preview.webp|png missing")
 	}
 	mb, err := readAllLimited(manifestFile, MaxManifest)
@@ -220,7 +285,10 @@ func extractReader(zr *zip.Reader, libraryDir string, beforePublish func(*Manife
 	if err != nil {
 		return nil, err
 	}
-	if entry := seen[strings.ToLower(norm.NFC.String(m.Entry))]; entry == nil || entry.FileInfo().IsDir() {
+	if !norm.NFC.IsNormalString(m.Entry) {
+		return nil, unsafeErr("entry %q must be NFC-normalized", m.Entry)
+	}
+	if entry := seen[strings.ToLower(m.Entry)]; entry == nil || entry.FileInfo().IsDir() || entry.Name != m.Entry {
 		return nil, fmt.Errorf("wpk: entry %q not found in package", m.Entry)
 	}
 	if err := os.MkdirAll(libraryDir, 0o755); err != nil {
@@ -241,26 +309,47 @@ func extractReader(zr *zip.Reader, libraryDir string, beforePublish func(*Manife
 		return nil, err
 	}
 	res := &Result{Manifest: m}
-	res.Files, res.Bytes, err = unpack(zr, root)
+	res.Files, res.Bytes, err = unpack(zr, root, archiveSize)
 	root.Close()
 	if err != nil {
 		return nil, err
 	}
 	if beforePublish != nil {
-		if err := beforePublish(m); err != nil {
+		if err := beforePublish(m, tmp); err != nil {
 			return nil, err
 		}
 	}
 	dst := filepath.Join(libraryDir, m.ID)
-	if err := os.RemoveAll(dst); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmp, dst); err != nil {
+	if err := replaceDirAtomic(tmp, dst); err != nil {
 		return nil, err
 	}
 	ok = true
 	res.Dir = dst
 	return res, nil
+}
+
+func replaceDirAtomic(tmp, dst string) error {
+	if _, err := os.Lstat(dst); err != nil {
+		if os.IsNotExist(err) {
+			return renameDir(tmp, dst)
+		}
+		return err
+	}
+	var rb [8]byte
+	_, _ = rand.Read(rb[:])
+	backup := dst + ".old-" + hex.EncodeToString(rb[:])
+	if err := renameDir(dst, backup); err != nil {
+		return err
+	}
+	if err := renameDir(tmp, dst); err != nil {
+		if rbErr := renameDir(backup, dst); rbErr != nil {
+			return fmt.Errorf("wpk: publish failed (%w) and rollback failed (%v)", err, rbErr)
+		}
+		return err
+	}
+	// Best-effort cleanup of the previous version after the new package is live.
+	_ = os.RemoveAll(backup)
+	return nil
 }
 
 func readAllLimited(f *zip.File, max int64) ([]byte, error) {
@@ -279,11 +368,55 @@ func readAllLimited(f *zip.File, max int64) ([]byte, error) {
 	return b, nil
 }
 
-// copyEntry 流式复制并累计计数，不信任头里声明的大小；同时检查可执行文件头和压缩比。
-func copyEntry(root *os.Root, name string, f *zip.File, limit, remaining int64) (int64, error) {
-	rc, err := f.Open()
-	if err != nil {
-		return 0, err
+// countByteReader implements flate.Reader (io.Reader + io.ByteReader) so
+// compress/flate reads directly from it without adding an extra buffer,
+// letting us measure the exact number of compressed bytes consumed.
+type countByteReader struct {
+	br *bufio.Reader
+	n  int64
+}
+
+func (c *countByteReader) Read(p []byte) (int, error) {
+	k, err := c.br.Read(p)
+	c.n += int64(k)
+	return k, err
+}
+
+func (c *countByteReader) ReadByte() (byte, error) {
+	b, err := c.br.ReadByte()
+	if err == nil {
+		c.n++
+	}
+	return b, err
+}
+
+// copyEntry streams an entry to disk while enforcing size limits, 4-byte
+// executable-header detection across short reads, and spoof-proof,
+// overflow-free compression ratio checks.
+func copyEntry(root *os.Root, name string, f *zip.File, limit, remaining, archiveSize int64) (int64, error) {
+	if archiveSize > 0 && f.CompressedSize64 > uint64(archiveSize) {
+		return 0, unsafeErr("%q: compressed size exceeds archive size", name)
+	}
+	if f.CompressedSize64 > uint64(math.MaxInt64/2) {
+		return 0, unsafeErr("%q: invalid compressed size", name)
+	}
+	var rc io.ReadCloser
+	var verifyCRC bool
+	var cr *countByteReader
+	var err error
+	if f.Method == zip.Deflate && f.Flags&0x1 == 0 {
+		raw, rerr := f.OpenRaw()
+		if rerr != nil {
+			return 0, rerr
+		}
+		cr = &countByteReader{br: bufio.NewReader(raw)}
+		rc = flate.NewReader(cr)
+		verifyCRC = true
+	} else {
+		rc, err = f.Open()
+		if err != nil {
+			return 0, err
+		}
 	}
 	defer rc.Close()
 	out, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
@@ -293,15 +426,39 @@ func copyEntry(root *os.Root, name string, f *zip.File, limit, remaining int64) 
 	defer out.Close()
 	buf := make([]byte, 64<<10)
 	var n int64
-	first := true
-	comp := int64(f.CompressedSize64)
+	var head [4]byte
+	headLen := 0
+	headChecked := false
+	crc := crc32.NewIEEE()
+	effectiveComp := func() int64 {
+		var comp int64
+		if cr != nil {
+			comp = cr.n
+		} else if f.CompressedSize64 <= uint64(math.MaxInt64) {
+			comp = int64(f.CompressedSize64)
+		} else {
+			comp = math.MaxInt64
+		}
+		if archiveSize > 0 && comp > archiveSize {
+			comp = archiveSize
+		}
+		if comp < 1 {
+			comp = 1
+		}
+		return comp
+	}
 	for {
 		k, rerr := rc.Read(buf)
 		if k > 0 {
-			if first {
-				first = false
-				if IsExecutableHeader(buf[:k]) {
+			if !headChecked {
+				take := min(k, len(head)-headLen)
+				copy(head[headLen:], buf[:take])
+				headLen += take
+				if headLen >= 2 && IsExecutableHeader(head[:headLen]) {
 					return 0, unsafeErr("%q: executable header", name)
+				}
+				if headLen == len(head) {
+					headChecked = true
 				}
 			}
 			n += int64(k)
@@ -311,8 +468,11 @@ func copyEntry(root *os.Root, name string, f *zip.File, limit, remaining int64) 
 			if n > remaining {
 				return 0, unsafeErr("package exceeds 4 GiB total")
 			}
-			if f.Method == zip.Deflate && n > ratioFloorRaw && n > comp*MaxRatio {
+			if f.Method != zip.Store && n > ratioFloorRaw && n/MaxRatio > effectiveComp() {
 				return 0, unsafeErr("%q: compression ratio > %d:1", name, MaxRatio)
+			}
+			if verifyCRC {
+				_, _ = crc.Write(buf[:k])
 			}
 			if _, err := out.Write(buf[:k]); err != nil {
 				return 0, err
@@ -324,6 +484,12 @@ func copyEntry(root *os.Root, name string, f *zip.File, limit, remaining int64) 
 		if rerr != nil {
 			return 0, fmt.Errorf("wpk: %s: %w", name, rerr)
 		}
+	}
+	if !headChecked && headLen > 0 && IsExecutableHeader(head[:headLen]) {
+		return 0, unsafeErr("%q: executable header", name)
+	}
+	if verifyCRC && crc.Sum32() != f.CRC32 {
+		return 0, fmt.Errorf("wpk: %s: %w", name, zip.ErrChecksum)
 	}
 	return n, nil
 }

@@ -467,7 +467,12 @@ func TestDisplayRemoved(t *testing.T) {
 	if m.State() != StateDestroyed || len(as) != 1 || as[0].Kind != ActDestroy {
 		t.Fatalf("应销毁一次: %v", as)
 	}
-	must(t, c.Set(2*time.Second, Fullscreen, 0, true))
+	if c.Display(0) != nil || len(c.IDs()) != 0 {
+		t.Fatalf("removed display should be deleted from controller map: %v", c.IDs())
+	}
+	if err := c.Set(2*time.Second, Fullscreen, 0, true); err == nil {
+		t.Fatal("removed display should reject per-display Set")
+	}
 	m.RendererDone(3 * time.Second)
 	if len(m.Drain()) != 0 {
 		t.Fatal("销毁后忽略一切")
@@ -553,7 +558,145 @@ func TestNextDeadline(t *testing.T) {
 	if _, ok := c.NextDeadline(); ok {
 		t.Fatal("销毁的显示器不计")
 	}
-	if len(c.IDs()) != 2 {
-		t.Fatal("IDs")
+	if len(c.IDs()) != 1 || c.IDs()[0] != 0 {
+		t.Fatalf("removed display should not remain in IDs: %v", c.IDs())
+	}
+}
+
+// H-25: UpdateConfig updates pause/debounce/threshold settings in place without
+// losing pausedAt escalation progress, L3/L4 level, debounce windows, or StateFailed.
+func TestUpdateConfigPreservesState(t *testing.T) {
+	c := NewController(DefaultConfig(Video))
+	m0 := c.AddDisplay(0, 0)
+	m1 := c.AddDisplay(0, 1)
+
+	// Put m0 at L3 (paused for 2 minutes).
+	must(t, c.Set(0, Fullscreen, 0, true))
+	c.Advance(2 * time.Minute)
+	if m0.Level() != L3 {
+		t.Fatalf("expected L3, got %v", m0.Level())
+	}
+	m0.Drain()
+
+	// Put m1 into StateFailed via 5 crashes.
+	for i := 0; i < 5; i++ {
+		m1.RendererDone(2*time.Minute + time.Duration(i)*time.Second)
+	}
+	if m1.State() != StateFailed {
+		t.Fatalf("expected StateFailed, got %v", m1.State())
+	}
+	m1.Drain()
+
+	// Update config (change ResumeDebounce and BatteryPolicy).
+	cfg := DefaultConfig(Video)
+	cfg.ResumeDebounce = 500 * ms
+	cfg.BatteryPolicy = BatteryFPS15
+	c.UpdateConfig(cfg)
+
+	if m0.Level() != L3 {
+		t.Fatalf("UpdateConfig reset m0 level from L3 to %v", m0.Level())
+	}
+	if m1.State() != StateFailed {
+		t.Fatalf("UpdateConfig cleared StateFailed on m1: %v", m1.State())
+	}
+	// Escalation timer was preserved: advancing to 10m reaches L4 (not 12m).
+	c.Advance(10 * time.Minute)
+	if m0.Level() != L4 {
+		t.Fatalf("expected pausedAt preserved and L4 at 10m, got %v", m0.Level())
+	}
+
+	// Changing BatteryPolicy from Pause to FPS15 while paused only on Battery resumes cleanly.
+	c2 := NewController(DefaultConfig(Video))
+	m2 := c2.AddDisplay(0, 0)
+	must(t, c2.Set(0, Battery, -1, true))
+	if m2.Level() != L1 {
+		t.Fatalf("expected L1 on battery pause, got %v", m2.Level())
+	}
+	m2.Drain()
+	cfg2 := DefaultConfig(Video)
+	cfg2.BatteryPolicy = BatteryFPS15
+	c2.UpdateConfig(cfg2)
+	if m2.FPSCap() != 15 {
+		t.Fatalf("expected FPS cap 15 after BatteryPolicy change, got %d", m2.FPSCap())
+	}
+	c2.Advance(300 * ms)
+	if m2.Level() != L0 || !has(m2.Drain(), ActResume) {
+		t.Fatalf("expected resume to L0 after switching BatteryPolicy to fps15, got %v", m2.Level())
+	}
+}
+
+// M-13: StateFailed continues tracking effective signals and suspend-gap compensation
+// so Retry sees live state without emitting premature actions while failed.
+func TestFailedStateTracksSignalsAndSleepCompensation(t *testing.T) {
+	c, m := newCtl(t, Video)
+	for i := 0; i < 5; i++ {
+		m.RendererDone(time.Duration(i) * time.Second)
+	}
+	if m.State() != StateFailed {
+		t.Fatalf("expected StateFailed, got %v", m.State())
+	}
+	m.Drain()
+
+	// Locked arrives while failed -> eff & level update silently (no emitted actions).
+	must(t, c.Set(10*time.Second, Locked, -1, true))
+	if m.Effective()&Locked == 0 || m.Level() != L3 {
+		t.Fatalf("StateFailed should track Locked/L3: eff=%v level=%v", m.Effective(), m.Level())
+	}
+	if len(m.Drain()) != 0 {
+		t.Fatal("StateFailed must not emit actions before Retry")
+	}
+
+	// Suspend for 2 hours while failed -> sleep time is compensated so level stays L3.
+	must(t, c.Set(20*time.Second, Suspend, -1, true))
+	must(t, c.Set(2*time.Hour, Suspend, -1, false))
+	if m.Effective()&Suspend != 0 || m.Level() != L3 {
+		t.Fatalf("sleep compensation failed during StateFailed: eff=%v level=%v", m.Effective(), m.Level())
+	}
+	if len(m.Drain()) != 0 {
+		t.Fatal("StateFailed must not emit actions on wake before Retry")
+	}
+
+	// Retry sees accurate live L3 level.
+	m.Retry(2*time.Hour + time.Second)
+	a, ok := find(m.Drain(), ActRestart)
+	if !ok || a.Level != L3 {
+		t.Fatalf("expected Retry ActRestart at L3, got %v ok=%v", a, ok)
+	}
+}
+
+// M-13: SetKind immediately re-evaluates L2 compatibility both directions.
+func TestSetKindReevaluatesL2(t *testing.T) {
+	c, m := newCtl(t, Video)
+	must(t, c.Set(0, Fullscreen, 0, true))
+	if m.Level() != L1 {
+		t.Fatalf("expected Video L1, got %v", m.Level())
+	}
+	m.Drain()
+
+	// Switching Video -> Web while paused immediately escalates to L2 (T12=0).
+	m.SetKind(Web)
+	if m.Level() != L2 || !has(m.Drain(), ActFreeze) {
+		t.Fatalf("expected immediate L2/Freeze after SetKind(Web), got %v", m.Level())
+	}
+
+	// Switching Web -> Shader folds L2 back to L1 immediately.
+	m.SetKind(Shader)
+	if m.Level() != L1 || !has(m.Drain(), ActPause) {
+		t.Fatalf("expected immediate L1/Pause after SetKind(Shader), got %v", m.Level())
+	}
+}
+
+// M-13: RemoveDisplay deletes per-display signal bits so re-adding the same ID starts clean.
+func TestRemoveDisplayClearsPerDisplaySignals(t *testing.T) {
+	c := NewController(DefaultConfig(Video))
+	c.AddDisplay(0, 7)
+	must(t, c.Set(0, User, 7, true))
+	c.RemoveDisplay(time.Second, 7)
+	if c.Display(7) != nil {
+		t.Fatal("expected display 7 deleted")
+	}
+	m := c.AddDisplay(2*time.Second, 7)
+	if m.Level() != L0 || m.Effective() != 0 {
+		t.Fatalf("re-added display inherited stale per-display signals: level=%v eff=%v", m.Level(), m.Effective())
 	}
 }

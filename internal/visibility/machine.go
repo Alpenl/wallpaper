@@ -291,7 +291,9 @@ func (m *Machine) set(now time.Duration, r Reason, on bool) {
 				if m.level > L0 {
 					m.pausedAt += now - m.suspendAt
 				}
-				m.emit(ActHealthCheck, m.level)
+				if m.state != StateFailed {
+					m.emit(ActHealthCheck, m.level)
+				}
 			}
 		}
 	}
@@ -345,10 +347,10 @@ func (m *Machine) nextDeadline() (time.Duration, bool) {
 }
 
 func (m *Machine) evaluate() {
-	if m.state == StateDestroyed || m.state == StateFailed {
+	if m.state == StateDestroyed {
 		return
 	}
-	// 1. 进入去抖
+	// 1. 进入去抖（即使在 StateFailed 也继续维护有效信号与计时状态，确保恢复时看到最新状态）
 	for r, t := range m.since {
 		if m.eff&r == 0 && m.now-t >= m.enterDebounce(r) {
 			m.eff |= r
@@ -357,7 +359,9 @@ func (m *Machine) evaluate() {
 	// 2. 帧率上限
 	if f := m.wantFPS(); f != m.fps {
 		m.fps = f
-		m.emit(ActFPSCap, m.level)
+		if m.state != StateFailed {
+			m.emit(ActFPSCap, m.level)
+		}
 	}
 	fl := m.floor()
 	// 3. L0 → 暂停（快停）
@@ -366,7 +370,7 @@ func (m *Machine) evaluate() {
 		if fl >= L1 {
 			m.pausedAt = m.now
 			target := m.skipL2(maxL(fl, m.escalated()))
-			if !m.capped || m.now-m.lastCap >= m.cfg.SnapshotEvery {
+			if m.state != StateFailed && (!m.capped || m.now-m.lastCap >= m.cfg.SnapshotEvery) {
 				m.capped, m.lastCap = true, m.now
 				m.emit(ActCaptureFrame, L0)
 			}
@@ -473,10 +477,30 @@ func (m *Machine) Retry(now time.Duration) {
 	if m.state != StateFailed {
 		return
 	}
-	m.now = maxD(m.now, now)
+	m.Advance(maxD(m.now, now))
 	m.crashes = nil
 	m.state = StateRecovering
 	m.emit(ActRestart, m.level)
+}
+
+// UpdateConfig updates policy and timing configuration in place without
+// resetting pause timestamps, current level, debounce state, or circuit-breaker history.
+func (m *Machine) UpdateConfig(cfg Config) {
+	if m.state == StateDestroyed {
+		return
+	}
+	kind := m.cfg.Kind
+	m.cfg = cfg
+	m.cfg.Kind = kind
+	if kind == Web && cfg.Kind != Web {
+		m.cfg.T12 = DefaultConfig(Web).T12
+	}
+	if m.resumeArm {
+		if deadline := m.now + m.cfg.ResumeDebounce; m.resumeAt > deadline {
+			m.resumeAt = deadline
+		}
+	}
+	m.evaluate()
 }
 
 func (m *Machine) destroy(now time.Duration) {
@@ -531,6 +555,17 @@ func (c *Controller) Display(id int) *Machine { return c.machines[id] }
 func (c *Controller) RemoveDisplay(now time.Duration, id int) {
 	if m := c.machines[id]; m != nil {
 		m.destroy(now)
+		delete(c.machines, id)
+	}
+	delete(c.disp, id)
+}
+
+// UpdateConfig updates policy configuration in place across all displays,
+// preserving active pause timers, levels, debounce windows, and crash history.
+func (c *Controller) UpdateConfig(cfg Config) {
+	c.cfg = cfg
+	for _, id := range c.ids() {
+		c.machines[id].UpdateConfig(cfg)
 	}
 }
 
@@ -609,5 +644,20 @@ func (c *Controller) NextDeadline() (time.Duration, bool) {
 // IDs 返回已登记显示器的编号（升序）。
 func (c *Controller) IDs() []int { return c.ids() }
 
-// SetKind preserves policy signals/timers while changing the renderer type.
-func (m *Machine) SetKind(k Kind) { m.cfg.Kind = k; m.cfg.T12 = DefaultConfig(k).T12 }
+// SetKind preserves policy signals/timers while changing the renderer type
+// and immediately re-evaluates L2/level compatibility.
+func (m *Machine) SetKind(k Kind) {
+	if m.state == StateDestroyed {
+		return
+	}
+	m.cfg.Kind = k
+	m.cfg.T12 = DefaultConfig(k).T12
+	wasL2 := m.level == L2 && k != Web
+	if wasL2 {
+		m.level = L1
+	}
+	m.evaluate()
+	if wasL2 && m.level == L1 && m.state == StateActive {
+		m.emit(ActPause, L1)
+	}
+}

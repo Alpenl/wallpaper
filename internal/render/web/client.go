@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"wpapp/internal/render"
 	"wpapp/internal/telemetry"
 	"wpapp/internal/visibility"
+	"wpapp/internal/wpk"
 )
 
 type pipeIO struct {
@@ -29,16 +31,19 @@ type pipeIO struct {
 func (p pipeIO) Close() error { _ = p.ReadCloser.Close(); return p.WriteCloser.Close() }
 
 type loadRequest struct {
-	Token  string `json:"-"`
-	Item   render.Item
-	Native uintptr
-	Bounds image.Rectangle
-	Paused bool
+	Token        string `json:"-"`
+	Item         render.Item
+	Native       uintptr
+	Bounds       image.Rectangle
+	Paused       bool
+	CacheDir     string
+	NetworkAllow []string
 }
 type Renderer struct {
 	processPID          atomic.Int64
 	Log                 render.LogFunc
 	Display, StderrPath string
+	CacheDir            string
 	statsMu             sync.Mutex
 	signalStatus        string
 	mu                  sync.Mutex
@@ -150,11 +155,39 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 		}
 		close(exited)
 	}()
-	if e = r.call("load", loadRequest{Item: it, Native: s.Native(), Bounds: s.Bounds(), Paused: paused}); e != nil {
+	var networkAllow []string
+	if it.PackageDir != "" {
+		if m, err := wpk.LoadDir(it.PackageDir); err == nil && m.Web != nil {
+			networkAllow = normalizeAllowedHosts(m.Web.NetworkAllow)
+		}
+	}
+	req := loadRequest{
+		Item:         it,
+		Native:       s.Native(),
+		Bounds:       s.Bounds(),
+		Paused:       paused,
+		CacheDir:     r.CacheDir,
+		NetworkAllow: networkAllow,
+	}
+	if e = r.call("load", req); e != nil {
 		_ = r.Close()
 		return e
 	}
+	if runtime.GOOS == "darwin" {
+		// Web host owns an independent child NSWindow; keep parent desktop surface hidden.
+		_ = s.SetVisible(false)
+	}
 	return nil
+}
+func shouldKillOnCallError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ipcErr *ipc.Error
+	if errors.As(err, &ipcErr) {
+		return ipcErr.Fatal || ipcErr.Code == "E_TIMEOUT" || ipcErr.Code == "E_PROTO"
+	}
+	return true
 }
 func (r *Renderer) call(method string, v any) error {
 	r.mu.Lock()
@@ -171,7 +204,7 @@ func (r *Renderer) call(method string, v any) error {
 	if method == "load" && e == nil {
 		r.Log.Log("helper_identity", "display", r.Display, "child_pid", reply.PID, "build", reply.Build)
 	}
-	if e != nil {
+	if shouldKillOnCallError(e) && r.cmd != nil && r.cmd.Process != nil {
 		_ = r.cmd.Process.Kill()
 	}
 	return e
@@ -183,8 +216,8 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 	return r.call("pause", int(l))
 }
 func (r *Renderer) SetFPSCap(fps int) error {
-	if _, e := FPSScript(fps); e != nil {
-		return e
+	if fps < 0 || fps > 240 {
+		return fmt.Errorf("web: invalid FPS")
 	}
 	return r.call("fps", fps)
 }
@@ -266,6 +299,7 @@ func (h *hostSession) control(method string, p json.RawMessage) error {
 			return e
 		}
 		x.Token = hex.EncodeToString(token[:])
+		x.NetworkAllow = normalizeAllowedHosts(m.Web.NetworkAllow)
 		h.manifestFPS = m.Web.FPSCap
 		h.defsScript = func(raw string) (string, error) { return PropertyScript(m.Properties, raw) }
 		if e = h.view.Load(x); e != nil {

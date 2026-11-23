@@ -3,6 +3,9 @@ package app
 import (
 	"fmt"
 	"image"
+	"image/png"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"wpapp/internal/config"
@@ -129,4 +132,80 @@ func TestSpanOwnerRemovalWithUnchangedCanvasRefreshesAudioAndResume(t *testing.T
 	if r.options.Muted || r.start != 40 {
 		t.Fatalf("new owner muted=%v, resume=%v", r.options.Muted, r.start)
 	}
+}
+
+// M-16: View's Effective.Muted reflects forced mute on secondary spanning screens,
+// and spanning static system wallpaper respects ItemProps.Fit and refreshes on SetItemProps.
+func TestSpanningEffectiveMuteAndItemPropsFitRefresh(t *testing.T) {
+	e := setupWith(t, 2, true, func(d *Deps) {
+		h := &canvasHost{fakeHost: d.Host.(*fakeHost), canvases: map[desktop.DisplayID]image.Rectangle{}}
+		h.displays[0].Primary = true
+		h.displays[1].Primary = false
+		d.Host = h
+		d.Store.Assign.Layout = "span"
+		d.Store.Assign.SpanItem = "x"
+		d.Store.Config.Render.Muted = false
+		d.Store.Library.Items[0].Snapshot = ""
+	})
+	eventually(t, "span view ready", func() bool {
+		v := e.a.View()
+		return v.Layout == "span" && len(v.Displays) == 2
+	})
+	v := e.a.View()
+	var primaryMuted, secondaryMuted bool
+	for _, d := range v.Displays {
+		if d.Primary {
+			primaryMuted = d.Effective.Muted
+		} else {
+			secondaryMuted = d.Effective.Muted
+		}
+	}
+	if primaryMuted || !secondaryMuted {
+		t.Fatalf("expected primary muted=false, secondary muted=true; got primary=%v secondary=%v", primaryMuted, secondaryMuted)
+	}
+
+	// Verify SetItemProps changing Fit updates effective Fit and refreshes spanning system wallpaper.
+	snapPath := writeSpanTestPNG(t, e.store.Paths.Cache)
+	e.a.Do(func() {
+		it := e.store.Library.Find("x")
+		it.Snapshot = snapPath
+		for _, s := range e.a.screens {
+			if s.item != nil && s.item.ID == "x" {
+				s.item.Snapshot = snapPath
+			}
+		}
+	})
+	e.sync()
+	h := e.a.d.Host.(*canvasHost)
+	e.a.SetItemProps("x", config.ItemProps{Fit: "fit"})
+	eventually(t, "spanning system wallpaper refreshed with item Fit", func() bool {
+		v := e.a.View()
+		if len(v.Displays) != 2 || v.Displays[0].Effective.Fit != "fit" {
+			return false
+		}
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.wall["A"] != "" && h.wall["B"] != ""
+	})
+}
+
+func writeSpanTestPNG(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "span-snap.png")
+	im := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, im); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }

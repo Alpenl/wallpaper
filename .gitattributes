@@ -1,3 +1,8 @@
+*.go text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
 internal/render/shader/testdata/** text eol=lf
 .githooks/* text eol=lf
 scripts/claude-summary-context.sh text eol=lf

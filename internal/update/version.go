@@ -8,6 +8,11 @@ import (
 
 // SemVer core and numeric prerelease identifiers disallow leading zeroes.
 var versionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
+var platformPattern = regexp.MustCompile(`^[a-z0-9]+-[a-z0-9]+$`)
+
+func validPlatform(s string) bool {
+	return platformPattern.MatchString(s)
+}
 
 func numeric(s string) bool {
 	for _, c := range s {
@@ -97,6 +102,16 @@ func validateManifest(m *Manifest) error {
 	if m.Schema != 1 {
 		return fmt.Errorf("update: unsupported manifest schema %d", m.Schema)
 	}
-	_, err := parseVersion(m.Version)
-	return err
+	if !validPlatform(m.Platform) {
+		return fmt.Errorf("update: invalid manifest platform %q", m.Platform)
+	}
+	if _, err := parseVersion(m.Version); err != nil {
+		return err
+	}
+	for _, f := range m.Files {
+		if f.Size < 0 {
+			return fmt.Errorf("update: negative size for %q", f.Path)
+		}
+	}
+	return nil
 }

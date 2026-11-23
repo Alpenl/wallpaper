@@ -29,7 +29,18 @@ func forbidden(file, imp string) bool {
 		}
 	}
 	return within(file, "internal/config") &&
-		(imp == "wpapp/internal/app" || within(imp, "wpapp/internal/ui"))
+		(within(imp, "wpapp/internal/app") || within(imp, "wpapp/internal/ui"))
+}
+
+func hasSleepReason(line string) bool {
+	_, after, ok := strings.Cut(line, "sleep:")
+	if !ok {
+		return false
+	}
+	if idx := strings.Index(after, "*/"); idx >= 0 {
+		after = after[:idx]
+	}
+	return strings.TrimSpace(after) != ""
 }
 
 func check(file string, src any) []string {
@@ -64,7 +75,7 @@ func check(file string, src any) []string {
 	for _, group := range f.Comments {
 		for _, comment := range group.List {
 			for offset, line := range strings.Split(comment.Text, "\n") {
-				if strings.Contains(line, "sleep:") {
+				if hasSleepReason(line) {
 					annotated[fset.Position(comment.Pos()).Line+offset] = true
 				}
 			}
@@ -85,7 +96,7 @@ func check(file string, src any) []string {
 		}
 		line := fset.Position(call.Pos()).Line
 		if sleep && !annotated[line] && !annotated[line-1] {
-			report(call.Pos(), "time.Sleep requires a sleep: comment on the same or preceding line")
+			report(call.Pos(), "time.Sleep requires a non-empty sleep: <reason> comment on the same or preceding line")
 		}
 		return true
 	})

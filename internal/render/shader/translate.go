@@ -19,12 +19,21 @@ type token struct {
 	line int
 }
 type expr struct{ code, typ string }
+type funcSig struct {
+	args []string
+	ret  string
+}
+type scopeSnapshot struct {
+	vars      map[string]string
+	propExprs map[string]string
+}
 type translator struct {
 	ts               []token
 	at               int
 	target           Target
 	vars             map[string]string
-	funcs            map[string]string
+	propExprs        map[string]string
+	funcs            map[string][]funcSig
 	main             bool
 	initializers     []string
 	constructors     []string
@@ -128,7 +137,12 @@ func (p *translator) take(x string) bool {
 }
 func isType(s string) bool {
 	switch s {
-	case "void", "float", "int", "bool", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "bvec2", "bvec3", "bvec4", "mat2", "mat3", "mat4":
+	case "void", "float", "int", "uint", "bool",
+		"vec2", "vec3", "vec4",
+		"ivec2", "ivec3", "ivec4",
+		"uvec2", "uvec3", "uvec4",
+		"bvec2", "bvec3", "bvec4",
+		"mat2", "mat3", "mat4":
 		return true
 	}
 	return false
@@ -139,6 +153,9 @@ func (p *translator) typ(s string) string {
 	}
 	if strings.HasPrefix(s, "ivec") {
 		return "int" + s[4:]
+	}
+	if strings.HasPrefix(s, "uvec") {
+		return "uint" + s[4:]
 	}
 	if strings.HasPrefix(s, "bvec") {
 		return "bool" + s[4:]
@@ -154,10 +171,94 @@ func (p *translator) name() string {
 	if s == "" || !(s[0] == '_' || s[0] >= 'a' && s[0] <= 'z' || s[0] >= 'A' && s[0] <= 'Z') {
 		p.fail("expected identifier")
 	}
-	if strings.HasPrefix(s, "wp_") {
-		p.fail("wp_ prefix is reserved")
+	if isReservedUserIdent(s) {
+		p.fail("reserved identifier " + s)
 	}
 	return s
+}
+
+func (p *translator) registerFunc(name string, argTypes []string, ret string) {
+	for i, sig := range p.funcs[name] {
+		if len(sig.args) == len(argTypes) {
+			same := true
+			for j := range argTypes {
+				if sig.args[j] != argTypes[j] {
+					same = false
+					break
+				}
+			}
+			if same {
+				p.funcs[name][i].ret = ret
+				return
+			}
+		}
+	}
+	copied := append([]string(nil), argTypes...)
+	p.funcs[name] = append(p.funcs[name], funcSig{args: copied, ret: ret})
+}
+
+func implicitlyConvertible(from, to string) bool {
+	if from == to {
+		return true
+	}
+	switch {
+	case (from == "int" || from == "uint") && to == "float":
+		return true
+	case from == "int" && to == "uint":
+		return true
+	case strings.HasPrefix(from, "ivec") && to == "vec"+from[4:]:
+		return true
+	case strings.HasPrefix(from, "uvec") && to == "vec"+from[4:]:
+		return true
+	}
+	return false
+}
+
+func (p *translator) resolveFuncReturn(name string, sigs []funcSig, a []expr) string {
+	for _, sig := range sigs {
+		if len(sig.args) != len(a) {
+			continue
+		}
+		exact := true
+		for i := range a {
+			if sig.args[i] != a[i].typ {
+				exact = false
+				break
+			}
+		}
+		if exact {
+			return sig.ret
+		}
+	}
+	for _, sig := range sigs {
+		if len(sig.args) != len(a) {
+			continue
+		}
+		ok := true
+		for i := range a {
+			if !implicitlyConvertible(a[i].typ, sig.args[i]) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return sig.ret
+		}
+	}
+	var arityMatches []funcSig
+	for _, sig := range sigs {
+		if len(sig.args) == len(a) {
+			arityMatches = append(arityMatches, sig)
+		}
+	}
+	if len(arityMatches) == 1 {
+		return arityMatches[0].ret
+	}
+	if len(sigs) == 1 {
+		return sigs[0].ret
+	}
+	p.fail("no matching overload for " + name)
+	return ""
 }
 
 // Translate deliberately parses expressions before lowering them: replacing
@@ -188,10 +289,16 @@ func translate(src string, target Target, defs []wpk.Prop) (result string, err e
 	if err != nil {
 		return "", err
 	}
-	p := translator{ts: ts, target: target, vars: map[string]string{"iResolution": "vec3", "iTime": "float", "iTimeDelta": "float", "iFrame": "int", "iMouse": "vec4", "iDate": "vec4", "iAudioLevel": "float"}, funcs: map[string]string{}}
-	fields, slots, initial, e := propertyDecls(defs, target)
+	fields, slots, initial, propExprs, e := propertyDecls(defs, target)
 	if e != nil {
 		return "", e
+	}
+	p := translator{
+		ts:        ts,
+		target:    target,
+		vars:      map[string]string{"iResolution": "vec3", "iTime": "float", "iTimeDelta": "float", "iFrame": "int", "iMouse": "vec4", "iDate": "vec4", "iAudioLevel": "float"},
+		propExprs: propExprs,
+		funcs:     map[string][]funcSig{},
 	}
 	for _, d := range defs {
 		t, _ := propertyType(d)
@@ -208,7 +315,7 @@ func translate(src string, target Target, defs []wpk.Prop) (result string, err e
 	}
 	pre := helpers(target) + strings.Join(p.constructors, "\n")
 	if target == MSL {
-		return pre + "struct WPShader {\nfloat3 iResolution; float iTime; float iTimeDelta; int iFrame; float4 iMouse; float4 iDate; float iAudioLevel; constant float4* wp_audio;\n" + fields + body.String() + "void wp_init() {" + strings.Join(p.initializers, ";") + ";}\n};\n" + strings.Replace(strings.Replace(metalEntry, "float4 wp_audio[128];", "float4 wp_audio[128];"+slots, 1), "WPShader s;", "WPShader s;"+initial, 1), nil
+		return pre + "struct WPShader {\nfloat3 iResolution; float iTime; float iTimeDelta; int iFrame; float4 iMouse; float4 iDate; float iAudioLevel; constant float4* wp_audio;\n" + fields + body.String() + "void wp_init() {" + strings.Join(p.initializers, ";") + ";}\n};\n" + strings.Replace(strings.Replace(metalEntry, "float4 wp_audio[128];", "float4 wp_audio[128];"+slots, 1), "WPShader wp_s;", "WPShader wp_s;"+initial, 1), nil
 	}
 	return pre + fields + "cbuffer WPUniforms : register(b0) { float4 wp_resolutionTime; float4 wp_deltaFrame; float4 iMouse; float4 iDate; float4 wp_audio[128]; " + slots + "};\n#define iResolution wp_resolutionTime.xyz\n#define iTime wp_resolutionTime.w\n#define iTimeDelta wp_deltaFrame.x\n#define iFrame asint(wp_deltaFrame.y)\n#define iAudioLevel wp_deltaFrame.z\n" + body.String() + "void wp_init() {" + strings.Join(p.initializers, ";") + ";}\n" + hlslEntry, nil
 }
@@ -232,12 +339,9 @@ func (p *translator) declaration(global bool) string {
 		if !global {
 			p.fail("nested function")
 		}
-		p.funcs[name] = typ
-		saved := make(map[string]string, len(p.vars))
-		for k, v := range p.vars {
-			saved[k] = v
-		}
+		saved := p.scope()
 		var params []string
+		var paramTypes []string
 		var signature []string
 		for p.peek() != ")" {
 			qual := ""
@@ -254,6 +358,8 @@ func (p *translator) declaration(global bool) string {
 			}
 			n := p.name()
 			p.vars[n] = t
+			delete(p.propExprs, n)
+			paramTypes = append(paramTypes, t)
 			signature = append(signature, qual+":"+t)
 			decl := p.typ(t) + " " + n
 			if p.target == MSL && (qual == "out" || qual == "inout") {
@@ -267,8 +373,9 @@ func (p *translator) declaration(global bool) string {
 			}
 		}
 		p.want(")")
+		p.registerFunc(name, paramTypes, typ)
 		if p.take(";") {
-			p.vars = saved
+			p.restore(saved)
 			return p.typ(typ) + " " + name + "(" + strings.Join(params, ", ") + ");"
 		}
 		if name == "mainImage" {
@@ -278,23 +385,39 @@ func (p *translator) declaration(global bool) string {
 			p.main = true
 		}
 		b := p.statement()
-		p.vars = saved
+		p.restore(saved)
 		return p.typ(typ) + " " + name + "(" + strings.Join(params, ", ") + ") " + b
 	}
 	var parts []string
 	for {
-		p.vars[name] = typ
+		if global {
+			if _, isProp := p.propExprs[name]; isProp {
+				p.fail("redeclaration of uniform " + name)
+			}
+		}
 		decl := name
 		if p.take("[") {
 			p.fail("arrays are not supported in this subset")
 		}
-		if p.take("=") {
-			value := p.expression(1).code
+		hasInit := p.take("=")
+		var value string
+		if hasInit {
+			// Evaluate initializer before shadowing in local scope (e.g. float x = x;).
+			value = p.expression(1).code
+		}
+		p.vars[name] = typ
+		delete(p.propExprs, name)
+		if hasInit {
 			if global && !constant {
+				if p.target == MSL {
+					decl += " = " + p.typ(typ) + "(0)"
+				}
 				p.initializers = append(p.initializers, name+" = "+value)
 			} else {
 				decl += " = " + value
 			}
+		} else if global && !constant && p.target == MSL {
+			decl += " = " + p.typ(typ) + "(0)"
 		}
 		parts = append(parts, decl)
 		if !p.take(",") {
@@ -321,7 +444,7 @@ func (p *translator) statement() string {
 	switch p.peek() {
 	case "{":
 		saved := p.scope()
-		defer func() { p.vars = saved }()
+		defer p.restore(saved)
 		p.pop()
 		var b strings.Builder
 		b.WriteString("{\n")
@@ -355,7 +478,7 @@ func (p *translator) statement() string {
 		return b
 	case "for":
 		saved := p.scope()
-		defer func() { p.vars = saved }()
+		defer p.restore(saved)
 		p.pop()
 		p.want("(")
 		a := p.statement()
@@ -423,7 +546,7 @@ func (p *translator) expression(min int) expr {
 		}
 		r := p.expression(next)
 		typ := left.typ
-		if typ == "float" || typ == "int" {
+		if typ == "float" || typ == "int" || typ == "uint" {
 			typ = r.typ
 		}
 		if matrix(left.typ) && strings.HasPrefix(r.typ, "vec") {
@@ -433,14 +556,29 @@ func (p *translator) expression(min int) expr {
 			typ = left.typ
 		}
 		code := "(" + left.code + " " + op + " " + r.code + ")"
-		if op == "*" && p.target == HLSL && (matrix(left.typ) || matrix(r.typ)) {
-			code = "mul(" + left.code + ", " + r.code + ")"
+		switch op {
+		case "==", "!=":
+			typ = "bool"
+			if p.target == HLSL && (strings.Contains(left.typ, "vec") || strings.Contains(r.typ, "vec") || matrix(left.typ) || matrix(r.typ)) {
+				if op == "==" {
+					code = "all((" + left.code + ") == (" + r.code + "))"
+				} else {
+					code = "any((" + left.code + ") != (" + r.code + "))"
+				}
+			}
+		case "<", ">", "<=", ">=", "&&", "||":
+			typ = "bool"
+		case "*":
+			if p.target == HLSL && (matrix(left.typ) || matrix(r.typ)) {
+				code = "mul(" + left.code + ", " + r.code + ")"
+			}
+		case "*=":
+			if p.target == HLSL && (matrix(left.typ) || matrix(r.typ)) {
+				code = "(" + left.code + " = mul(" + left.code + ", " + r.code + "))"
+			}
 		}
 		if prec == 1 && strings.Contains(left.code, "transpose(") {
 			p.fail("matrix column writes are unsupported")
-		}
-		if op == "*=" && p.target == HLSL && (matrix(left.typ) || matrix(r.typ)) {
-			code = "(" + left.code + " = mul(" + left.code + ", " + r.code + "))"
 		}
 		left = expr{code, typ}
 	}
@@ -462,7 +600,13 @@ func (p *translator) atom() expr {
 		x = p.expression(1)
 		p.want(")")
 		x.code = "(" + x.code + ")"
-	case "+", "-", "!", "++", "--":
+	case "+", "-", "!":
+		x = p.atom()
+		x.code = s + "(" + x.code + ")"
+		if s == "!" {
+			x.typ = "bool"
+		}
+	case "++", "--":
 		x = p.atom()
 		x.code = s + x.code
 	default:
@@ -474,6 +618,10 @@ func (p *translator) atom() expr {
 			if p.peek() == "f" || p.peek() == "F" {
 				p.pop()
 				typ = "float"
+			} else if typ == "int" && (p.peek() == "u" || p.peek() == "U") {
+				p.pop()
+				typ = "uint"
+				s += "u"
 			}
 			x = expr{s, typ}
 		} else if s == "true" || s == "false" {
@@ -493,7 +641,11 @@ func (p *translator) atom() expr {
 			if !ok {
 				p.fail("unknown identifier " + s)
 			}
-			x = expr{s, t}
+			code := s
+			if repl, ok := p.propExprs[s]; ok {
+				code = repl
+			}
+			x = expr{code, t}
 		}
 	}
 	for {
@@ -526,8 +678,9 @@ func (p *translator) atom() expr {
 			base, prefix := "float", "vec"
 			if strings.HasPrefix(x.typ, "ivec") {
 				base, prefix = "int", "ivec"
-			}
-			if strings.HasPrefix(x.typ, "bvec") {
+			} else if strings.HasPrefix(x.typ, "uvec") {
+				base, prefix = "uint", "uvec"
+			} else if strings.HasPrefix(x.typ, "bvec") {
 				base, prefix = "bool", "bvec"
 			}
 			x.typ = base
@@ -544,6 +697,12 @@ func (p *translator) atom() expr {
 			}
 			if matrix(x.typ) {
 				x.typ = "vec" + x.typ[3:]
+			} else if strings.HasPrefix(x.typ, "ivec") {
+				x.typ = "int"
+			} else if strings.HasPrefix(x.typ, "uvec") {
+				x.typ = "uint"
+			} else if strings.HasPrefix(x.typ, "bvec") {
+				x.typ = "bool"
 			} else {
 				x.typ = "float"
 			}
@@ -587,8 +746,8 @@ func (p *translator) call(name string, a []expr) expr {
 		}
 		return expr{n + "(" + args + ")", name}
 	}
-	if t, ok := p.funcs[name]; ok {
-		return expr{name + "(" + args + ")", t}
+	if sigs, ok := p.funcs[name]; ok {
+		return expr{name + "(" + args + ")", p.resolveFuncReturn(name, sigs, a)}
 	}
 	allowed := " sin cos tan asin acos atan sinh cosh tanh abs sign floor ceil round trunc fract mod min max clamp mix step smoothstep length distance dot cross normalize reflect refract pow exp exp2 log log2 sqrt inversesqrt radians degrees fract fwidth dFdx dFdy any all "
 	if !strings.Contains(allowed, " "+name+" ") {
@@ -603,6 +762,8 @@ func (p *translator) call(name string, a []expr) expr {
 		typ = "float"
 	case "any", "all":
 		typ = "bool"
+	case "step", "smoothstep":
+		typ = a[len(a)-1].typ
 	case "atan":
 		if len(a) == 2 {
 			name = "atan2"
@@ -664,21 +825,30 @@ func helpers(t Target) string {
 }
 
 const metalEntry = `struct WPUniforms { float4 resolutionTime; float4 deltaFrame; float4 mouse; float4 date; float4 wp_audio[128]; };
-vertex float4 wp_vertex(uint id [[vertex_id]]) { return float4(id == 1 ? 3.0 : -1.0, id == 2 ? 3.0 : -1.0, 0.0, 1.0); }
-fragment float4 wp_fragment(float4 pos [[position]], constant WPUniforms &u [[buffer(0)]]) {
- WPShader s; s.iResolution=u.resolutionTime.xyz; s.iTime=u.resolutionTime.w; s.iTimeDelta=u.deltaFrame.x; s.iFrame=as_type<int>(u.deltaFrame.y); s.iMouse=u.mouse; s.iDate=u.date; s.iAudioLevel=u.deltaFrame.z; s.wp_audio=u.wp_audio;
- s.wp_init(); float4 color=float4(0.0); s.mainImage(color,float2(pos.x,u.resolutionTime.y-pos.y)); return color;
+vertex float4 wp_vertex(uint wp_id [[vertex_id]]) { return float4(wp_id == 1 ? 3.0 : -1.0, wp_id == 2 ? 3.0 : -1.0, 0.0, 1.0); }
+fragment float4 wp_fragment(float4 wp_pos [[position]], constant WPUniforms &wp_u [[buffer(0)]]) {
+ WPShader wp_s; wp_s.iResolution=wp_u.resolutionTime.xyz; wp_s.iTime=wp_u.resolutionTime.w; wp_s.iTimeDelta=wp_u.deltaFrame.x; wp_s.iFrame=as_type<int>(wp_u.deltaFrame.y); wp_s.iMouse=wp_u.mouse; wp_s.iDate=wp_u.date; wp_s.iAudioLevel=wp_u.deltaFrame.z; wp_s.wp_audio=wp_u.wp_audio;
+ wp_s.wp_init(); float4 wp_color=float4(0.0); wp_s.mainImage(wp_color,float2(wp_pos.x,wp_u.resolutionTime.y-wp_pos.y)); return wp_color;
 }
 `
 const hlslEntry = `
-float4 wp_vertex(uint id : SV_VertexID) : SV_Position { return float4(id == 1 ? 3.0 : -1.0, id == 2 ? 3.0 : -1.0, 0.0, 1.0); }
-float4 wp_fragment(float4 pos : SV_Position) : SV_Target { float4 color=0.0; wp_init(); mainImage(color,float2(pos.x,iResolution.y-pos.y)); return color; }
+float4 wp_vertex(uint wp_id : SV_VertexID) : SV_Position { return float4(wp_id == 1 ? 3.0 : -1.0, wp_id == 2 ? 3.0 : -1.0, 0.0, 1.0); }
+float4 wp_fragment(float4 wp_pos : SV_Position) : SV_Target { float4 wp_color=0.0; wp_init(); mainImage(wp_color,float2(wp_pos.x,iResolution.y-wp_pos.y)); return wp_color; }
 `
 
-func (p *translator) scope() map[string]string {
-	saved := make(map[string]string, len(p.vars))
+func (p *translator) scope() scopeSnapshot {
+	savedVars := make(map[string]string, len(p.vars))
 	for k, v := range p.vars {
-		saved[k] = v
+		savedVars[k] = v
 	}
-	return saved
+	savedProps := make(map[string]string, len(p.propExprs))
+	for k, v := range p.propExprs {
+		savedProps[k] = v
+	}
+	return scopeSnapshot{vars: savedVars, propExprs: savedProps}
+}
+
+func (p *translator) restore(s scopeSnapshot) {
+	p.vars = s.vars
+	p.propExprs = s.propExprs
 }

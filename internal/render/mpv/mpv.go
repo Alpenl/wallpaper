@@ -1,6 +1,8 @@
 package mpv
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -62,14 +64,32 @@ func New(o Options) *Renderer {
 	return r
 }
 
-var seq atomic.Int64
-
-func (r *Renderer) ipcName() string {
-	n := seq.Add(1)
-	if runtime.GOOS == "windows" {
-		return fmt.Sprintf(`\\.\pipe\wpd-%d-mpv-%s-%d`, os.Getpid(), r.o.Display, n)
+func (r *Renderer) ipcEndpoint() (string, func(), error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", nil, fmt.Errorf("mpv: random ipc token: %w", err)
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("wpd-%d-mpv-%d.sock", os.Getpid(), n))
+	token := hex.EncodeToString(buf[:])
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(`\\.\pipe\wpd-%d-mpv-%s`, os.Getpid(), token), func() {}, nil
+	}
+	dir, err := os.MkdirTemp("", "wpd-mpv-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("mpv: create ipc dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, fmt.Errorf("mpv: chmod ipc dir: %w", err)
+	}
+	sock := filepath.Join(dir, "ipc-"+token+".sock")
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			_ = os.Remove(sock)
+			_ = os.RemoveAll(dir)
+		})
+	}
+	return sock, cleanup, nil
 }
 
 // Args 返回 06 章 6.5 的播放参数（导出以便测试）。
@@ -235,28 +255,35 @@ func executableError(path string, err error) error {
 // Load 启动 mpv 并等待 IPC 就绪。
 func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	r.Close()
-	name := r.ipcName()
+	name, cleanupIPC, err := r.ipcEndpoint()
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	o := r.o
 	r.mu.Unlock()
 	path, err := ResolveExecutable(o.Path)
 	if err != nil {
+		cleanupIPC()
 		return executableError(o.Path, err)
 	}
 	cmd := exec.Command(path, Args(o, s.Native(), name, it.Path, paused, it.Start)...)
 	var stderr *telemetry.ChildLog
 	if o.LogFile != "" {
 		if err := telemetry.RotateChildLog(o.LogFile); err != nil {
+			cleanupIPC()
 			return err
 		}
 		stderr, err = telemetry.NewChildLog(strings.TrimSuffix(o.LogFile, ".log") + "-stderr.log")
 		if err != nil {
+			cleanupIPC()
 			return err
 		}
 		cmd.Stderr = stderr
 	}
 	log := render.LogFunc(func(msg string, fields ...any) { r.childLogger(cmd.Process.Pid).Log(msg, fields...) })
 	finish := func(err error) {
+		cleanupIPC()
 		if stderr != nil {
 			logErr := stderr.Close()
 			log.Log("child_log", "err", logErr, "dropped", stderr.Dropped())
@@ -265,6 +292,7 @@ func (r *Renderer) Load(it render.Item, s desktop.Surface, paused bool) error {
 	}
 	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
+		cleanupIPC()
 		if stderr != nil {
 			_ = stderr.Close()
 		}
@@ -336,8 +364,11 @@ func (r *Renderer) statsLoop(c *client, stop <-chan struct{}, cmd *exec.Cmd) {
 		}
 		pos, err := c.getFloat("time-pos")
 		if err != nil {
-			if err == errClosed {
+			if errors.Is(err, errClosed) {
 				return
+			}
+			if errors.Is(err, errUnavailable) {
+				continue
 			}
 			s := r.Stats()
 			s.LastErr = err.Error()
@@ -378,7 +409,12 @@ func (r *Renderer) SetLevel(l visibility.Level) error {
 			r.pos = p
 			r.mu.Unlock()
 		}
+		// Mark L3 before stop so statsLoop does not race with time-pos becoming unavailable.
+		r.level.Store(int32(l))
 		_, err = c.cmd("stop")
+		if err != nil {
+			r.level.Store(int32(prev))
+		}
 	case l < visibility.L3 && prev >= visibility.L3:
 		r.mu.Lock()
 		pos := r.pos

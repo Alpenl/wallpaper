@@ -79,6 +79,9 @@ type Shader struct {
 	Passes  []string `json:"passes,omitempty"`
 }
 
+// PropertyDef is an alias for Prop for caller readability across packages.
+type PropertyDef = Prop
+
 type Prop struct {
 	MaxLength int               `json:"maxLength,omitempty"`
 	Key       string            `json:"key"`
@@ -300,6 +303,9 @@ func (m *Manifest) Validate() error {
 	}
 	return m.checkEntryExt()
 }
+
+// Validate checks a single property definition against the manifest schema.
+func (p Prop) Validate() error { return p.validate() }
 
 func (p Prop) validate() error {
 	if !rePropK.MatchString(p.Key) {

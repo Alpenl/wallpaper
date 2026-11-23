@@ -15,7 +15,7 @@ import (
 )
 
 type foregroundAtoms struct {
-	active, pid xproto.Atom
+	active, pid, utf8String xproto.Atom
 }
 
 func (h *Host) initForeground() {
@@ -31,7 +31,11 @@ func (h *Host) initForeground() {
 	if _, err := os.Readlink("/proc/self/exe"); err != nil {
 		return
 	}
-	h.foregroundAtoms = foregroundAtoms{active: h.atom("_NET_ACTIVE_WINDOW"), pid: h.atom("_NET_WM_PID")}
+	h.foregroundAtoms = foregroundAtoms{
+		active:     h.atom("_NET_ACTIVE_WINDOW"),
+		pid:        h.atom("_NET_WM_PID"),
+		utf8String: h.atom("UTF8_STRING"),
+	}
 	supported := h.atom("_NET_SUPPORTED")
 	if h.foregroundAtoms.active == 0 || h.foregroundAtoms.pid == 0 || supported == 0 {
 		return
@@ -68,12 +72,17 @@ func (h *Host) foregroundExecutable() string {
 	}
 	// X clients can live on other machines. Never interpret a remote client's
 	// PID as a local /proc PID; EWMH requires WM_CLIENT_MACHINE alongside PID.
-	r, err := xproto.GetProperty(h.c, false, window, xproto.AtomWmClientMachine, xproto.AtomString, 0, 256).Reply()
-	if err != nil || r == nil || r.Type != xproto.AtomString || r.Format != 8 || r.BytesAfter != 0 ||
+	// Use GetPropertyTypeAny to accept both STRING and UTF8_STRING properties.
+	r, err := xproto.GetProperty(h.c, false, window, xproto.AtomWmClientMachine, xproto.GetPropertyTypeAny, 0, 256).Reply()
+	if err != nil || r == nil || !validMachinePropType(r.Type, h.foregroundAtoms.utf8String) || r.Format != 8 || r.BytesAfter != 0 ||
 		!sameMachine(string(r.Value), h.foregroundHostname) {
 		return ""
 	}
 	return processExecutable("/proc", pid)
+}
+
+func validMachinePropType(typ, utf8 xproto.Atom) bool {
+	return typ == xproto.AtomString || (utf8 != 0 && typ == utf8)
 }
 
 func (h *Host) cardinal(window xproto.Window, property, typ xproto.Atom) uint32 {

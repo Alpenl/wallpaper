@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PROJECT_DIR/scripts/claude-summary-context.sh\"",
+            "command": "python \"$CLAUDE_PROJECT_DIR/scripts/claude-summary-context.py\"",
             "timeout": 15,
             "statusMessage": "检查提交总结约定与本地钩子配置"
           }

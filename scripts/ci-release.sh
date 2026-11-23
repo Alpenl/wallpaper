@@ -15,7 +15,7 @@ if [ -n "${WPAPP_WINDOWS_PFX_BASE64:-}" ]; then
   export WPAPP_WINDOWS_PASSWORD_FILE="$scratch/windows-password"
   printf '%s' "${WPAPP_WINDOWS_PFX_PASSWORD:-}" > "$WPAPP_WINDOWS_PASSWORD_FILE"
   if [ -z "${WPAPP_SIGN_CMD:-}" ]; then
-    export WPAPP_SIGN_CMD='osslsigncode sign -pkcs12 "$WPAPP_WINDOWS_PFX" -readpass "$WPAPP_WINDOWS_PASSWORD_FILE" -in {} -out {}.signed && mv {}.signed {}'
+    export WPAPP_SIGN_CMD='osslsigncode sign -h sha256 -ts "${WPAPP_TIMESTAMP_URL:-http://timestamp.digicert.com}" -pkcs12 "$WPAPP_WINDOWS_PFX" -readpass "$WPAPP_WINDOWS_PASSWORD_FILE" -in "$1" -out "$1.signed" && mv "$1.signed" "$1"'
   fi
 fi
 if [ -n "${WPAPP_MACOS_P12_BASE64:-}" ] && [ -n "${WPAPP_CODESIGN_ID:-}" ]; then

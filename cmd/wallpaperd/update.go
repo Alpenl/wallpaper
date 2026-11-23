@@ -22,9 +22,17 @@ import (
 
 // installDir 是可更新的安装目录：Windows/Linux 为 exe 所在目录；macOS 为 .app/Contents。
 func installDir(exe string) string {
-	d := filepath.Dir(exe)
-	if runtime.GOOS == "darwin" && filepath.Base(d) == "MacOS" {
-		return filepath.Dir(d)
+	return installDirFor(runtime.GOOS, exe)
+}
+
+func installDirFor(goos, exe string) string {
+	cleaned := filepath.Clean(exe)
+	d := filepath.Dir(cleaned)
+	if goos == "darwin" && filepath.Base(d) == "MacOS" {
+		contents := filepath.Dir(d)
+		if filepath.Base(contents) == "Contents" {
+			return contents
+		}
 	}
 	return d
 }
@@ -60,11 +68,18 @@ func bootUpdate(exe string) (restart bool) {
 	return recovering || rb
 }
 
+// relaunchCmd 构造重启新实例的命令。Windows 上设置 CREATE_BREAKAWAY_FROM_JOB，
+// 避免旧进程退出关闭 KILL_ON_JOB_CLOSE Job Object 时一并终止新实例。
+func relaunchCmd(exe string, args []string) *exec.Cmd {
+	cmd := exec.Command(exe, args...)
+	cmd.Env = append(os.Environ(), "WPAPP_RELAUNCH_WAIT=1")
+	configureRelaunch(cmd)
+	return cmd
+}
+
 // relaunch 启动一个新实例。新实例先等旧实例退出、释放单实例锁（WPAPP_RELAUNCH_WAIT）。
 func relaunch(exe string) {
-	cmd := exec.Command(exe, os.Args[1:]...)
-	cmd.Env = append(os.Environ(), "WPAPP_RELAUNCH_WAIT=1")
-	_ = cmd.Start()
+	_ = relaunchCmd(exe, os.Args[1:]).Start()
 }
 
 // waitRelaunch 在被 relaunch 启动时稍等旧进程退出。
@@ -86,10 +101,10 @@ func (e *env) updateHooks(h *ui.Hooks, quit func()) {
 		pending, pendingFeed = nil, ""
 		mu.Unlock()
 		if c.Pub == nil {
-			return nil, errors.New("这个构建没有内置更新公钥")
+			return nil, errors.New("update: this build has no update public key")
 		}
 		if c.Feed == "" {
-			return nil, errors.New("还没有配置更新源")
+			return nil, errors.New("update: no feed configured")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -114,11 +129,11 @@ func (e *env) updateHooks(h *ui.Hooks, quit func()) {
 		m, feed := pending, pendingFeed
 		mu.Unlock()
 		if m == nil {
-			return errors.New("请先检查更新")
+			return errors.New("update: check for updates first")
 		}
 		client := e.updater()
 		if client.Feed != feed {
-			return errors.New("更新源已改变，请重新检查更新")
+			return errors.New("update: feed changed")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()

@@ -17,40 +17,54 @@ func CollectSources(src string) ([]string, error) {
 }
 
 func collectSources(src string, limit int) ([]string, error) {
+	if err := rejectUnsafeHostPath(src); err != nil {
+		return nil, err
+	}
 	st, err := os.Stat(src)
 	if err != nil {
 		return nil, err
 	}
-	if !st.IsDir() || packageDir(src) {
+	if !st.IsDir() {
 		return []string{src}, nil
+	}
+	walkRoot := src
+	if lst, lerr := os.Lstat(src); lerr == nil && lst.Mode()&os.ModeSymlink != 0 {
+		resolved, rerr := filepath.EvalSymlinks(src)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if err := rejectUnsafeHostPath(resolved); err != nil {
+			return nil, err
+		}
+		walkRoot = resolved
+	}
+	if packageDir(walkRoot) {
+		return []string{walkRoot}, nil
 	}
 	var paths []string
 	appendSource := func(path string) error {
 		if len(paths) >= limit {
-			return fmt.Errorf("import: 文件夹超过 %d 项，请分批导入", limit)
+			return fmt.Errorf("import: folder exceeds %d items; import in smaller batches", limit)
 		}
 		paths = append(paths, path)
 		return nil
 	}
-	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if path != src && strings.HasPrefix(d.Name(), ".") {
+		if path != walkRoot && strings.HasPrefix(d.Name(), ".") {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if d.Type()&os.ModeSymlink != 0 {
+		if path != walkRoot && d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
 		if d.IsDir() {
-			if path == src {
+			if path == walkRoot {
 				return nil
-			}
-			if strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
 			}
 			if packageDir(path) {
 				if err := appendSource(path); err != nil {
@@ -75,11 +89,17 @@ func collectSources(src string, limit int) ([]string, error) {
 		return nil, err
 	}
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("import: 文件夹中没有支持的视频、图片或壁纸包")
+		return nil, fmt.Errorf("import: folder contains no supported videos, images, or wallpaper packages")
 	}
 	return paths, nil
 }
 
 func packageDir(path string) bool {
-	return exists(filepath.Join(path, "LivelyInfo.json")) || exists(filepath.Join(path, "project.json")) || exists(filepath.Join(path, "manifest.json"))
+	if _, ok := findFileFold(path, "LivelyInfo.json"); ok {
+		return true
+	}
+	if _, ok := findFileFold(path, "project.json"); ok {
+		return true
+	}
+	return existsExact(path, "manifest.json")
 }

@@ -4,11 +4,16 @@ package reactive
 
 import (
 	"fmt"
-	"github.com/ebitengine/purego"
-	"github.com/ebitengine/purego/objc"
+	"log/slog"
+	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/ebitengine/purego"
+	"github.com/ebitengine/purego/objc"
+
 	"wpapp/internal/platform/macos"
 )
 
@@ -16,48 +21,82 @@ var sel = objc.RegisterName
 
 func cls(s string) objc.ID { return objc.ID(objc.GetClass(s)) }
 
+const (
+	pointerSampleInterval = 16 * time.Millisecond
+
+	asyncPending  int32 = 0
+	asyncDone     int32 = 1
+	asyncTimedOut int32 = 2
+
+	// SCStreamErrorAttemptToStopStreamState (-3808): stream is already stopped.
+	scStreamErrorAttemptToStopStreamState int64 = -3808
+)
+
 type macPointer struct {
-	monitor objc.ID
-	block   objc.Block
-	sample  PointerSample
+	mu     sync.Mutex
+	ready  bool
+	last   PointerSample
+	lastAt time.Time
 }
 
 func newPointer() Pointer { return &macPointer{} }
+
 func (p *macPointer) Start() error {
-	if macos.Main == nil {
-		macos.Main = func(fn func()) { fn() }
-	}
-	if e := macos.Load(); e != nil {
+	if e := macos.LoadFrameworks(); e != nil {
 		return e
 	}
-	// Mouse-only masks: left/right/other down/up, moved and dragged. No key events.
-	const mask = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 25) | (1 << 26) | (1 << 27)
-	p.block = objc.NewBlock(func(_ objc.Block, event objc.ID) { p.update() })
-	p.monitor = cls("NSEvent").Send(sel("addGlobalMonitorForEventsMatchingMask:handler:"), uint64(mask), p.block)
-	if p.monitor == 0 {
-		p.block.Release()
-		return fmt.Errorf("mouse: NSEvent global monitor unavailable")
-	}
-	p.update()
+	p.mu.Lock()
+	p.ready = true
+	p.last = PointerSample{}
+	p.lastAt = time.Time{}
+	p.mu.Unlock()
 	return nil
 }
-func (p *macPointer) update() {
-	point := objc.Send[macos.CGPoint](cls("NSEvent"), sel("mouseLocation"))
-	screens := cls("NSScreen").Send(sel("screens"))
-	first := screens.Send(sel("firstObject"))
-	frame := objc.Send[macos.CGRect](first, sel("frame"))
-	p.sample = PointerSample{X: point.X, Y: frame.Size.H - point.Y, Buttons: uint32(cls("NSEvent").Send(sel("pressedMouseButtons")))}
-}
+
 func (p *macPointer) Stop() {
-	if p.monitor != 0 {
-		cls("NSEvent").Send(sel("removeMonitor:"), p.monitor)
-		p.monitor = 0
-		p.block.Release()
-	}
-	p.sample = PointerSample{}
+	p.mu.Lock()
+	p.ready = false
+	p.last = PointerSample{}
+	p.lastAt = time.Time{}
+	p.mu.Unlock()
 }
+
 func (p *macPointer) Sample() PointerSample {
-	v := p.sample
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.ready {
+		return PointerSample{}
+	}
+	now := time.Now()
+	if !p.lastAt.IsZero() && now.Sub(p.lastAt) < pointerSampleInterval {
+		return p.last
+	}
+	v := sampleMacPointer()
+	p.last = v
+	p.lastAt = now
+	return v
+}
+
+func sampleMacPointer() PointerSample {
+	pool := cls("NSAutoreleasePool").Send(sel("new"))
+	if pool != 0 {
+		defer pool.Send(sel("drain"))
+	}
+	screens := cls("NSScreen").Send(sel("screens"))
+	if screens == 0 {
+		return PointerSample{}
+	}
+	first := screens.Send(sel("firstObject"))
+	if first == 0 {
+		return PointerSample{}
+	}
+	frame := objc.Send[macos.CGRect](first, sel("frame"))
+	point := objc.Send[macos.CGPoint](cls("NSEvent"), sel("mouseLocation"))
+	v := PointerSample{
+		X:       point.X,
+		Y:       frame.Size.H - point.Y,
+		Buttons: uint32(cls("NSEvent").Send(sel("pressedMouseButtons"))),
+	}
 	arr := macos.CGWindowListCopyWindowInfo(1|16, 0)
 	if arr == 0 {
 		return v
@@ -68,14 +107,25 @@ func (p *macPointer) Sample() PointerSample {
 	for i, n := 0, macos.CFArrayGetCount(arr); i < n; i++ {
 		d := macos.CFArrayGetValueAtIndex(arr, i)
 		var layer int32
-		if !macos.CFNumberGetValue(macos.CFDictionaryGetValue(d, macos.KLayer), 3, unsafe.Pointer(&layer)) {
+		layerNum := macos.CFDictionaryGetValue(d, macos.KLayer)
+		if layerNum == 0 || !macos.CFNumberGetValue(layerNum, 3, unsafe.Pointer(&layer)) {
 			return v
 		}
 		if layer < 0 {
 			continue
 		}
+		// Skip invisible system helper windows (alpha <= 0.01).
+		if macos.KAlpha != 0 {
+			if alphaNum := macos.CFDictionaryGetValue(d, macos.KAlpha); alphaNum != 0 {
+				var alpha float64
+				if macos.CFNumberGetValue(alphaNum, 6 /* kCFNumberFloat64Type */, unsafe.Pointer(&alpha)) && alpha <= 0.01 {
+					continue
+				}
+			}
+		}
 		var r macos.CGRect
-		if !macos.CGRectMakeWithDict(macos.CFDictionaryGetValue(d, macos.KBounds), &r) {
+		bDict := macos.CFDictionaryGetValue(d, macos.KBounds)
+		if bDict == 0 || !macos.CGRectMakeWithDict(bDict, &r) {
 			return v
 		}
 		if v.X >= r.Origin.X && v.X < r.Origin.X+r.Size.W && v.Y >= r.Origin.Y && v.Y < r.Origin.Y+r.Size.H {
@@ -91,22 +141,25 @@ type macAudio struct {
 	stream, output objc.ID
 	ring           []float32
 	active         bool
+	running        bool
 	failure        error
 	lastSample     time.Time
 }
 
 func newAudio() Source { return &macAudio{} }
 
-var audioClass objc.Class
-var audioOnce sync.Once
-var audioError error
-var audioSources sync.Map
-var sampleCount func(uintptr) int
-var sampleFormat func(uintptr) uintptr
-var formatASBD func(uintptr) uintptr
-var copyPCM func(uintptr, int32, int32, unsafe.Pointer) int32
-var preflight func() bool
-var globalQueue func(int64, uintptr) uintptr
+var (
+	audioClass   objc.Class
+	audioOnce    sync.Once
+	audioError   error
+	audioSources sync.Map
+	sampleCount  func(uintptr) int
+	sampleFormat func(uintptr) uintptr
+	formatASBD   func(uintptr) *asbd
+	copyPCM      func(uintptr, int32, int32, unsafe.Pointer) int32
+	preflight    func() bool
+	globalQueue  func(int64, uintptr) uintptr
+)
 
 // AudioStreamBasicDescription and a mono AudioBufferList use fixed native ABI.
 type asbd struct {
@@ -121,10 +174,7 @@ type audioBufferList struct {
 
 func loadAudio() {
 	audioOnce.Do(func() {
-		if macos.Main == nil {
-			macos.Main = func(fn func()) { fn() }
-		}
-		if e := macos.Load(); e != nil {
+		if e := macos.LoadFrameworks(); e != nil {
 			audioError = e
 			return
 		}
@@ -155,6 +205,10 @@ func loadAudio() {
 		purego.RegisterLibFunc(&globalQueue, lib, "dispatch_get_global_queue")
 		audioClass, audioError = objc.RegisterClass("WPKAudioOutput", objc.GetClass("NSObject"), []*objc.Protocol{objc.GetProtocol("SCStreamOutput"), objc.GetProtocol("SCStreamDelegate")}, nil, []objc.MethodDef{
 			{Cmd: sel("stream:didOutputSampleBuffer:ofType:"), Fn: func(self objc.ID, _ objc.SEL, _ objc.ID, b uintptr, kind int64) {
+				pool := cls("NSAutoreleasePool").Send(sel("new"))
+				if pool != 0 {
+					defer pool.Send(sel("drain"))
+				}
 				if kind != 1 {
 					return
 				}
@@ -163,16 +217,31 @@ func loadAudio() {
 				}
 			}},
 			{Cmd: sel("stream:didStopWithError:"), Fn: func(self objc.ID, _ objc.SEL, _ objc.ID, e objc.ID) {
+				pool := cls("NSAutoreleasePool").Send(sel("new"))
+				if pool != 0 {
+					defer pool.Send(sel("drain"))
+				}
 				if v, ok := audioSources.Load(self); ok {
 					s := v.(*macAudio)
+					var desc string
+					if e != 0 {
+						desc = macos.GoString(e.Send(sel("localizedDescription")))
+					}
 					s.mu.Lock()
-					s.failure = fmt.Errorf("ScreenCaptureKit stopped: %s", macos.GoString(e.Send(sel("localizedDescription"))))
+					s.running = false
+					s.active = false
+					if desc != "" {
+						s.failure = fmt.Errorf("ScreenCaptureKit stopped: %s", desc)
+					} else {
+						s.failure = fmt.Errorf("ScreenCaptureKit stopped")
+					}
 					s.mu.Unlock()
 				}
 			}},
 		})
 	})
 }
+
 func (s *macAudio) Start() (err error) {
 	loadAudio()
 	if audioError != nil {
@@ -189,41 +258,56 @@ func (s *macAudio) Start() (err error) {
 	if !preflight() {
 		return fmt.Errorf("ScreenCaptureKit unsupported in current TCC state: Screen Recording access not granted (undetermined or denied); authorize the app in System Settings and restart")
 	}
-	// Asynchronous enumeration uses a buffered channel; retained content is
-	// released by the callback even if the operation has already timed out.
+	// Asynchronous enumeration transfers block ownership atomically on timeout
+	// so the ObjC completion handler is never freed before it executes.
 	type contentResult struct {
 		content objc.ID
 		err     error
 	}
-	done := make(chan contentResult)
-	cancel := make(chan struct{})
-	defer close(cancel)
-	block := objc.NewBlock(func(_ objc.Block, content, e objc.ID) {
+	done := make(chan contentResult, 1)
+	var state atomic.Int32
+	block := objc.NewBlock(func(self objc.Block, content, e objc.ID) {
+		pool := cls("NSAutoreleasePool").Send(sel("new"))
 		var result contentResult
 		if e != 0 {
 			result.err = fmt.Errorf("ScreenCaptureKit content: %s", macos.GoString(e.Send(sel("localizedDescription"))))
-		} else {
+		} else if content != 0 {
 			result.content = content.Send(sel("retain"))
 		}
-		select {
-		case done <- result:
-		case <-cancel:
+		if pool != 0 {
+			pool.Send(sel("drain"))
+		}
+		if state.CompareAndSwap(asyncPending, asyncDone) {
+			done <- result
+		} else {
 			if result.content != 0 {
 				result.content.Send(sel("release"))
 			}
+			self.Release()
 		}
 	})
-	defer block.Release()
 	cls("SCShareableContent").Send(sel("getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:"), true, true, block)
 	var content objc.ID
 	select {
 	case r := <-done:
+		block.Release()
 		if r.err != nil {
 			return r.err
 		}
 		content = r.content
 	case <-time.After(3 * time.Second):
-		return fmt.Errorf("ScreenCaptureKit content timeout")
+		if state.CompareAndSwap(asyncPending, asyncTimedOut) {
+			return fmt.Errorf("ScreenCaptureKit content timeout")
+		}
+		r := <-done
+		block.Release()
+		if r.err != nil {
+			return r.err
+		}
+		content = r.content
+	}
+	if content == 0 {
+		return fmt.Errorf("ScreenCaptureKit: empty shareable content")
 	}
 	defer content.Send(sel("release"))
 	display := content.Send(sel("displays")).Send(sel("firstObject"))
@@ -238,16 +322,24 @@ func (s *macAudio) Start() (err error) {
 	config.Send(sel("setChannelCount:"), 1)
 	config.Send(sel("setWidth:"), 2)
 	config.Send(sel("setHeight:"), 2)
-	s.output = objc.ID(audioClass).Send(sel("new"))
-	audioSources.Store(s.output, s)
-	s.stream = cls("SCStream").Send(sel("alloc")).Send(sel("initWithFilter:configuration:delegate:"), filter, config, s.output)
+	output := objc.ID(audioClass).Send(sel("new"))
+	audioSources.Store(output, s)
+	stream := cls("SCStream").Send(sel("alloc")).Send(sel("initWithFilter:configuration:delegate:"), filter, config, output)
+	s.mu.Lock()
+	s.output = output
+	s.stream = stream
+	s.running = false
+	s.mu.Unlock()
 	defer func() {
 		if err != nil {
 			s.Stop()
 		}
 	}()
+	if stream == 0 {
+		return fmt.Errorf("ScreenCaptureKit: failed to allocate SCStream")
+	}
 	var nativeError objc.ID
-	if !objc.Send[bool](s.stream, sel("addStreamOutput:type:sampleHandlerQueue:error:"), s.output, 1, globalQueue(0, 0), &nativeError) {
+	if !objc.Send[bool](stream, sel("addStreamOutput:type:sampleHandlerQueue:error:"), output, 1, globalQueue(0, 0), &nativeError) {
 		return fmt.Errorf("ScreenCaptureKit audio output: %s", macos.GoString(nativeError.Send(sel("localizedDescription"))))
 	}
 	s.mu.Lock()
@@ -255,45 +347,88 @@ func (s *macAudio) Start() (err error) {
 	s.ring = make([]float32, 4096)
 	s.failure = nil
 	s.mu.Unlock()
-	return streamOperation(s.stream, "startCaptureWithCompletionHandler:")
+	opErr, timedOut := streamOperation(stream, "startCaptureWithCompletionHandler:", false)
+	if opErr != nil {
+		if timedOut {
+			// Stream may finish starting asynchronously after timeout; allow Stop() to attempt stopCapture.
+			s.mu.Lock()
+			s.running = true
+			s.mu.Unlock()
+		}
+		return opErr
+	}
+	s.mu.Lock()
+	s.running = true
+	s.mu.Unlock()
+	return nil
 }
-func streamOperation(stream objc.ID, method string) error {
+
+func streamOperation(stream objc.ID, method string, ignoreAlreadyStopped bool) (error, bool) {
 	done := make(chan error, 1)
-	b := objc.NewBlock(func(_ objc.Block, e objc.ID) {
+	var state atomic.Int32
+	b := objc.NewBlock(func(self objc.Block, e objc.ID) {
+		pool := cls("NSAutoreleasePool").Send(sel("new"))
 		var err error
 		if e != 0 {
-			err = fmt.Errorf("ScreenCaptureKit: %s", macos.GoString(e.Send(sel("localizedDescription"))))
+			code := objc.Send[int64](e, sel("code"))
+			if !(ignoreAlreadyStopped && code == scStreamErrorAttemptToStopStreamState) {
+				err = fmt.Errorf("ScreenCaptureKit: %s (code %d)", macos.GoString(e.Send(sel("localizedDescription"))), code)
+			}
 		}
-		done <- err
+		if pool != 0 {
+			pool.Send(sel("drain"))
+		}
+		if state.CompareAndSwap(asyncPending, asyncDone) {
+			done <- err
+		} else {
+			// Caller timed out; callback now owns releasing the block.
+			self.Release()
+		}
 	})
-	defer b.Release()
 	stream.Send(sel(method), b)
 	select {
 	case e := <-done:
-		return e
+		b.Release()
+		return e, false
 	case <-time.After(3 * time.Second):
-		return fmt.Errorf("ScreenCaptureKit operation timeout")
+		if state.CompareAndSwap(asyncPending, asyncTimedOut) {
+			return fmt.Errorf("ScreenCaptureKit operation timeout"), true
+		}
+		e := <-done
+		b.Release()
+		return e, false
 	}
 }
+
 func (s *macAudio) Stop() {
 	s.mu.Lock()
 	s.active = false
-	clear(s.ring[:cap(s.ring)])
-	s.ring = nil
-	s.mu.Unlock()
-	if s.stream != 0 {
-		if e := streamOperation(s.stream, "stopCaptureWithCompletionHandler:"); e != nil {
-			panic(e)
-		} // Fail closed: terminate the isolated host if stopping cannot be confirmed.
-		s.stream.Send(sel("release"))
-		s.stream = 0
+	wasRunning := s.running
+	s.running = false
+	if s.ring != nil {
+		clear(s.ring[:cap(s.ring)])
+		s.ring = nil
 	}
-	if s.output != 0 {
-		audioSources.Delete(s.output)
-		s.output.Send(sel("release"))
-		s.output = 0
+	stream := s.stream
+	s.stream = 0
+	output := s.output
+	s.output = 0
+	s.mu.Unlock()
+
+	if stream != 0 {
+		if wasRunning {
+			if e, _ := streamOperation(stream, "stopCaptureWithCompletionHandler:", true); e != nil {
+				slog.Warn("ScreenCaptureKit stopCapture failed", "err", e)
+			}
+		}
+		stream.Send(sel("release"))
+	}
+	if output != 0 {
+		audioSources.Delete(output)
+		output.Send(sel("release"))
 	}
 }
+
 func (s *macAudio) receive(b uintptr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -305,10 +440,10 @@ func (s *macAudio) receive(b uintptr) {
 		return
 	}
 	f := formatASBD(sampleFormat(b))
-	if f == 0 {
+	if f == nil {
 		return
 	}
-	format := *(*asbd)(unsafe.Pointer(f))
+	format := *f
 	if format.Format != 0x6c70636d || format.Rate != 48000 || format.Channels != 1 || format.Bits != 32 || format.Flags&1 == 0 || format.Flags&2 != 0 {
 		s.failure = fmt.Errorf("ScreenCaptureKit unsupported PCM format")
 		return
@@ -319,6 +454,11 @@ func (s *macAudio) receive(b uintptr) {
 		s.failure = fmt.Errorf("ScreenCaptureKit PCM copy failed")
 		return
 	}
+	for i, v := range pcm {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			pcm[i] = 0
+		}
+	}
 	s.lastSample = time.Now()
 	s.ring = append(s.ring, pcm...)
 	if len(s.ring) > 4096 {
@@ -327,6 +467,7 @@ func (s *macAudio) receive(b uintptr) {
 		s.ring = s.ring[:4096]
 	}
 }
+
 func (s *macAudio) Read() ([]float32, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

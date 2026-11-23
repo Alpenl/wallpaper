@@ -50,26 +50,49 @@ type EventHandler func(method string, p json.RawMessage)
 // ErrLineTooLong 在单行超过 MaxLine 时返回。
 var ErrLineTooLong = errors.New("E_PROTO: line exceeds 1 MiB")
 
+// DefaultEmitTimeout bounds event writes so a stalled peer cannot block Emit indefinitely.
+const DefaultEmitTimeout = 5 * time.Second
+
 // Conn 是双向连接：Call 发请求，Emit 发事件。
 type Conn struct {
 	lifecycleLog func(string, ...any)
 	rw           io.ReadWriteCloser
-	wmu          sync.Mutex
+	wsem         chan struct{}
 	mu           sync.Mutex
 	nextID       uint32
 	pending      map[uint32]chan Msg
 	onReq        Handler
 	onEvt        EventHandler
 	done         chan struct{}
+	closed       chan struct{}
+	closeOnce    sync.Once
+	emitTimeout  atomic.Int64
 	err          error
 }
 
 // New 建立连接并开始读。
 func New(rw io.ReadWriteCloser, onReq Handler, onEvt EventHandler) *Conn {
-	c := &Conn{rw: rw, pending: map[uint32]chan Msg{}, onReq: onReq, onEvt: onEvt, done: make(chan struct{})}
+	c := &Conn{
+		rw:      rw,
+		wsem:    make(chan struct{}, 1),
+		pending: map[uint32]chan Msg{},
+		onReq:   onReq,
+		onEvt:   onEvt,
+		done:    make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+	c.emitTimeout.Store(int64(DefaultEmitTimeout))
 	// Conn 拥有读取循环；连接关闭或协议/读取失败后退出。
 	go c.readLoop()
 	return c
+}
+
+// SetEmitTimeout configures the write timeout used by Emit. Non-positive values restore DefaultEmitTimeout.
+func (c *Conn) SetEmitTimeout(d time.Duration) {
+	if d <= 0 {
+		d = DefaultEmitTimeout
+	}
+	c.emitTimeout.Store(int64(d))
 }
 
 // Done 在连接断开时关闭。
@@ -82,12 +105,84 @@ func (c *Conn) Err() error {
 	return c.err
 }
 
-// Close 关闭底层传输。
-func (c *Conn) Close() error { return c.rw.Close() }
+// Close closes the underlying transport first to unblock any stuck Read/Write
+// before acquiring cleanup locks.
+func (c *Conn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	err := c.rw.Close()
+	c.mu.Lock()
+	if c.err == nil {
+		c.err = io.ErrClosedPipe
+	}
+	for id, ch := range c.pending {
+		close(ch)
+		delete(c.pending, id)
+	}
+	c.mu.Unlock()
+	return err
+}
 
-func (c *Conn) write(m Msg) error { return c.writeTimed(m, 0) }
+func (c *Conn) isClosed() bool {
+	select {
+	case <-c.closed:
+		return true
+	case <-c.done:
+		return true
+	default:
+		return false
+	}
+}
 
-func (c *Conn) writeTimed(m Msg, timeout time.Duration) error {
+func (c *Conn) acquireWrite(deadline time.Time) error {
+	if c.isClosed() {
+		return io.ErrClosedPipe
+	}
+	select {
+	case c.wsem <- struct{}{}:
+		if c.isClosed() {
+			<-c.wsem
+			return io.ErrClosedPipe
+		}
+		return nil
+	default:
+	}
+	if deadline.IsZero() {
+		select {
+		case c.wsem <- struct{}{}:
+			if c.isClosed() {
+				<-c.wsem
+				return io.ErrClosedPipe
+			}
+			return nil
+		case <-c.closed:
+			return io.ErrClosedPipe
+		case <-c.done:
+			return io.ErrClosedPipe
+		}
+	}
+	rem := time.Until(deadline)
+	if rem <= 0 {
+		return fmt.Errorf("E_TIMEOUT: write: %w", os.ErrDeadlineExceeded)
+	}
+	t := time.NewTimer(rem)
+	defer t.Stop()
+	select {
+	case c.wsem <- struct{}{}:
+		if c.isClosed() {
+			<-c.wsem
+			return io.ErrClosedPipe
+		}
+		return nil
+	case <-c.closed:
+		return io.ErrClosedPipe
+	case <-c.done:
+		return io.ErrClosedPipe
+	case <-t.C:
+		return fmt.Errorf("E_TIMEOUT: write: %w", os.ErrDeadlineExceeded)
+	}
+}
+
+func (c *Conn) writeDeadline(m Msg, deadline time.Time) error {
 	m.V = ProtocolMajor
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -96,24 +191,28 @@ func (c *Conn) writeTimed(m Msg, timeout time.Duration) error {
 	if len(b) >= MaxLine {
 		return ErrLineTooLong
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	select {
-	case <-c.done:
+	if err := c.acquireWrite(deadline); err != nil {
+		return err
+	}
+	defer func() { <-c.wsem }()
+	if c.isClosed() {
 		return io.ErrClosedPipe
-	default:
 	}
 	var timedOut atomic.Bool
 	var clear func()
-	if timeout > 0 {
+	if !deadline.IsZero() {
+		rem := time.Until(deadline)
+		if rem <= 0 {
+			return fmt.Errorf("E_TIMEOUT: write: %w", os.ErrDeadlineExceeded)
+		}
 		if w, ok := c.rw.(interface{ SetWriteDeadline(time.Time) error }); ok {
-			if w.SetWriteDeadline(time.Now().Add(timeout)) == nil {
+			if w.SetWriteDeadline(deadline) == nil {
 				clear = func() { _ = w.SetWriteDeadline(time.Time{}) }
 			}
 		}
 		if clear == nil {
 			done := make(chan struct{})
-			timer := time.AfterFunc(timeout, func() { timedOut.Store(true); _ = c.rw.Close(); close(done) })
+			timer := time.AfterFunc(rem, func() { timedOut.Store(true); _ = c.rw.Close(); close(done) })
 			clear = func() {
 				if !timer.Stop() {
 					<-done
@@ -176,10 +275,8 @@ func (c *Conn) readLoop() {
 }
 
 func (c *Conn) serve(m Msg) {
-	select {
-	case <-c.done:
+	if c.isClosed() {
 		return
-	default:
 	}
 	res := Msg{T: "res", ID: m.ID}
 	var r any
@@ -205,18 +302,21 @@ func (c *Conn) serve(m Msg) {
 	} else {
 		res.Err = e
 	}
-	_ = c.writeTimed(res, 5*time.Second)
+	_ = c.writeDeadline(res, time.Now().Add(5*time.Second))
 }
 
 func (c *Conn) fail(err error) {
+	c.closeOnce.Do(func() { close(c.closed) })
+	_ = c.rw.Close()
 	c.mu.Lock()
-	c.err = err
+	if c.err == nil {
+		c.err = err
+	}
 	for id, ch := range c.pending {
 		close(ch)
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
-	c.rw.Close()
 }
 
 func readLimited(r *bufio.Reader, max int) ([]byte, error) {
@@ -238,6 +338,7 @@ func readLimited(r *bufio.Reader, max int) ([]byte, error) {
 
 // Call 发请求并等待回复；out 非 nil 时解码 r。
 func (c *Conn) Call(method string, params any, timeout time.Duration, out any) error {
+	deadline := time.Now().Add(timeout)
 	c.mu.Lock()
 	if c.err != nil {
 		err := c.err
@@ -259,13 +360,9 @@ func (c *Conn) Call(method string, params any, timeout time.Duration, out any) e
 	}
 	begin := time.Now()
 	stage("write_begin")
-	writeTimeout := time.Duration(0)
-	if lifecycle {
-		writeTimeout = timeout
-	}
 	err := marshalErr
 	if err == nil {
-		err = c.writeTimed(Msg{T: "req", ID: id, M: method, P: p}, writeTimeout)
+		err = c.writeDeadline(Msg{T: "req", ID: id, M: method, P: p}, deadline)
 	}
 	stage("write_end", "elapsed_ms", time.Since(begin).Milliseconds(), "err", err)
 	if err != nil {
@@ -280,7 +377,15 @@ func (c *Conn) Call(method string, params any, timeout time.Duration, out any) e
 		return err
 	}
 	begin = time.Now()
-	t := time.NewTimer(timeout)
+	rem := time.Until(deadline)
+	if rem <= 0 {
+		stage("timeout", "phase", "response", "elapsed_ms", time.Since(begin).Milliseconds())
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return fmt.Errorf("E_TIMEOUT: %s", method)
+	}
+	t := time.NewTimer(rem)
 	defer t.Stop()
 	select {
 	case m, ok := <-ch:
@@ -307,8 +412,19 @@ func (c *Conn) Call(method string, params any, timeout time.Duration, out any) e
 	}
 }
 
-// Emit 发事件。
+// Emit sends an event with the connection's configured emit write timeout.
 func (c *Conn) Emit(method string, params any) error {
-	p, _ := json.Marshal(params)
-	return c.write(Msg{T: "evt", M: method, P: p})
+	return c.EmitTimeout(method, params, time.Duration(c.emitTimeout.Load()))
+}
+
+// EmitTimeout sends an event with a bounded total write deadline.
+func (c *Conn) EmitTimeout(method string, params any, timeout time.Duration) error {
+	p, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	if timeout <= 0 {
+		timeout = DefaultEmitTimeout
+	}
+	return c.writeDeadline(Msg{T: "evt", M: method, P: p}, time.Now().Add(timeout))
 }

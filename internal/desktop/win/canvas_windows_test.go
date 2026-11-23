@@ -52,3 +52,80 @@ func TestCanvasRejectsGeometryBeforeCreatingWindows(t *testing.T) {
 		t.Fatal("rejected geometry allocated native windows")
 	}
 }
+
+func TestRefreshMonitorsPreservesSignals(t *testing.T) {
+	prev := []*mon{
+		{d: desktop.Display{ID: "mon-a", Bounds: image.Rect(0, 0, 1920, 1080)}, lastFS: true, lastCov: true},
+		{d: desktop.Display{ID: "mon-b", Bounds: image.Rect(1920, 0, 3840, 1080)}, lastFS: false, lastCov: true},
+	}
+	next := []*mon{
+		{d: desktop.Display{ID: "mon-a", Bounds: image.Rect(0, 0, 2560, 1440)}},
+		{d: desktop.Display{ID: "mon-c", Bounds: image.Rect(2560, 0, 4480, 1080)}},
+	}
+	preserveMonSignals(prev, next)
+	if !next[0].lastFS || !next[0].lastCov {
+		t.Fatalf("expected mon-a signals preserved, got fs=%v cov=%v", next[0].lastFS, next[0].lastCov)
+	}
+	if next[1].lastFS || next[1].lastCov {
+		t.Fatalf("new display inherited stale signals: fs=%v cov=%v", next[1].lastFS, next[1].lastCov)
+	}
+}
+
+func TestCloseBeforeStartIsSafe(t *testing.T) {
+	h := New(Options{})
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close before Start: %v", err)
+	}
+}
+
+func TestShouldIgnoreClickThroughLayeredOverlay(t *testing.T) {
+	if !shouldIgnoreCoverageWindow(wsExLayered|wsExTransparent, "OverlayClass", false) {
+		t.Fatal("click-through layered overlay must be ignored")
+	}
+	if shouldIgnoreCoverageWindow(wsExLayered, "AppClass", false) {
+		t.Fatal("opaque layered window without WS_EX_TRANSPARENT should still count")
+	}
+	if shouldIgnoreCoverageWindow(wsExTransparent, "AppClass", false) {
+		t.Fatal("non-layered transparent window should still count")
+	}
+	if !shouldIgnoreCoverageWindow(wsExToolWindow, "AppClass", false) {
+		t.Fatal("tool window must be ignored")
+	}
+}
+
+func TestShellRestartCommitsOnlyAfterEmit(t *testing.T) {
+	h := New(Options{})
+	h.events = make(chan desktop.Event, 1)
+	h.events <- desktop.Event{Kind: desktop.EventDisplaysChanged} // fill queue
+	h.surfaces[101] = &surface{hwnd: 101}
+	h.progman, h.workerw, h.defView = 1, 2, 3
+
+	destroyed := 0
+	if h.commitShellRestart("health", func(uintptr) { destroyed++ }) {
+		t.Fatal("commitShellRestart must fail when event queue is full")
+	}
+	if destroyed != 0 || len(h.surfaces) != 1 || h.defView != 3 || h.pendingShellRestart != "health" {
+		t.Fatalf("state cleared before emit succeeded: destroyed=%d surfs=%d defView=%d pending=%q",
+			destroyed, len(h.surfaces), h.defView, h.pendingShellRestart)
+	}
+
+	<-h.events // drain queue
+	if !h.commitShellRestart(h.pendingShellRestart, func(uintptr) { destroyed++ }) {
+		t.Fatal("retry commitShellRestart failed with open queue")
+	}
+	if destroyed != 1 || len(h.surfaces) != 0 || h.progman != 0 || h.workerw != 0 || h.defView != 0 || h.pendingShellRestart != "" {
+		t.Fatalf("state not cleared after emit succeeded: destroyed=%d surfs=%d progman=%d workerw=%d defView=%d pending=%q",
+			destroyed, len(h.surfaces), h.progman, h.workerw, h.defView, h.pendingShellRestart)
+	}
+	ev := <-h.events
+	if ev.Kind != desktop.EventShellRestarted || ev.Source != "health" {
+		t.Fatalf("unexpected event: %+v", ev)
+	}
+}
+
+func TestSetSystemWallpaperRejectsNULPath(t *testing.T) {
+	h := New(Options{})
+	if err := h.SetSystemWallpaper("display", "bad\x00path.png"); err == nil {
+		t.Fatal("SetSystemWallpaper accepted NUL byte")
+	}
+}

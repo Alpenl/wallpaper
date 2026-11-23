@@ -57,8 +57,8 @@ var (
 	MsgSetCMTime  func(objc.ID, objc.SEL, CMTime)
 	MsgSeekCMTime func(objc.ID, objc.SEL, CMTime, CMTime, CMTime)
 
-	KLayer, KBounds, KPID uintptr
-	GravityFill           objc.ID
+	KLayer, KBounds, KPID, KAlpha uintptr
+	GravityFill                   objc.ID
 
 	once    sync.Once
 	loadErr error
@@ -83,8 +83,8 @@ func symPtr(h uintptr, name string) uintptr {
 	return **(**uintptr)(unsafe.Pointer(&a))
 }
 
-// Load 打开框架并注册函数（幂等）。
-func Load() error {
+// LoadFrameworks 打开框架并注册函数（幂等），不要求设置 Main（供隔离渲染器进程使用）。
+func LoadFrameworks() error {
 	once.Do(func() {
 		open("/System/Library/Frameworks/AppKit.framework/AppKit")
 		av := open("/System/Library/Frameworks/AVFoundation.framework/AVFoundation")
@@ -130,13 +130,24 @@ func Load() error {
 		purego.RegisterFunc(&MsgSetFrame, ms)
 		purego.RegisterFunc(&MsgSetCMTime, ms)
 		purego.RegisterFunc(&MsgSeekCMTime, ms)
-		KLayer, KBounds, KPID = symPtr(cg, "kCGWindowLayer"), symPtr(cg, "kCGWindowBounds"), symPtr(cg, "kCGWindowOwnerPID")
+		KLayer = symPtr(cg, "kCGWindowLayer")
+		KBounds = symPtr(cg, "kCGWindowBounds")
+		KPID = symPtr(cg, "kCGWindowOwnerPID")
+		KAlpha = symPtr(cg, "kCGWindowAlpha")
 		GravityFill = objc.ID(symPtr(av, "AVLayerVideoGravityResizeAspectFill"))
 	})
-	if loadErr == nil && Main == nil {
+	return loadErr
+}
+
+// Load 打开框架并注册函数（幂等）。
+func Load() error {
+	if err := LoadFrameworks(); err != nil {
+		return err
+	}
+	if Main == nil {
 		return errors.New("macos: Main (RunOnMain) not set")
 	}
-	return loadErr
+	return nil
 }
 
 // NSString 生成 autoreleased NSString。
@@ -149,13 +160,13 @@ func GoString(s objc.ID) string {
 	if s == 0 {
 		return ""
 	}
-	p := objc.Send[uintptr](s, Sel("UTF8String"))
-	if p == 0 {
+	p := objc.Send[unsafe.Pointer](s, Sel("UTF8String"))
+	if p == nil {
 		return ""
 	}
 	var b []byte
 	for i := uintptr(0); i < 4096; i++ {
-		c := *(*byte)(unsafe.Pointer(p + i))
+		c := *(*byte)(unsafe.Add(p, i))
 		if c == 0 {
 			break
 		}

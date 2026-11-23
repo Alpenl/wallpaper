@@ -23,4 +23,6 @@ func dial(name string, timeout time.Duration) (io.ReadWriteCloser, error) {
 	}
 }
 
-func hideWindow(*exec.Cmd) {}
+func hideWindow(cmd *exec.Cmd) {
+	configureChildProc(cmd)
+}

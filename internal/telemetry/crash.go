@@ -6,8 +6,41 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
+
+// crashLogPID extracts the PID from "crash-<role>-<pid>-<YYYYMMDDTHHMMSS...>.log".
+func crashLogPID(base string) (int, bool) {
+	if !strings.HasPrefix(base, "crash-") || !strings.HasSuffix(base, ".log") {
+		return 0, false
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(base, "crash-"), ".log")
+	lastDash := strings.LastIndexByte(inner, '-')
+	if lastDash <= 0 {
+		return 0, false
+	}
+	ts := inner[lastDash+1:]
+	if len(ts) < 15 || ts[8] != 'T' {
+		return 0, false
+	}
+	for i := 0; i < 8; i++ {
+		if ts[i] < '0' || ts[i] > '9' {
+			return 0, false
+		}
+	}
+	beforeTS := inner[:lastDash]
+	prevDash := strings.LastIndexByte(beforeTS, '-')
+	if prevDash <= 0 {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(beforeTS[prevDash+1:])
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
 
 // InstallCrashOutput must run before helper dispatch. The runtime duplicates f.
 func InstallCrashOutput(dir, role string) error {
@@ -42,6 +75,9 @@ func InstallCrashOutput(dir, role string) error {
 			continue
 		}
 		if info.Size() == 0 {
+			if pid, ok := crashLogPID(filepath.Base(p)); ok && pid != os.Getpid() && processAlive(pid) {
+				continue // Active crash output belonging to a live sibling/parent process.
+			}
 			_ = os.Remove(p) // A live Windows helper may still hold this file.
 			continue
 		}

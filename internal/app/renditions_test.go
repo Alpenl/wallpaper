@@ -244,3 +244,73 @@ func TestMissingEncoderSkipsAutomaticRendition(t *testing.T) {
 		t.Fatalf("explicit request needs localized feedback: %q", e.a.View().LastError)
 	}
 }
+
+// M-17: publish() reads rendition readiness from in-memory cache with zero disk I/O.
+func TestRenditionViewsUseInMemoryCacheInPublish(t *testing.T) {
+	e := setupWith(t, 1, true, func(d *Deps) {
+		it := d.Store.Library.Find("x")
+		if err := os.WriteFile(filepath.Join(it.Dir, it.Entry), []byte("source"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	eventually(t, "initial rendition view published", func() bool {
+		return len(e.a.View().Renditions) == 1
+	})
+	before := e.a.renditionDiskChecks.Load()
+	for i := 0; i < 10; i++ {
+		e.sync() // triggers event-loop turn + publish()
+	}
+	after := e.a.renditionDiskChecks.Load()
+	if after != before {
+		t.Fatalf("publish() performed %d disk checks, want 0", after-before)
+	}
+}
+
+// M-17: OptimizeDisplays and View().Renditions agree when an active renderer
+// does not support Fit (clamping ItemProps.Fit="fit" to "fill").
+func TestOptimizeDisplaysAgreesWithViewWhenRendererClampsFit(t *testing.T) {
+	started := make(chan struct{}, 1)
+	e := setupWith(t, 1, true, func(d *Deps) {
+		it := d.Store.Library.Find("x")
+		it.Props.Fit = "fit"
+		if err := os.WriteFile(filepath.Join(it.Dir, it.Entry), []byte("source"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		d.EncodeRendition = func(ctx context.Context, src, dst string, target transcode.Target) error {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			return os.WriteFile(dst, []byte("ok"), 0o600)
+		}
+		d.ProbeMedia = func(context.Context, string) (*media.Info, error) {
+			return &media.Info{Kind: "video", Container: "mp4", Codec: "h264", VideoTracks: 1, W: 100, H: 100, FPS: 30, ConstantFrameRate: true, DurationSec: 1, FrameCount: 30, StartsWithKeyframe: true, MaxKeyframeInterval: 30}, nil
+		}
+	})
+	// Fake renderer does not support Fit, so both View and OptimizeDisplays see fill -> rendition eligible.
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("rendition not started")
+	}
+	eventually(t, "view reports optimized", func() bool {
+		v := e.a.View()
+		return len(v.Renditions) == 1 && v.Renditions[0].Status == "已优化"
+	})
+}
+
+// M-17: Explicitly rebinding a wallpaper clears s.levelNote (even for the same item ID).
+func TestAssignClearsLevelNote(t *testing.T) {
+	e := setup(t, 1, true)
+	eventually(t, "renderer started", func() bool { return e.cur("A") != nil && e.cur("A").isLoaded() })
+	e.a.Do(func() {
+		e.a.screens["A"].levelNote = "播放状态恢复失败，请重新应用壁纸"
+	})
+	eventually(t, "levelNote published", func() bool {
+		return e.a.View().Displays[0].Note != ""
+	})
+	e.a.Assign("A", "x")
+	eventually(t, "levelNote cleared on rebind", func() bool {
+		return e.a.View().Displays[0].Note == ""
+	})
+}

@@ -25,29 +25,43 @@ var sel = objc.RegisterName
 
 func ns(s string) objc.ID  { return macos.NSString(s) }
 func cls(s string) objc.ID { return objc.ID(objc.GetClass(s)) }
+
+// rawPtr reinterprets a native (non-Go) address as unsafe.Pointer for ObjC/block FFI.
+func rawPtr(addr uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&addr))
+}
+
 func blockCall(b uintptr, args ...uintptr) {
-	literal := (*[3]uintptr)(unsafe.Pointer(b))
+	literal := (*[3]uintptr)(rawPtr(b))
 	purego.SyscallN(literal[2], append([]uintptr{b}, args...)...)
 }
-func macPump() {
+
+func macPumpFor(seconds float64) {
 	pool := cls("NSAutoreleasePool").Send(sel("new"))
 	defer pool.Send(sel("drain"))
-	date := cls("NSDate").Send(sel("dateWithTimeIntervalSinceNow:"), float64(.002))
+	date := cls("NSDate").Send(sel("dateWithTimeIntervalSinceNow:"), seconds)
 	cls("NSRunLoop").Send(sel("currentRunLoop")).Send(sel("runMode:beforeDate:"), ns("NSDefaultRunLoopMode"), date)
 }
+
 func macAwait(done *bool) error {
 	end := time.Now().Add(15 * time.Second)
 	for !*done {
-		macPump()
-		if time.Now().After(end) {
+		rem := time.Until(end)
+		if rem <= 0 {
 			return fmt.Errorf("WKWebView operation timed out")
 		}
+		wait := rem.Seconds()
+		if wait > 0.05 {
+			wait = 0.05
+		}
+		macPumpFor(wait)
 	}
 	return nil
 }
 
 type macView struct {
 	ready                  bool
+	paused                 bool
 	navigationErr          error
 	rulesDir               string
 	token                  string
@@ -55,7 +69,6 @@ type macView struct {
 	root                   *os.Root
 	origin, props          string
 	fps                    int
-	initial                bool
 	entry                  string
 }
 
@@ -123,8 +136,11 @@ func (v *macView) Load(x loadRequest) error {
 		{Cmd: sel("webView:didFinishNavigation:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID, _ objc.ID) {
 			v.ready = true
 			_ = v.Script(v.props)
-			s := authorizedFPS(v.fps, v.token)
-			_ = v.Script(s)
+			fps := v.fps
+			if v.paused {
+				fps = 0
+			}
+			_ = v.Script(authorizedFPS(fps, v.token))
 		}},
 		{Cmd: sel("webViewWebContentProcessDidTerminate:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) { os.Exit(3) }},
 	}
@@ -142,10 +158,13 @@ func (v *macView) Load(x loadRequest) error {
 	prefs.Send(sel("setJavaScriptCanOpenWindowsAutomatically:"), false)
 	controller := config.Send(sel("userContentController"))
 	// No WKScriptMessageHandler or JavaScript-to-native bridge is registered.
-	script := cls("WKUserScript").Send(sel("alloc")).Send(sel("initWithSource:injectionTime:forMainFrameOnly:"), ns(bootstrapScript(v.token, v.fps)), 0, false)
+	script := cls("WKUserScript").Send(sel("alloc")).Send(sel("initWithSource:injectionTime:forMainFrameOnly:"), ns(bootstrapScript(v.token, v.fps, x.Item.NetworkGranted)), 0, false)
 	controller.Send(sel("addUserScript:"), script)
 	script.Send(sel("release"))
-	if !x.Item.NetworkGranted {
+
+	// Always install a WKContentRuleList: block all non-local requests by default,
+	// and only exempt exact normalized non-SSRF hosts when network consent is granted.
+	{
 		done := false
 		var failure error
 		b := objc.NewBlock(func(_ objc.Block, list, err objc.ID) {
@@ -163,7 +182,8 @@ func (v *macView) Load(x loadRequest) error {
 		}
 		ruleURL := cls("NSURL").Send(sel("fileURLWithPath:"), ns(v.rulesDir))
 		store := cls("WKContentRuleListStore").Send(sel("storeWithURL:"), ruleURL)
-		store.Send(sel("compileContentRuleListForIdentifier:encodedContentRuleList:completionHandler:"), ns("wpk-deny-network-v1"), ns(`[{"trigger":{"url-filter":"^https?://"},"action":{"type":"block"}},{"trigger":{"url-filter":"^wss?://"},"action":{"type":"block"}}]`), b)
+		rulesJSON := contentRuleListJSON(x.Item.NetworkGranted, m.Web.NetworkAllow)
+		store.Send(sel("compileContentRuleListForIdentifier:encodedContentRuleList:completionHandler:"), ns("wpk-network-policy-v2"), ns(rulesJSON), b)
 		if e = macAwait(&done); e != nil {
 			return e
 		}
@@ -171,7 +191,15 @@ func (v *macView) Load(x loadRequest) error {
 			return failure
 		}
 	}
-	frame := macos.CGRect{Origin: macos.CGPoint{X: float64(x.Bounds.Min.X), Y: float64(x.Bounds.Min.Y)}, Size: macos.CGSize{W: float64(x.Bounds.Dx()), H: float64(x.Bounds.Dy())}}
+
+	winRect, vx, vy, vw, vh, e := windowAndViewRects(x.Bounds, x.Item.Viewport)
+	if e != nil {
+		return e
+	}
+	frame := macos.CGRect{
+		Origin: macos.CGPoint{X: float64(winRect.Min.X), Y: float64(winRect.Min.Y)},
+		Size:   macos.CGSize{W: float64(winRect.Dx()), H: float64(winRect.Dy())},
+	}
 	// AppKit uses a bottom-left coordinate origin; desktop bounds are Quartz.
 	screens := cls("NSScreen").Send(sel("screens"))
 	if objc.Send[uintptr](screens, sel("count")) == 0 {
@@ -180,7 +208,7 @@ func (v *macView) Load(x loadRequest) error {
 	first := screens.Send(sel("objectAtIndex:"), uintptr(0))
 	lib, _ := purego.Dlopen("/usr/lib/libobjc.A.dylib", purego.RTLD_NOW)
 	primary := objc.Send[macos.CGRect](first, sel("frame"))
-	frame.Origin.Y = primary.Size.H - float64(x.Bounds.Max.Y)
+	frame.Origin.Y = primary.Size.H - float64(winRect.Max.Y)
 	v.window = macos.MsgInitWindow(cls("NSWindow").Send(sel("alloc")), sel("initWithContentRect:styleMask:backing:defer:"), frame, 0, 2, false, 0)
 	v.window.Send(sel("setReleasedWhenClosed:"), false)
 	v.window.Send(sel("setLevel:"), int64(macos.CGWindowLevelForKey(2)))
@@ -188,7 +216,11 @@ func (v *macView) Load(x loadRequest) error {
 	v.window.Send(sel("setIgnoresMouseEvents:"), true)
 	var initView func(objc.ID, objc.SEL, macos.CGRect, objc.ID) objc.ID
 	purego.RegisterLibFunc(&initView, lib, "objc_msgSend")
-	v.view = initView(cls("WKWebView").Send(sel("alloc")), sel("initWithFrame:configuration:"), macos.CGRect{Size: frame.Size}, config)
+	viewRect := macos.CGRect{
+		Origin: macos.CGPoint{X: vx, Y: vy},
+		Size:   macos.CGSize{W: vw, H: vh},
+	}
+	v.view = initView(cls("WKWebView").Send(sel("alloc")), sel("initWithFrame:configuration:"), viewRect, config)
 	if v.view == 0 {
 		return fmt.Errorf("WKWebView initialization failed")
 	}
@@ -205,7 +237,17 @@ func (v *macView) Load(x loadRequest) error {
 		}
 		v.view.Send(sel("setUnderPageBackgroundColor:"), cls("NSColor").Send(sel("clearColor")))
 	}
-	v.window.Send(sel("setContentView:"), v.view)
+	if winRect != x.Bounds {
+		// Clip the full-canvas WKWebView inside the physical display's NSWindow.
+		container := v.window.Send(sel("contentView"))
+		container.Send(sel("setWantsLayer:"), true)
+		if layer := container.Send(sel("layer")); layer != 0 {
+			layer.Send(sel("setMasksToBounds:"), true)
+		}
+		container.Send(sel("addSubview:"), v.view)
+	} else {
+		v.window.Send(sel("setContentView:"), v.view)
+	}
 	v.window.Send(sel("orderFrontRegardless"))
 	u := cls("NSURL").Send(sel("URLWithString:"), ns(v.entry))
 	req := cls("NSURLRequest").Send(sel("requestWithURL:"), u)
@@ -278,15 +320,21 @@ func (v *macView) Script(s string) error {
 	v.view.Send(sel("evaluateJavaScript:completionHandler:"), ns(s), uintptr(0))
 	return nil
 }
+
+// Pause freezes JS animation by setting the rAF cap to 0 while keeping the
+// WKWebView visible so the last rendered frame remains on screen.
 func (v *macView) Pause(paused bool) error {
-	v.view.Send(sel("setHidden:"), paused)
-	if !paused {
-		if err := v.Script(v.props); err != nil {
-			return err
-		}
-		return v.Script(authorizedFPS(v.fps, v.token))
+	if v.paused == paused {
+		return nil
 	}
-	return nil
+	v.paused = paused
+	if paused {
+		return v.Script(authorizedFPS(0, v.token))
+	}
+	if err := v.Script(v.props); err != nil {
+		return err
+	}
+	return v.Script(authorizedFPS(v.fps, v.token))
 }
 func (v *macView) Close() {
 	defer func() {
@@ -313,6 +361,25 @@ func (v *macView) Close() {
 		v.root.Close()
 	}
 }
+
+func (h *hostSession) runLoopWaitSeconds() float64 {
+	if !h.loaded || h.paused || h.blocked || h.signals == nil || (!h.signals.Audio && !h.signals.Input) {
+		return 0.5
+	}
+	fps := h.fps
+	if fps <= 0 {
+		fps = 30
+	}
+	sec := 1.0 / float64(fps)
+	if sec < 0.008 {
+		sec = 0.008
+	}
+	if sec > 0.1 {
+		sec = 0.1
+	}
+	return sec
+}
+
 func runHost(p pipeIO) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -328,47 +395,97 @@ func runHost(p pipeIO) error {
 		return e
 	}
 	purego.RegisterLibFunc(&macos.CGWindowLevelForKey, cg, "CGWindowLevelForKey")
+	cf, e := purego.Dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", purego.RTLD_NOW)
+	if e != nil {
+		return e
+	}
+	var cfRunLoopGetCurrent func() uintptr
+	var cfRunLoopStop func(uintptr)
+	purego.RegisterLibFunc(&cfRunLoopGetCurrent, cf, "CFRunLoopGetCurrent")
+	purego.RegisterLibFunc(&cfRunLoopStop, cf, "CFRunLoopStop")
 	lib, e := purego.Dlopen("/usr/lib/libobjc.A.dylib", purego.RTLD_NOW)
 	if e != nil {
 		return e
 	}
 	purego.RegisterLibFunc(&macos.MsgInitWindow, lib, "objc_msgSend")
-	if _, e := purego.Dlopen("/System/Library/Frameworks/WebKit.framework/WebKit", purego.RTLD_NOW|purego.RTLD_GLOBAL); e != nil {
-		return e
-	}
 	app := cls("NSApplication").Send(sel("sharedApplication"))
 	app.Send(sel("setActivationPolicy:"), 2)
 	app.Send(sel("finishLaunching"))
+
+	rl := cfRunLoopGetCurrent()
+	wake := func() {
+		if rl != 0 {
+			cfRunLoopStop(rl)
+		}
+	}
+
 	v := &macView{}
 	defer v.Close()
 	h := &hostSession{view: v}
 	defer h.closeSignals()
-	jobs := make(chan func())
+
+	hostDone := make(chan struct{})
+	defer close(hostDone)
+
+	jobs := make(chan func(), 16)
 	c := ipc.New(p, func(m string, b json.RawMessage) (any, *ipc.Error) {
 		var result any
 		var err *ipc.Error
 		done := make(chan struct{})
-		jobs <- func() { result, err = h.handle(m, b); close(done) }
-		<-done
-		return result, err
+		select {
+		case jobs <- func() { result, err = h.handle(m, b); close(done) }:
+			wake()
+		case <-hostDone:
+			return nil, &ipc.Error{Code: "E_STATE", Msg: "web host shutting down", Fatal: true}
+		}
+		select {
+		case <-done:
+			return result, err
+		case <-hostDone:
+			return nil, &ipc.Error{Code: "E_STATE", Msg: "web host shutting down", Fatal: true}
+		}
 	}, nil)
 	defer c.Close()
+
+	// runHost owns this watcher; it exits when IPC closes or runHost returns.
+	go func() {
+		select {
+		case <-c.Done():
+			wake()
+		case <-hostDone:
+		}
+	}()
+
 	for {
+		for draining := true; draining; {
+			select {
+			case <-c.Done():
+				return nil
+			case job := <-jobs:
+				job()
+			default:
+				draining = false
+			}
+		}
+		h.signalFrame(time.Now())
+		h.reportSignalStatus(c)
 		select {
 		case <-c.Done():
 			return nil
-		case job := <-jobs:
-			job()
 		default:
-			h.signalFrame(time.Now())
-			h.reportSignalStatus(c)
-			macPump()
 		}
+		if len(jobs) > 0 {
+			continue
+		}
+		macPumpFor(h.runLoopWaitSeconds())
 	}
 }
 
 func (v *macView) Properties(s string) error { v.props = s; return v.Script(s) }
 func (v *macView) FPS(fps int) error {
 	v.fps = fps
+	if v.paused {
+		return nil
+	}
 	return v.Script(authorizedFPS(fps, v.token))
 }

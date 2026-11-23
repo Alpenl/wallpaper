@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,8 @@ import (
 // Options 是导入依赖。
 type Options struct {
 	ShaderSnapshot  func(packageDir, dst string) error
+	ValidateShader  func(srcPath string) ([]wpk.PropertyDef, error) // nil falls back to in-process shader.TranslateProperties (tests)
+	PreviewColors   func(path string) []string                      // nil falls back to in-process PreviewColors (tests)
 	Library         string
 	Cache           string
 	GOOS            string
@@ -58,28 +61,88 @@ var ErrNeedsTranscode = errors.New("import: needs transcoding")
 // SupportedExts 是可以拖入的扩展名。
 var SupportedExts = []string{".mp4", ".mov", ".m4v", ".webm", ".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".wpk", ".zip", ".glsl", ".frag"}
 
+// rejectUnsafeHostPath blocks UNC paths (\\server\share, //server/share, mixed
+// leading slashes) and Windows device namespaces (\\?\, \\.\, //?/, //./)
+// before any OS filesystem call can trigger SMB/Net-NTLMv2 egress or device access.
+func rejectUnsafeHostPath(p string) error {
+	if p == "" {
+		return errors.New("import: empty path")
+	}
+	if strings.ContainsRune(p, 0) {
+		return fmt.Errorf("%w: path contains NUL byte", wpk.ErrUnsafe)
+	}
+	if len(p) >= 2 && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/') {
+		return fmt.Errorf("%w: UNC or device path is not allowed: %q", wpk.ErrUnsafe, p)
+	}
+	return nil
+}
+
+func normalizeRelPath(rel string) string {
+	return strings.ReplaceAll(rel, `\`, "/")
+}
+
+func findFileFold(dir, name string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.EqualFold(e.Name(), name) {
+			return filepath.Join(dir, e.Name()), true
+		}
+	}
+	return "", false
+}
+
+func existsExact(dir, name string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && e.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+func previewColors(o Options, path string) []string {
+	if path == "" {
+		return nil
+	}
+	if o.PreviewColors != nil {
+		return o.PreviewColors(path)
+	}
+	return PreviewColors(path)
+}
+
 // Import 按来源分派。
 func Import(ctx context.Context, src string, o Options) (*Result, error) {
+	if err := rejectUnsafeHostPath(src); err != nil {
+		return nil, err
+	}
 	st, err := os.Stat(src)
 	if err != nil {
 		return nil, err
 	}
 	if st.IsDir() {
-		switch {
-		case exists(filepath.Join(src, "LivelyInfo.json")):
-			return importLively(ctx, src, o)
-		case exists(filepath.Join(src, "project.json")):
+		if _, ok := findFileFold(src, "LivelyInfo.json"); ok {
+			return importLively(ctx, src, false, o)
+		}
+		if _, ok := findFileFold(src, "project.json"); ok {
 			return importWE(ctx, src, o)
-		case exists(filepath.Join(src, "manifest.json")):
+		}
+		if existsExact(src, "manifest.json") {
 			return importFolder(src, o)
 		}
-		return nil, fmt.Errorf("%w: 目录里没有 LivelyInfo.json 或 project.json", ErrUnsupported)
+		return nil, fmt.Errorf("%w: directory does not contain LivelyInfo.json, project.json, or manifest.json", ErrUnsupported)
 	}
 	switch strings.ToLower(filepath.Ext(src)) {
 	case ".glsl", ".frag":
 		return importShader(src, o)
 	case ".wpk":
-		return importWPK(src, o)
+		return importWPK(src, o, false)
 	case ".zip":
 		if zipHas(src, "LivelyInfo.json") {
 			tmp, err := os.MkdirTemp(o.Library, ".lively-")
@@ -90,9 +153,9 @@ func Import(ctx context.Context, src string, o Options) (*Result, error) {
 			if err := wpk.SafeUnzip(src, tmp); err != nil {
 				return nil, err
 			}
-			return importLively(ctx, tmp, o)
+			return importLively(ctx, tmp, true, o)
 		}
-		return importWPK(src, o)
+		return importWPK(src, o, false)
 	}
 	return importFile(ctx, src, o, "native", "", nil)
 }
@@ -100,6 +163,9 @@ func Import(ctx context.Context, src string, o Options) (*Result, error) {
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 func zipHas(p, name string) bool {
+	if rejectUnsafeHostPath(p) != nil {
+		return false
+	}
 	zr, err := zip.OpenReader(p)
 	if err != nil {
 		return false
@@ -113,46 +179,20 @@ func zipHas(p, name string) bool {
 	return false
 }
 
-func importWPK(src string, o Options) (*Result, error) {
-	// Reject unavailable renderers before Extract replaces an existing ID.
-	zr, err := zip.OpenReader(src)
-	if err != nil {
-		return nil, err
-	}
-	for _, f := range zr.File {
-		if strings.EqualFold(f.Name, "manifest.json") {
-			rd, e := f.Open()
-			if e != nil {
-				zr.Close()
-				return nil, e
-			}
-			b, e := io.ReadAll(io.LimitReader(rd, wpk.MaxManifest+1))
-			rd.Close()
-			if e != nil {
-				zr.Close()
-				return nil, e
-			}
-			m, e := wpk.Parse(b)
-			if e != nil {
-				zr.Close()
-				return nil, e
-			}
-			if e := supportedManifest(m); e != nil {
-				zr.Close()
-				return nil, e
-			}
-			break
-		}
-	}
-	zr.Close()
-	if err := validateShaderArchive(src); err != nil {
+func importWPK(src string, o Options, shaderPrevalidated bool) (*Result, error) {
+	if err := rejectUnsafeHostPath(src); err != nil {
 		return nil, err
 	}
 	granted := false
 	audioGranted, inputGranted := false, false
-	r, err := wpk.ExtractChecked(src, o.Library, func(m *wpk.Manifest) error {
+	r, err := wpk.ExtractCheckedDir(src, o.Library, func(m *wpk.Manifest, stagedDir string) error {
 		if err := supportedManifest(m); err != nil {
 			return err
+		}
+		if m.Type == "shader" && !shaderPrevalidated {
+			if err := validateStagedShader(stagedDir, m, o); err != nil {
+				return err
+			}
 		}
 		if m.Type == "web" {
 			for _, p := range m.Web.Permissions {
@@ -191,7 +231,7 @@ func importWPK(src string, o Options) (*Result, error) {
 		it.Codec = m.Video.Codec
 	}
 	applyMetadata(&it, m)
-	if m.Type == "shader" {
+	if m.Type == "shader" && !existsExact(it.Dir, "preview.png") && !existsExact(it.Dir, "preview.webp") {
 		preview := filepath.Join(it.Dir, "preview.png")
 		if o.ShaderSnapshot == nil || o.ShaderSnapshot(it.Dir, preview) != nil {
 			b, _ := os.ReadFile(filepath.Join(it.Dir, filepath.FromSlash(m.Entry)))
@@ -211,11 +251,12 @@ func importWPK(src string, o Options) (*Result, error) {
 			}
 		}
 		for _, name := range []string{"preview.png", "preview.webp"} {
-			if exists(filepath.Join(it.Dir, name)) {
+			if existsExact(it.Dir, name) {
 				it.Snapshot = filepath.Join(it.Dir, name)
 				break
 			}
 		}
+		it.Colors = previewColors(o, it.Snapshot)
 		return &Result{Item: it}, nil
 	}
 	res := &Result{Item: it}
@@ -261,6 +302,9 @@ func safeName(name string) string {
 
 // importFile 把一个媒体文件做成包目录 library/<id>/。
 func importFile(ctx context.Context, src string, o Options, origin, title string, extra func(*wpk.Manifest)) (*Result, error) {
+	if err := rejectUnsafeHostPath(src); err != nil {
+		return nil, err
+	}
 	if o.Probe == nil {
 		return nil, errors.New("import: no prober")
 	}
@@ -335,8 +379,14 @@ func importFile(ctx context.Context, src string, o Options, origin, title string
 		}
 		loop := true
 		m.Video = &wpk.Video{Loop: &loop, DurationSec: info.DurationSec, W: info.W, H: info.H, FPS: info.FPS, Codec: codec, HasAudio: info.HasAudio}
-		if m.Video.W != 0 && m.Video.W < 16 || m.Video.H != 0 && m.Video.H < 16 {
+		if m.Video.W != 0 && (m.Video.W < 16 || m.Video.W > 16384) || m.Video.H != 0 && (m.Video.H < 16 || m.Video.H > 16384) {
 			m.Video.W, m.Video.H = 0, 0
+		}
+		if math.IsNaN(m.Video.FPS) || math.IsInf(m.Video.FPS, 0) || m.Video.FPS < 0 || m.Video.FPS > 240 {
+			m.Video.FPS = 0
+		}
+		if math.IsNaN(m.Video.DurationSec) || math.IsInf(m.Video.DurationSec, 0) || m.Video.DurationSec < 0 {
+			m.Video.DurationSec = 0
 		}
 	}
 	if origin != "native" {
@@ -362,7 +412,7 @@ func importFile(ctx context.Context, src string, o Options, origin, title string
 
 // snapshotItem 生成 cache/<id>/first.png 和包里的 preview.png（失败只记警告）。
 func snapshotItem(o Options, it *config.Item, media string, res *Result) {
-	defer func() { it.Colors = PreviewColors(it.Snapshot) }()
+	defer func() { it.Colors = previewColors(o, it.Snapshot) }()
 	if st, err := os.Stat(media); err == nil {
 		it.SizeBytes = st.Size()
 	}
@@ -483,21 +533,28 @@ func readJSON(p string, v any) error {
 	return json.Unmarshal(b, v)
 }
 
-// within 解析包内相对路径并确保不越界。
+// within resolves a relative path inside dir after normalizing Windows backslashes.
 func within(dir, rel string) (string, error) {
-	rel = filepath.ToSlash(rel)
+	rel = normalizeRelPath(rel)
 	if err := wpk.CheckPath(rel); err != nil {
-		return "", fmt.Errorf("import: 包内路径不安全: %w", err)
+		return "", fmt.Errorf("import: unsafe relative path: %w", err)
 	}
 	return filepath.Join(dir, filepath.FromSlash(rel)), nil
 }
 
-func importLively(ctx context.Context, dir string, o Options) (*Result, error) {
+func importLively(ctx context.Context, dir string, fromZip bool, o Options) (*Result, error) {
+	infoPath, ok := findFileFold(dir, "LivelyInfo.json")
+	if !ok {
+		return nil, fmt.Errorf("import: LivelyInfo.json: %w", os.ErrNotExist)
+	}
 	var li livelyInfo
-	if err := readJSON(filepath.Join(dir, "LivelyInfo.json"), &li); err != nil {
+	if err := readJSON(infoPath, &li); err != nil {
 		return nil, fmt.Errorf("import: LivelyInfo.json: %w", err)
 	}
 	t := li.typeName()
+	if li.IsAbsolutePath && fromZip {
+		return nil, fmt.Errorf("%w: absolute paths are forbidden in Lively zip archives", wpk.ErrUnsafe)
+	}
 	if t == "web" {
 		if li.IsAbsolutePath {
 			return nil, fmt.Errorf("%w: web entry must be inside its package", ErrUnsupported)
@@ -507,11 +564,14 @@ func importLively(ctx context.Context, dir string, o Options) (*Result, error) {
 	switch t {
 	case "video", "gif", "picture":
 	default:
-		return nil, fmt.Errorf("%w: Lively 类型 %s（MVP 只导入视频、GIF 和图片）", ErrUnsupported, t)
+		return nil, fmt.Errorf("%w: Lively type %s is not supported", ErrUnsupported, t)
 	}
 	var src string
 	if li.IsAbsolutePath {
-		src = li.FileName // 10.7：用户自己打开的外部文件，直接当作素材
+		if err := rejectUnsafeHostPath(li.FileName); err != nil {
+			return nil, err
+		}
+		src = li.FileName // 10.7: local folder reference to an external file
 	} else {
 		var err error
 		if src, err = within(dir, li.FileName); err != nil {
@@ -553,8 +613,12 @@ type weProject struct {
 }
 
 func importWE(ctx context.Context, dir string, o Options) (*Result, error) {
+	projPath, ok := findFileFold(dir, "project.json")
+	if !ok {
+		return nil, fmt.Errorf("import: project.json: %w", os.ErrNotExist)
+	}
 	var p weProject
-	if err := readJSON(filepath.Join(dir, "project.json"), &p); err != nil {
+	if err := readJSON(projPath, &p); err != nil {
 		return nil, fmt.Errorf("import: project.json: %w", err)
 	}
 	if strings.EqualFold(p.Type, "web") {

@@ -51,6 +51,11 @@ var (
 	cvPixelBufferGetPixelFormatType   func(uintptr) uint32
 	cvPixelBufferGetWidth             func(uintptr) uintptr
 	cmTimeAdd                         func(cmTime, cmTime) cmTime
+	cMemcpyID                         func(*objc.ID, uintptr, uintptr) uintptr
+	cMemcpyFromNative                 func(*byte, uintptr, uintptr) uintptr
+	cMemcpyToNative                   func(uintptr, *byte, uintptr) uintptr
+	cMemset                           func(uintptr, int32, uintptr) uintptr
+	cStrnlen                          func(uintptr, uintptr) uintptr
 	msgSetTime                        func(objc.ID, objc.SEL, cmTime)
 	msgSetSize                        func(objc.ID, objc.SEL, cgSize)
 	msgCopyImage                      func(objc.ID, objc.SEL, cmTime, *cmTime, *objc.ID) uintptr
@@ -73,6 +78,15 @@ func loadNative() error {
 			}
 			return h
 		}
+		sys, e := purego.Dlopen("/usr/lib/libSystem.B.dylib", purego.RTLD_GLOBAL|purego.RTLD_NOW)
+		if e != nil {
+			panic(e)
+		}
+		purego.RegisterLibFunc(&cMemcpyID, sys, "memcpy")
+		purego.RegisterLibFunc(&cMemcpyFromNative, sys, "memcpy")
+		purego.RegisterLibFunc(&cMemcpyToNative, sys, "memcpy")
+		purego.RegisterLibFunc(&cMemset, sys, "memset")
+		purego.RegisterLibFunc(&cStrnlen, sys, "strnlen")
 		open("Foundation")
 		av := open("AVFoundation")
 		cm := open("CoreMedia")
@@ -91,7 +105,8 @@ func loadNative() error {
 				if e != nil {
 					panic(e)
 				}
-				v := *(*objc.ID)(unsafe.Pointer(p))
+				var v objc.ID
+				cMemcpyID(&v, p, unsafe.Sizeof(v))
 				if v == 0 {
 					panic("nil framework constant " + name)
 				}
@@ -165,14 +180,13 @@ func textOf(s objc.ID) string {
 	if p == 0 {
 		return ""
 	}
-	b := make([]byte, 0, 256)
-	for i := uintptr(0); i < 4096; i++ {
-		v := *(*byte)(unsafe.Pointer(p + i))
-		if v == 0 {
-			break
-		}
-		b = append(b, v)
+	n := cStrnlen(p, 4096)
+	if n == 0 {
+		return ""
 	}
+	b := make([]byte, n)
+	cMemcpyFromNative(&b[0], p, n)
+	runtime.KeepAlive(b)
 	return string(b)
 }
 func nativeError(prefix string, e objc.ID) error {

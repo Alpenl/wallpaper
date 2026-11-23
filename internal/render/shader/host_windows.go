@@ -24,9 +24,14 @@ var iidSwap2 = guid{0xa8be2ac4, 0x199f, 0x4946, [8]byte{0xb3, 0x31, 0x79, 0x59, 
 // The renderer owns one native event thread per child process.
 var comArguments [16]uintptr
 
+// rawPtr reinterprets a native (non-Go) address as unsafe.Pointer for COM/D3D FFI.
+func rawPtr(addr uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&addr))
+}
+
 func com(p uintptr, index int, args ...uintptr) uintptr {
-	v := *(*uintptr)(unsafe.Pointer(p))
-	fn := *(*uintptr)(unsafe.Pointer(v + uintptr(index)*unsafe.Sizeof(p)))
+	v := *(*uintptr)(rawPtr(p))
+	fn := *(*uintptr)(unsafe.Add(rawPtr(v), uintptr(index)*unsafe.Sizeof(p)))
 	call := &comArguments
 	call[0] = p
 	copy(call[1:], args)
@@ -163,7 +168,7 @@ func compileHLSL(source, entry, profile string) (uintptr, error) {
 			p := com(errors, 3)
 			n := com(errors, 4)
 			if n > 0 && n < 1<<20 {
-				message = string(unsafe.Slice((*byte)(unsafe.Pointer(p)), n))
+				message = string(unsafe.Slice((*byte)(rawPtr(p)), n))
 			}
 		}
 		release(&blob)
@@ -401,5 +406,5 @@ func (g *d3dGPU) Snapshot(dst string) error {
 		return e
 	}
 	defer com(g.context, 15, staging, 0)
-	return writePreview(dst, unsafe.Slice((*byte)(unsafe.Pointer(mapped.Data)), int(mapped.Row)*g.th), g.tw, g.th, int(mapped.Row), false)
+	return writePreview(dst, unsafe.Slice((*byte)(rawPtr(mapped.Data)), int(mapped.Row)*g.th), g.tw, g.th, int(mapped.Row), false)
 }

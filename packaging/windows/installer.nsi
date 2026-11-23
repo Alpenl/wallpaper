@@ -33,7 +33,9 @@ Name "${APPNAME} ${VERSION}"
 OutFile "${OUT}"
 RequestExecutionLevel user
 InstallDir "$LOCALAPPDATA\Programs\${APPNAME}"
+InstallDirRegKey HKCU "${UNINSTKEY}" "InstallLocation"
 SetCompressor /SOLID lzma
+!include "LogicLib.nsh"
 !include "MUI2.nsh"
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
@@ -50,9 +52,70 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
 
+; Refuse to install an amd64 binary on arm64 Windows or vice versa.
+; The NSIS bootstrap itself is 32-bit x86, so query the native machine via
+; IsWow64Process2 and fall back to PROCESSOR_ARCHITEW6432 / PROCESSOR_ARCHITECTURE.
+Function .onInit
+  StrCpy $0 ""
+  System::Call 'kernel32::IsWow64Process2(p -1, *i 0 r1, *i 0 r2) i.r3'
+  ${If} $3 != "error"
+  ${AndIf} $3 <> 0
+    IntOp $2 $2 & 0xFFFF
+    ${If} $2 = 0x8664
+      StrCpy $0 "amd64"
+    ${ElseIf} $2 = 0xAA64
+      StrCpy $0 "arm64"
+    ${Else}
+      StrCpy $0 "unsupported"
+    ${EndIf}
+  ${Else}
+    ReadEnvStr $1 "PROCESSOR_ARCHITEW6432"
+    ${If} $1 == ""
+      ReadEnvStr $1 "PROCESSOR_ARCHITECTURE"
+    ${EndIf}
+    ${If} $1 == "AMD64"
+      StrCpy $0 "amd64"
+    ${ElseIf} $1 == "ARM64"
+      StrCpy $0 "arm64"
+    ${Else}
+      StrCpy $0 "unsupported"
+    ${EndIf}
+  ${EndIf}
+  ${If} $0 != "${ARCH}"
+    MessageBox MB_ICONSTOP|MB_OK "This installer is for Windows ${ARCH}, but this machine is $0. Please run the matching installer." /SD IDOK
+    Abort
+  ${EndIf}
+FunctionEnd
+
+; Terminate wallpaperd.exe and its child process tree, then poll until the
+; executable file lock is released (up to 5 seconds) before overwriting/deleting.
+!macro StopWallpaperd
+  !define _STOP_ID ${__LINE__}
+  nsExec::Exec 'taskkill /F /T /IM wallpaperd.exe'
+  Pop $0
+  StrCpy $1 0
+  ${DoWhile} $1 < 25
+    IfFileExists "$INSTDIR\wallpaperd.exe" +2 0
+    Goto _stop_done_${_STOP_ID}
+    ClearErrors
+    FileOpen $2 "$INSTDIR\wallpaperd.exe" a
+    ${IfNot} ${Errors}
+      FileClose $2
+      Goto _stop_done_${_STOP_ID}
+    ${EndIf}
+    Sleep 200
+    IntOp $1 $1 + 1
+  ${Loop}
+  _stop_done_${_STOP_ID}:
+  !undef _STOP_ID
+!macroend
+
 Section "Install"
-  ; 升级时先结束正在运行的实例（mpv 子进程在 Job Object 里，会一起结束）
-  nsExec::Exec 'taskkill /F /IM wallpaperd.exe'
+  ; 升级时先结束正在运行的实例及子进程树，并等待可执行文件锁释放
+  !insertmacro StopWallpaperd
+  ; Clear stale updater transaction state so an awaiting rollback cannot
+  ; downgrade a freshly installed version on next launch.
+  RMDir /r "$INSTDIR\.update"
   SetOutPath "$INSTDIR"
   File "${SRC}wallpaperd.exe"
   File "${SRC}RELEASE-NOTES.txt"
@@ -72,12 +135,14 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
-  nsExec::Exec 'taskkill /F /IM wallpaperd.exe'
+  !insertmacro StopWallpaperd
   ; 开机自启项由 MyGo 写在 HKCU\...\Run（值名 = 应用名）
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APPNAME}"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "${APPNAME}"
   Delete "$SMPROGRAMS\${APPNAME}.lnk"
-  RMDir /r "$INSTDIR\mpv"
+  ; Remove updater transaction state; do NOT delete $INSTDIR\mpv because mpv is
+  ; user-managed and not bundled by this installer.
+  RMDir /r "$INSTDIR\.update"
   Delete "$INSTDIR\wallpaperd.exe"
   Delete "$INSTDIR\RELEASE-NOTES.txt"
   Delete "$INSTDIR\BUILD-INFO.txt"

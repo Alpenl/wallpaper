@@ -3,6 +3,7 @@ package ipc
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -127,4 +128,105 @@ func TestIPCConcurrentCalls(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+type blockingWritePipe struct {
+	net.Conn
+	inWrite chan struct{}
+}
+
+func (p *blockingWritePipe) Write(b []byte) (int, error) {
+	select {
+	case p.inWrite <- struct{}{}:
+	default:
+	}
+	return p.Conn.Write(b)
+}
+
+func TestIPCStalledPipeCallEmitAndClose(t *testing.T) {
+	t.Run("non-lifecycle Call times out on stalled write", func(t *testing.T) {
+		for _, fallback := range []bool{false, true} {
+			a, b := net.Pipe()
+			defer b.Close()
+			var rw io.ReadWriteCloser = a
+			if fallback {
+				rw = struct{ io.ReadWriteCloser }{a}
+			}
+			c := New(rw, nil, nil)
+			defer c.Close()
+			done := make(chan error, 1)
+			go func() { done <- c.Call("hello", nil, 80*time.Millisecond, nil) }()
+			select {
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), "E_TIMEOUT") {
+					t.Fatalf("fallback=%v: expected E_TIMEOUT, got %v", fallback, err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("fallback=%v: Call hung on stalled pipe", fallback)
+			}
+		}
+	})
+
+	t.Run("Emit times out on stalled pipe", func(t *testing.T) {
+		a, b := net.Pipe()
+		defer b.Close()
+		c := New(a, nil, nil)
+		defer c.Close()
+		c.SetEmitTimeout(80 * time.Millisecond)
+		done := make(chan error, 1)
+		go func() { done <- c.Emit("heartbeat", map[string]int{"n": 1}) }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "E_TIMEOUT") {
+				t.Fatalf("expected E_TIMEOUT from Emit, got %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Emit hung on stalled pipe")
+		}
+	})
+
+	t.Run("concurrent waiter respects deadline instead of blocking forever on write lock", func(t *testing.T) {
+		a, b := net.Pipe()
+		defer b.Close()
+		probe := &blockingWritePipe{Conn: a, inWrite: make(chan struct{}, 1)}
+		c := New(probe, nil, nil)
+		defer c.Close()
+
+		firstDone := make(chan error, 1)
+		go func() { firstDone <- c.Call("load", nil, 5*time.Second, nil) }()
+		select {
+		case <-probe.inWrite:
+		case <-time.After(5 * time.Second):
+			t.Fatal("first writer never entered Write")
+		}
+
+		// Second caller arrives while first holds the write semaphore; it must time out promptly.
+		secondDone := make(chan error, 1)
+		go func() { secondDone <- c.Call("ping", nil, 80*time.Millisecond, nil) }()
+		select {
+		case err := <-secondDone:
+			if err == nil || !strings.Contains(err.Error(), "E_TIMEOUT") {
+				t.Fatalf("expected E_TIMEOUT while waiting for write lock, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("second Call deadlocked on write lock")
+		}
+
+		// Close must return promptly and unblock the stalled first writer without deadlocking.
+		closed := make(chan error, 1)
+		go func() { closed <- c.Close() }()
+		select {
+		case <-closed:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Close deadlocked while Write was stalled")
+		}
+		select {
+		case err := <-firstDone:
+			if err == nil {
+				t.Fatal("expected error from cancelled Call")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("first Call did not unblock after Close")
+		}
+	})
 }

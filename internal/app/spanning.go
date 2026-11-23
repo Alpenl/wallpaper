@@ -56,12 +56,17 @@ func (a *App) displayOptions(s *screen) config.DisplayOptions {
 }
 
 // effectivePlayback resolves display overrides over the wallpaper group's own props.
+// Secondary spanning displays are always muted to match runtime audio ownership.
 func (a *App) effectivePlayback(s *screen) config.Playback {
 	var props config.ItemProps
 	if s.item != nil {
 		props = s.item.Props
 	}
-	return config.ResolvePlayback(props, a.displayOptions(s), a.d.Store.Config.Render.Muted)
+	pb := config.ResolvePlayback(props, a.displayOptions(s), a.d.Store.Config.Render.Muted)
+	if !s.canvas.Empty() && s != a.spanLeader() {
+		pb.Muted = true
+	}
+	return pb
 }
 
 // SetLayout preserves the independent assignments/options for returning later.
@@ -121,7 +126,7 @@ func (a *App) installSystemWallpaper(s *screen) {
 		return
 	}
 	host, id, itemID := a.d.Host, s.d.ID, s.item.ID
-	canvas, viewport, pixels, fit := s.canvas, s.d.Bounds, s.d.PixelSize(), a.displayOptions(s).Fit
+	canvas, viewport, pixels, fit := s.canvas, s.d.Bounds, s.d.PixelSize(), a.effectivePlayback(s).Fit
 	cache := filepath.Join(a.d.Store.Paths.Cache, itemID)
 	s.ops.enqueue(func() {
 		select {

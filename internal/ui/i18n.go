@@ -706,6 +706,19 @@ var english = map[string]string{
 	"版本历史与本机统计": "Version history and local metrics",
 	"版本页显示真实的本地回滚版本；显示器和诊断页提供本周暂停时长，不估算节电量。": "Versions shows actual local rollback builds. Displays and Diagnostics show weekly paused duration, not estimated energy savings.",
 	"检测到系统时钟调整，已跳过不可靠的计时间隔；历史记录保留。":          "System clock adjustment detected. Unreliable intervals are skipped; recorded history is kept.",
+	"等待转码…":                   "Queued for transcoding…",
+	"转码失败：":                   "Transcode failed: ",
+	"转码队列已满，请稍后重试":            "Transcode queue is full. Please try again later.",
+	"已转码为 H.264、30 fps、无音轨":   "Converted to H.264, 30 fps, without audio",
+	"转码完成；帧率和音轨依实际编码器能力":      "Transcoding finished; frame rate and audio depend on encoder capabilities",
+	"%s 由更新版本写入，本版本只读取，不会覆盖。": "%s was written by a newer version and is read-only in this version.",
+	"回滚到 %s？":                 "Roll back to %s?",
+	"未知状态":                    "Unknown",
+	"跨屏模式下由主屏统一控制声音，副屏保持静音。":  "In spanning mode, audio is controlled by the primary spanning display; secondary displays stay muted.",
+	"这个构建没有内置更新公钥":            "This build has no embedded update public key",
+	"还没有配置更新源":                "No update source configured",
+	"请先检查更新":                  "Check for updates first",
+	"更新源已改变，请重新检查更新":          "Update source changed; please check for updates again",
 }
 
 func tr(c *ui.Context, value string) string { return translate(c.Locale(), value) }
@@ -720,9 +733,34 @@ func translate(lang, value string) string {
 	if strings.HasPrefix(value, "已导入「") && strings.HasSuffix(value, "」") {
 		return "Imported: " + strings.TrimSuffix(strings.TrimPrefix(value, "已导入「"), "」")
 	}
-	for _, p := range [][2]string{{"文件选择失败：", "File selection failed: "}, {"导入失败: ", "Import failed: "}, {"下载并安装 ", "Download and install "}, {"回滚到 ", "Roll back to "}, {"更新失败：", "Update failed: "}, {"回滚失败：", "Rollback failed: "}, {"导出失败：", "Export failed: "}, {"已应用到 ", "Applied to "}, {"使用中 · ", "In use · "}, {"正在用于：", "Used on: "}, {"暂停原因：", "Pause reason: "}, {"后端 ", "Backend "}, {"硬解 ", "Hardware decoding "}, {"规则动作 ", "Rule action "}, {"删除规则 ", "Remove rule "}, {"已导入「", "Imported: "}} {
+	for _, p := range [][2]string{
+		{"文件选择失败：", "File selection failed: "},
+		{"导入失败: ", "Import failed: "},
+		{"转码失败：", "Transcode failed: "},
+		{"下载并安装 ", "Download and install "},
+		{"回滚到 ", "Roll back to "},
+		{"更新失败：", "Update failed: "},
+		{"回滚失败：", "Rollback failed: "},
+		{"导出失败：", "Export failed: "},
+		{"已应用到 ", "Applied to "},
+		{"使用中 · ", "In use · "},
+		{"正在用于：", "Used on: "},
+		{"暂停原因：", "Pause reason: "},
+		{"后端 ", "Backend "},
+		{"硬解 ", "Hardware decoding "},
+		{"规则动作 ", "Rule action "},
+		{"删除规则 ", "Remove rule "},
+		{"已导入「", "Imported: "},
+	} {
 		if strings.HasPrefix(value, p[0]) {
-			return p[1] + strings.TrimPrefix(value, p[0])
+			rest := strings.TrimPrefix(value, p[0])
+			switch p[0] {
+			case "文件选择失败：", "导入失败: ", "转码失败：", "更新失败：", "回滚失败：", "导出失败：":
+				if translated, ok := english[rest]; ok {
+					rest = translated
+				}
+			}
+			return p[1] + rest
 		}
 	}
 	if strings.HasSuffix(value, " 开关") {
@@ -803,6 +841,8 @@ var mediaNoteMessages = []string{
 	"GIF 将转换为视频；未提供编码器时支持的平台仍可直接播放 GIF",
 	"HEVC 需要系统安装 HEVC 视频扩展才能用 Media Foundation 硬解；mpv 后端可自带解码",
 	"已转码为 H.264/HEVC、30 fps、无音轨",
+	"已转码为 H.264、30 fps、无音轨",
+	"转码完成；帧率和音轨依实际编码器能力",
 	"GIF 已按视频播放",
 }
 
@@ -841,9 +881,21 @@ func mediaNote(lang, note string) string {
 	return strings.Join(parts, "; ")
 }
 
+var localizedErrorTokens = [][2]string{
+	{"transcode: no compatible encoder", "需要 ffmpeg 才能转码"},
+	{"update: this build has no update public key", "这个构建没有内置更新公钥"},
+	{"update: no update public key", "这个构建没有内置更新公钥"},
+	{"update: no feed configured", "还没有配置更新源"},
+	{"update: feed not configured", "还没有配置更新源"},
+	{"update: check for updates first", "请先检查更新"},
+	{"update: feed changed", "更新源已改变，请重新检查更新"},
+}
+
 func localizedError(c *ui.Context, msg string) string {
-	if strings.Contains(msg, "transcode: no compatible encoder") {
-		return tr(c, "需要 ffmpeg 才能转码")
+	for _, entry := range localizedErrorTokens {
+		if strings.Contains(msg, entry[0]) {
+			return tr(c, entry[1])
+		}
 	}
 	return msg
 }

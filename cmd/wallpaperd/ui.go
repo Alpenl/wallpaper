@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -115,16 +116,12 @@ func runUI(f *flags) int {
 		if cfg.Update.AutoCheck && cfg.Update.FeedURL != "" && settings.Info.UpdateKey {
 			settings.CheckUpdates()
 		}
-		// UI 拥有更新确认任务；60 秒确认完成或 ctx 取消后退出。
-		go func() { // 稳定运行 60 s 后确认本次更新（F-15）
-			select {
-			case <-time.After(60 * time.Second):
-				if err := e.updater().MarkGood(); err != nil {
-					e.log.Error("update confirmation", "err", err)
-				}
-			case <-ctx.Done():
-			}
-		}()
+		// UI 拥有更新确认任务；60 秒确认完成、app 退出或 ctx 取消后退出。
+		go confirmUpdateAfter(ctx, loopDone, 60*time.Second, func() bool {
+			return e.app.View().SafeMode
+		}, func() error {
+			return e.updater().MarkGood()
+		}, e.log)
 		go func() {
 			defer close(loopDone)
 			if err := e.app.Run(ctx); err != nil {
@@ -140,4 +137,32 @@ func runUI(f *flags) int {
 		relaunch(e.exe)
 	}
 	return 0
+}
+
+// confirmUpdateAfter waits for delay and calls markGood only if the app event loop
+// is still running, ctx is not cancelled, and safe mode is not active.
+func confirmUpdateAfter(ctx context.Context, appDone <-chan struct{}, delay time.Duration, safeMode func() bool, markGood func() error, log *slog.Logger) {
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		select {
+		case <-appDone:
+			return
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if safeMode != nil && safeMode() {
+			if log != nil {
+				log.Info("update confirmation skipped", "reason", "safe_mode")
+			}
+			return
+		}
+		if err := markGood(); err != nil && log != nil {
+			log.Error("update confirmation", "err", err)
+		}
+	case <-appDone:
+	case <-ctx.Done():
+	}
 }

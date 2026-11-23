@@ -9,6 +9,7 @@
 package mac
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -32,12 +33,12 @@ import (
 type Options struct{ Log *slog.Logger }
 
 type scr struct {
-	d      desktop.Display
-	cgID   uint32
-	ns     objc.ID
-	cov    macDeb
-	fs     macDeb
-	frameK string
+	d        desktop.Display
+	cgID     uint32
+	topInset float64
+	cov      macDeb
+	fs       macDeb
+	frameK   string
 }
 type macDeb = Debounce3
 
@@ -45,12 +46,17 @@ type Host struct {
 	o                   Options
 	log                 *slog.Logger
 	events              chan desktop.Event
+	ctx                 context.Context
+	cancel              context.CancelFunc
 	stop                chan struct{}
 	once                sync.Once
 	mu                  sync.Mutex
 	scrs                []*scr
 	surfs               map[objc.ID]*surface
 	displaysInitialized bool
+
+	screenObserver objc.ID
+	screenBlock    objc.Block
 
 	thermal             int
 	lowPower            bool
@@ -62,7 +68,8 @@ func New(o Options) *Host {
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
-	return &Host{o: o, log: o.Log, events: make(chan desktop.Event, 256), stop: make(chan struct{}), surfs: map[objc.ID]*surface{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Host{o: o, log: o.Log, events: make(chan desktop.Event, 256), ctx: ctx, cancel: cancel, stop: make(chan struct{}), surfs: map[objc.ID]*surface{}}
 }
 
 func (h *Host) emit(e desktop.Event) bool {
@@ -81,6 +88,7 @@ func (h *Host) Start() error {
 	macos.Main(func() {
 		h.refresh()
 		h.foregroundSupported = foregroundAvailable()
+		h.registerScreenObserver()
 	})
 	// Host 拥有采样循环；Close 关闭 stop 后退出。
 	go h.sampler()
@@ -89,6 +97,50 @@ func (h *Host) Start() error {
 	// Host 拥有电源循环；Close 关闭 stop 后退出。
 	go h.powerLoop()
 	return nil
+}
+
+func (h *Host) registerScreenObserver() {
+	nc := macos.Class("NSNotificationCenter").Send(macos.Sel("defaultCenter"))
+	q := macos.Class("NSOperationQueue").Send(macos.Sel("mainQueue"))
+	if nc == 0 || q == 0 {
+		return
+	}
+	blk := objc.NewBlock(func(_ objc.Block, _ objc.ID) {
+		h.refresh()
+	})
+	obs := nc.Send(macos.Sel("addObserverForName:object:queue:usingBlock:"),
+		macos.NSString("NSApplicationDidChangeScreenParametersNotification"), objc.ID(0), q, blk)
+	if obs == 0 {
+		blk.Release()
+		return
+	}
+	h.screenObserver = obs.Send(macos.Sel("retain"))
+	h.screenBlock = blk
+}
+
+// findNSScreen resolves a live NSScreen for cgID on the AppKit main thread.
+// Never cache unretained NSScreen* across runloop ticks.
+func findNSScreen(cgID uint32) objc.ID {
+	screens := macos.Class("NSScreen").Send(macos.Sel("screens"))
+	if screens == 0 {
+		return 0
+	}
+	n := objc.Send[uint](screens, macos.Sel("count"))
+	key := macos.NSString("NSScreenNumber")
+	for i := uint(0); i < n; i++ {
+		s := screens.Send(macos.Sel("objectAtIndex:"), i)
+		if s == 0 {
+			continue
+		}
+		numObj := s.Send(macos.Sel("deviceDescription")).Send(macos.Sel("objectForKey:"), key)
+		if numObj == 0 {
+			continue
+		}
+		if objc.Send[uint32](numObj, macos.Sel("unsignedIntValue")) == cgID {
+			return s
+		}
+	}
+	return 0
 }
 
 // refresh 在主线程上枚举 NSScreen。
@@ -110,6 +162,9 @@ func (h *Host) refresh() {
 		sum := sha256.Sum256([]byte(key))
 		b := macos.CGDisplayBounds(num)
 		scale := objc.Send[float64](s, macos.Sel("backingScaleFactor"))
+		frame := objc.Send[macos.CGRect](s, macos.Sel("frame"))
+		visible := objc.Send[macos.CGRect](s, macos.Sel("visibleFrame"))
+		topInset := topInsetFromFrames(frame.Origin.Y, frame.Size.H, visible.Origin.Y, visible.Size.H)
 		bounds := image.Rect(int(b.Origin.X), int(b.Origin.Y), int(b.Origin.X+b.Size.W), int(b.Origin.Y+b.Size.H))
 		var modePixels image.Point
 		if mode := macos.CGDisplayCopyDisplayMode(num); mode != 0 {
@@ -117,7 +172,7 @@ func (h *Host) refresh() {
 			macos.CGDisplayModeRelease(mode)
 		}
 		name := macos.GoString(s.Send(macos.Sel("localizedName")))
-		out = append(out, &scr{cgID: num, ns: s, d: desktop.Display{ID: desktop.DisplayID("m-" + hex.EncodeToString(sum[:6])), Name: desktop.CleanName(name), Device: fmt.Sprint(num),
+		out = append(out, &scr{cgID: num, topInset: topInset, d: desktop.Display{ID: desktop.DisplayID("m-" + hex.EncodeToString(sum[:6])), Name: desktop.CleanName(name), Device: fmt.Sprint(num),
 			Scale: scale, Primary: i == 0,
 			Bounds: bounds, Pixels: displayPixels(bounds.Size(), modePixels, scale)}})
 	}
@@ -238,22 +293,36 @@ func (h *Host) createSurface(id desktop.DisplayID, canvas *image.Rectangle) (des
 			sc = s
 		}
 	}
+	var cgID uint32
+	var displayBounds image.Rectangle
+	if sc != nil {
+		cgID = sc.cgID
+		displayBounds = sc.d.Bounds
+	}
 	h.mu.Unlock()
 	if sc == nil {
 		return nil, fmt.Errorf("mac: unknown display %s", id)
 	}
 	if canvas != nil {
 		// Reject invalid geometry before allocating or touching native objects.
-		if _, _, _, _, err := desktop.CanvasFrame(*canvas, sc.d.Bounds, float64(sc.d.Bounds.Dx()), float64(sc.d.Bounds.Dy()), false); err != nil {
+		if _, _, _, _, err := desktop.CanvasFrame(*canvas, displayBounds, float64(displayBounds.Dx()), float64(displayBounds.Dy()), false); err != nil {
 			return nil, err
 		}
 	}
 	var sf *surface
 	var createErr error
 	macos.Main(func() {
-		frame := objc.Send[macos.CGRect](sc.ns, macos.Sel("frame"))
+		nsScreen := findNSScreen(cgID)
+		if nsScreen == 0 {
+			createErr = fmt.Errorf("mac: display %s unavailable", id)
+			return
+		}
+		frame := objc.Send[macos.CGRect](nsScreen, macos.Sel("frame"))
+		// initWithContentRect:styleMask:backing:defer:screen: interprets contentRect
+		// relative to screen's origin, so pass origin (0, 0) instead of global frame.Origin.
+		localRect := macos.CGRect{Origin: macos.CGPoint{X: 0, Y: 0}, Size: frame.Size}
 		win := macos.Class("NSWindow").Send(macos.Sel("alloc"))
-		win = macos.MsgInitWindow(win, macos.Sel("initWithContentRect:styleMask:backing:defer:screen:"), frame, 0, 2, false, sc.ns)
+		win = macos.MsgInitWindow(win, macos.Sel("initWithContentRect:styleMask:backing:defer:screen:"), localRect, 0, 2, false, nsScreen)
 		if win == 0 {
 			createErr = errors.New("mac: cannot create desktop window")
 			return
@@ -269,19 +338,20 @@ func (h *Host) createSurface(id desktop.DisplayID, canvas *image.Rectangle) (des
 				win.Send(macos.Sel("release"))
 			}
 		}()
-		win.Send(macos.Sel("setBackgroundColor:"), macos.Class("NSColor").Send(macos.Sel("blackColor")))
+		win.Send(macos.Sel("setOpaque:"), false)
+		win.Send(macos.Sel("setBackgroundColor:"), macos.Class("NSColor").Send(macos.Sel("clearColor")))
 		view := win.Send(macos.Sel("contentView"))
 		if view == 0 {
 			createErr = errors.New("mac: desktop window has no content view")
 			return
 		}
 		view.Send(macos.Sel("setWantsLayer:"), true)
-		bounds := sc.d.Bounds
+		bounds := displayBounds
 		if canvas != nil {
 			native := objc.Send[macos.CGRect](view, macos.Sel("bounds"))
 			// Desktop coordinates are top-down; an ordinary NSView's Y axis is
 			// bottom-up. Do not use backingScaleFactor as a global conversion.
-			x, y, w, ht, err := desktop.CanvasFrame(*canvas, sc.d.Bounds, native.Size.W, native.Size.H, false)
+			x, y, w, ht, err := desktop.CanvasFrame(*canvas, displayBounds, native.Size.W, native.Size.H, false)
 			if err != nil {
 				createErr = err
 				return
@@ -339,16 +409,24 @@ func (h *Host) SetSystemWallpaper(id desktop.DisplayID, path string) error {
 			sc = s
 		}
 	}
+	var cgID uint32
+	if sc != nil {
+		cgID = sc.cgID
+	}
 	h.mu.Unlock()
 	if sc == nil {
 		return errors.New("mac: unknown display")
 	}
 	ok := false
 	macos.Main(func() {
+		nsScreen := findNSScreen(cgID)
+		if nsScreen == 0 {
+			return
+		}
 		ws := macos.Class("NSWorkspace").Send(macos.Sel("sharedWorkspace"))
 		url := macos.Class("NSURL").Send(macos.Sel("fileURLWithPath:"), macos.NSString(path))
 		opts := macos.Class("NSDictionary").Send(macos.Sel("dictionary"))
-		ok = objc.Send[bool](ws, macos.Sel("setDesktopImageURL:forScreen:options:error:"), url, sc.ns, opts, objc.ID(0))
+		ok = objc.Send[bool](ws, macos.Sel("setDesktopImageURL:forScreen:options:error:"), url, nsScreen, opts, objc.ID(0))
 	})
 	if !ok {
 		return errors.New("setDesktopImageURL failed")
@@ -377,13 +455,26 @@ func (h *Host) sampler() {
 			for i, n := 0, macos.CFArrayGetCount(arr); i < n; i++ {
 				d := macos.CFArrayGetValueAtIndex(arr, i)
 				var layer, pid int32
-				macos.CFNumberGetValue(macos.CFDictionaryGetValue(d, macos.KLayer), 3, unsafe.Pointer(&layer))
-				macos.CFNumberGetValue(macos.CFDictionaryGetValue(d, macos.KPID), 3, unsafe.Pointer(&pid))
+				if v := macos.CFDictionaryGetValue(d, macos.KLayer); v == 0 || !macos.CFNumberGetValue(v, 3, unsafe.Pointer(&layer)) {
+					continue
+				}
+				if v := macos.CFDictionaryGetValue(d, macos.KPID); v == 0 || !macos.CFNumberGetValue(v, 3, unsafe.Pointer(&pid)) {
+					continue
+				}
 				if layer != 0 || pid == me {
 					continue
 				}
+				// Skip invisible system helper windows (e.g. transparent overlays with alpha <= 0.01).
+				if macos.KAlpha != 0 {
+					if v := macos.CFDictionaryGetValue(d, macos.KAlpha); v != 0 {
+						var alpha float64
+						if macos.CFNumberGetValue(v, 6 /* kCFNumberFloat64Type */, unsafe.Pointer(&alpha)) && alpha <= 0.01 {
+							continue
+						}
+					}
+				}
 				var r macos.CGRect
-				if macos.CGRectMakeWithDict(macos.CFDictionaryGetValue(d, macos.KBounds), &r) {
+				if bDict := macos.CFDictionaryGetValue(d, macos.KBounds); bDict != 0 && macos.CGRectMakeWithDict(bDict, &r) {
 					wins = append(wins, Rect{r.Origin.X, r.Origin.Y, r.Size.W, r.Size.H})
 				}
 			}
@@ -394,7 +485,7 @@ func (h *Host) sampler() {
 		h.mu.Unlock()
 		for _, s := range scrs {
 			b := macos.CGDisplayBounds(s.cgID)
-			cov, fs := Covered(Rect{b.Origin.X, b.Origin.Y, b.Size.W, b.Size.H}, wins)
+			cov, fs := CoveredWithTopInset(Rect{b.Origin.X, b.Origin.Y, b.Size.W, b.Size.H}, s.topInset, wins)
 			if s.fs.Push(fs) {
 				h.emit(desktop.Event{Kind: desktop.EventSignal, Display: s.d.ID, Reason: visibility.Fullscreen, Active: s.fs.State, Source: "cgwindowlist"})
 			}
@@ -402,7 +493,7 @@ func (h *Host) sampler() {
 				h.emit(desktop.Event{Kind: desktop.EventSignal, Display: s.d.ID, Reason: visibility.Covered, Active: s.cov.State, Source: "cgwindowlist"})
 			}
 		}
-		// 屏幕增删：每 5 s 在主线程重新枚举
+		// Fallback topology check (immediate updates arrive via NSApplicationDidChangeScreenParametersNotification).
 		if now := time.Now(); !now.Before(nextTopology) {
 			nextTopology = now.Add(5 * time.Second)
 			macos.Main(h.refresh)
@@ -413,7 +504,9 @@ func (h *Host) sampler() {
 func (h *Host) battery() {
 	last, lastPct := false, -2
 	for {
-		out, err := exec.Command("/usr/bin/pmset", "-g", "batt").Output()
+		cmdCtx, cancel := context.WithTimeout(h.ctx, 3*time.Second)
+		out, err := exec.CommandContext(cmdCtx, "/usr/bin/pmset", "-g", "batt").Output()
+		cancel()
 		if err == nil {
 			on, pct := ParsePmset(string(out))
 			if on != last && !loadIOKit() { // IOKit 可用时由 powerLoop 1 s 采样上报，pmset 只报电量
@@ -437,7 +530,23 @@ func (h *Host) battery() {
 func (h *Host) Emit(e desktop.Event) { h.emit(e) }
 
 func (h *Host) Close() error {
-	h.once.Do(func() { close(h.stop) })
+	h.once.Do(func() {
+		h.cancel()
+		close(h.stop)
+	})
+	if h.screenObserver != 0 && macos.Main != nil {
+		macos.Main(func() {
+			if h.screenObserver != 0 {
+				macos.Class("NSNotificationCenter").Send(macos.Sel("defaultCenter")).Send(macos.Sel("removeObserver:"), h.screenObserver)
+				h.screenObserver.Send(macos.Sel("release"))
+				h.screenObserver = 0
+			}
+			if h.screenBlock != 0 {
+				h.screenBlock.Release()
+				h.screenBlock = 0
+			}
+		})
+	}
 	h.mu.Lock()
 	var ss []*surface
 	for _, s := range h.surfs {

@@ -45,7 +45,7 @@ package_check_binary() {
   # Inspect Go build info without executing the foreign binary.
   python3 - "$binary" "$VERSION" "$target" <<'PY'
 from pathlib import Path
-import subprocess, sys
+import re, subprocess, sys
 binary, version, target = sys.argv[1:]
 info = subprocess.check_output(['go', 'version', '-m', binary], text=True)
 os, arch = target.split('/')
@@ -53,8 +53,32 @@ for marker in ['CGO_ENABLED=0', 'GOOS=' + os, 'GOARCH=' + arch]:
     if not any(line.strip() == 'build\t' + marker for line in info.splitlines()):
         raise SystemExit(f'{binary}: missing/mismatched build metadata {marker}')
 # Go -trimpath deliberately omits linker flags from build info. Inspect the
-# embedded version string.
-if version.encode() not in Path(binary).read_bytes():
-    raise SystemExit(f'{binary}: requested version string not found')
+# embedded version string using strict boundaries so e.g. 1.2.3-rc.1 cannot
+# satisfy a check for 1.2.3, and module paths like v0.3.5 or func1.2.3 cannot match.
+data = Path(binary).read_bytes()
+pattern = re.compile(rb'(?<![0-9a-z._/v@:-])' + re.escape(version.encode()) + rb'(?![0-9A-Za-z._/+:-])')
+if not pattern.search(data):
+    raise SystemExit(f'{binary}: exact requested version string {version!r} not found')
+PY
+}
+
+package_check_pe_signed() {
+  local binary=$1
+  python3 - "$binary" <<'PY'
+from pathlib import Path
+import struct, sys
+path = Path(sys.argv[1])
+data = path.read_bytes()
+if data[:2] != b'MZ':
+    raise SystemExit(f'{path}: not a PE file')
+offset = struct.unpack_from('<I', data, 0x3c)[0]
+if data[offset:offset+4] != b'PE\0\0':
+    raise SystemExit(f'{path}: invalid PE signature')
+optional = offset + 24
+magic = struct.unpack_from('<H', data, optional)[0]
+directory = optional + (112 if magic == 0x20b else 96)
+cert_offset, cert_size = struct.unpack_from('<II', data, directory + 8*4)
+if cert_offset == 0 or cert_size == 0 or cert_offset + cert_size > len(data):
+    raise SystemExit(f'{path}: missing or truncated Authenticode signature')
 PY
 }

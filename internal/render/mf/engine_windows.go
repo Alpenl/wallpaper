@@ -137,9 +137,15 @@ func vcall(obj uintptr, idx int, args ...uintptr) uint32 {
 	r, _, _ := syscall.SyscallN(fn, append([]uintptr{obj}, args...)...)
 	return uint32(r)
 }
+
+// rawPtr reinterprets a native (non-Go) address as unsafe.Pointer for COM/D3D FFI.
+func rawPtr(addr uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&addr))
+}
+
 func vmethod(obj uintptr, idx int) uintptr {
-	vtbl := *(*uintptr)(unsafe.Pointer(obj))
-	return *(*uintptr)(unsafe.Pointer(vtbl + uintptr(idx)*unsafe.Sizeof(uintptr(0))))
+	vtbl := *(*uintptr)(rawPtr(obj))
+	return *(*uintptr)(unsafe.Add(rawPtr(vtbl), uintptr(idx)*unsafe.Sizeof(uintptr(0))))
 }
 
 func hresult(method string, hr uint32) error {
@@ -170,12 +176,15 @@ var (
 func initNotify() {
 	notifyOnce.Do(func() {
 		notifyVtbl[0] = syscall.NewCallback(func(this, riid, ppv uintptr) uintptr {
-			g := (*guid)(unsafe.Pointer(riid))
+			if ppv == 0 || riid == 0 {
+				return 0x80004003 // E_POINTER
+			}
+			g := (*guid)(rawPtr(riid))
 			if *g == iidIUnknown || *g == iidIMFMediaEngineNotify {
-				*(*uintptr)(unsafe.Pointer(ppv)) = this
+				*(*uintptr)(rawPtr(ppv)) = this
 				return 0
 			}
-			*(*uintptr)(unsafe.Pointer(ppv)) = 0
+			*(*uintptr)(rawPtr(ppv)) = 0
 			return 0x80004002 // E_NOINTERFACE
 		})
 		notifyVtbl[1] = syscall.NewCallback(func(this uintptr) uintptr { return 2 }) // 静态对象，引用计数无意义
@@ -790,12 +799,22 @@ func (s *renderThreadState) run() {
 func (s *renderThreadState) presentFrame() error {
 	b := s.owner
 	if s.output != 0 {
-		vcall(s.output, vtOutWaitForVBlank)
+		waitStart := time.Now()
+		vblankHR := vcall(s.output, vtOutWaitForVBlank)
+		if shouldFallbackVBlank(vblankHR, time.Since(waitStart)) {
+			// sleep: fallback pacing when DXGI VBlank is occluded or instantaneous
+			time.Sleep(4 * time.Millisecond)
+		}
 	} else {
+		// sleep: fallback pacing when DXGI output is unavailable
 		time.Sleep(4 * time.Millisecond)
 	}
 	var pts int64
 	if hr := vcall(s.engine, vtMEOnVideoStreamTick, uintptr(unsafe.Pointer(&pts))); hr != 0 {
+		if hr == dxgiErrDeviceRemoved || hr == dxgiErrDeviceReset {
+			b.fatal("device-removed")
+			return fmt.Errorf("mf: OnVideoStreamTick device lost hr=0x%08x", hr)
+		}
 		if failed(hr) && b.tickErr.Add(1) == 1 {
 			logf("MF OnVideoStreamTick first error hr=0x%08x", hr)
 		}
@@ -842,40 +861,36 @@ func nativeStat(ex uintptr, id uint32) int64 {
 	return -2 // 类型不认识，真机日志里会体现
 }
 
-// 与 mpv 后端同口径：每 -stats 记录一次；卡住判定 = (loops, pts) 连续 2 次不变且未暂停（Q-P3 的同一规则）
+// 与 mpv 后端同口径：每 -stats 记录一次；卡住判定包含 (loops, pts, pos) 以避免 VFR/静态场景误杀
 func (b *mfEngine) statsLoop(quit <-chan struct{}) {
 	t := time.NewTicker(b.statsEvery)
 	defer t.Stop()
-	type key struct{ loops, pts int64 }
-	var last key
-	same := 0
+	var tracker stallTracker
 	for {
 		select {
 		case <-quit:
 			return
 		case <-t.C:
 		}
-		k := key{b.loops.Load(), b.lastPTS.Load()}
+		loops := b.loops.Load()
+		pts := b.lastPTS.Load()
+		pos := b.currentPosition()
+		paused := b.paused.Load()
 		native := b.nativeStats.Load().([3]int64)
 		st := map[string]any{"rendered": native[0], "dropped": native[1],
-			"corrupted": native[2], "pos": b.currentPosition(), "presented": b.presented.Load(), "appSkipped": b.appSkipped.Load(),
-			"loops": k.loops, "endedFallback": b.endedFallback.Load(), "pts100ns": k.pts, "paused": b.paused.Load()}
+			"corrupted": native[2], "pos": pos, "presented": b.presented.Load(), "appSkipped": b.appSkipped.Load(),
+			"loops": loops, "endedFallback": b.endedFallback.Load(), "pts100ns": pts, "paused": paused}
 		if b.onStats != nil {
 			b.onStats(st)
 		}
 		logf("MFSTATS rendered=%d dropped=%d corrupted=%d presented=%d appSkipped=%d loops=%d endedFallback=%d pts100ns=%d paused=%v",
 			native[0], native[1], native[2],
-			b.presented.Load(), b.appSkipped.Load(), k.loops, b.endedFallback.Load(), k.pts, b.paused.Load())
-		if !b.paused.Load() && k == last {
-			if same++; same >= 2 {
-				logf("STALL mf 进度 (loops=%d,pts=%d) 连续 %d 次未变", k.loops, k.pts, same)
-				b.fatal("stall")
-				return
-			}
-		} else {
-			same = 0
+			b.presented.Load(), b.appSkipped.Load(), loops, b.endedFallback.Load(), pts, paused)
+		if tracker.observe(paused, loops, pts, pos) {
+			logf("STALL mf progress (loops=%d, pts=%d, pos=%.3f) unchanged %d times", loops, pts, pos, tracker.same)
+			b.fatal("stall")
+			return
 		}
-		last = k
 	}
 }
 

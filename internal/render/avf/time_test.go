@@ -38,3 +38,26 @@ func TestSeekTicks(t *testing.T) {
 		}
 	}
 }
+
+func TestShouldAttachFPSComposition(t *testing.T) {
+	for _, tc := range []struct {
+		fps        int
+		w, h, nom  float64
+		wantAttach bool
+	}{
+		{15, 1920, 1080, 30, true},
+		{24, 1920, 1080, 60, true},
+		{30, 1920, 1080, 30, false}, // equal to nominal -> skip composition
+		{60, 1920, 1080, 30, false}, // higher than nominal -> skip composition
+		{0, 1920, 1080, 30, false},  // uncapped
+		{15, 0, 1080, 30, false},    // zero width -> must not create composition
+		{15, 1920, 0, 30, false},    // zero height -> must not create composition
+		{15, -1, 1080, 30, false},   // negative dimension
+		{15, 1920, 1080, 0, false},  // unknown/zero nominal frame rate
+		{15, math.NaN(), 1080, 30, false},
+	} {
+		if got := shouldAttachFPSComposition(tc.fps, tc.w, tc.h, tc.nom); got != tc.wantAttach {
+			t.Errorf("%+v got %v want %v", tc, got, tc.wantAttach)
+		}
+	}
+}

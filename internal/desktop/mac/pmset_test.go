@@ -29,6 +29,28 @@ func TestCovered(t *testing.T) {
 	}
 }
 
+func TestCoveredNotchFullscreen(t *testing.T) {
+	// MacBook Pro 14" logical bounds with ~38pt notch/menu-bar safe area.
+	disp := Rect{0, 0, 1512, 982}
+	if c, f := Covered(disp, []Rect{{0, 38, 1512, 944}}); !c || !f {
+		t.Fatalf("native fullscreen below notch should be detected: covered=%v fullscreen=%v", c, f)
+	}
+	// Maximized window with visible Dock (does not reach bottom edge) is not fullscreen.
+	if _, f := Covered(disp, []Rect{{0, 38, 1512, 870}}); f {
+		t.Fatal("window stopping above Dock must not be treated as fullscreen")
+	}
+	// Custom larger top inset (e.g. 56pt).
+	if c, f := CoveredWithTopInset(disp, 56, []Rect{{0, 56, 1512, 926}}); !c || !f {
+		t.Fatalf("custom top inset fullscreen failed: covered=%v fullscreen=%v", c, f)
+	}
+	if got := topInsetFromFrames(0, 982, 70, 874); got != 50 {
+		t.Fatalf("topInsetFromFrames(38pt) = %g, want 50", got)
+	}
+	if got := topInsetFromFrames(0, 982, 70, 852); got != 60 {
+		t.Fatalf("topInsetFromFrames(60pt) = %g, want 60", got)
+	}
+}
+
 func TestDebounce3(t *testing.T) {
 	var d Debounce3
 	flips := 0

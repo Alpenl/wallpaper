@@ -29,6 +29,8 @@ type Info struct {
 	ConstantFrameRate   bool    `json:"constantFrameRate,omitempty"`
 	StartsWithKeyframe  bool    `json:"startsWithKeyframe,omitempty"`
 	MaxKeyframeInterval uint64  `json:"maxKeyframeInterval,omitempty"`
+	Rotation            int     `json:"rotation,omitempty"`
+	BitDepth            int     `json:"bitDepth,omitempty"`
 }
 
 // ErrUnknown 表示不认识的文件类型。
@@ -166,6 +168,12 @@ func probeISO(r io.ReaderAt, size int64) (*Info, error) {
 	if err != nil {
 		return nil, err
 	}
+	type videoTrack struct {
+		info    Info
+		enabled bool
+	}
+	var primary *videoTrack
+	var firstFallback *videoTrack
 	for _, trak := range tracks {
 		if trak.typ != "trak" {
 			continue
@@ -195,23 +203,18 @@ func probeISO(r io.ReaderAt, size int64) (*Info, error) {
 			info.HasAudio = true
 		case "vide":
 			info.VideoTracks++
-			if info.Codec != "" {
-				continue // 只看第一条视频轨
+			vt := &videoTrack{}
+			if tkhd, ok := find(tc, "tkhd"); ok {
+				vt.enabled, vt.info.Rotation = parseTKHD(r, tkhd)
 			}
 			var timescale uint32
-			var dur uint64
 			if mdhd, ok := find(mc, "mdhd"); ok {
-				b := readN(r, mdhd, 32)
-				if len(b) >= 24 && b[0] == 1 && len(b) >= 32 {
-					timescale = binary.BigEndian.Uint32(b[20:24])
-					dur = binary.BigEndian.Uint64(b[24:32])
-				} else if len(b) >= 20 {
-					timescale = binary.BigEndian.Uint32(b[12:16])
-					dur = uint64(binary.BigEndian.Uint32(b[16:20]))
+				ts, durSec, err := parseMDHD(r, mdhd)
+				if err != nil {
+					return nil, err
 				}
-			}
-			if timescale > 0 {
-				info.DurationSec = float64(dur) / float64(timescale)
+				timescale = ts
+				vt.info.DurationSec = durSec
 			}
 			minf, ok := find(mc, "minf")
 			if !ok {
@@ -230,37 +233,212 @@ func probeISO(r io.ReaderAt, size int64) (*Info, error) {
 				return nil, err
 			}
 			if stsd, ok := find(sc, "stsd"); ok {
-				b := readN(r, stsd, 8+8+78)
-				// stsd: ver/flags(4) count(4)，然后第一个 sample entry：size(4) type(4) reserved(6) dref(2) predef(16) w(2) h(2)
-				if len(b) >= 8+8+28 {
-					fc := string(b[12:16])
-					info.FourCC = fc
-					info.Codec = codecOf(fc)
-					info.W = int(binary.BigEndian.Uint16(b[16+24 : 16+26]))
-					info.H = int(binary.BigEndian.Uint16(b[16+26 : 16+28]))
-				}
+				parseSTSD(r, stsd, &vt.info)
 			}
 			if stts, ok := find(sc, "stts"); ok && timescale > 0 {
-				if err := parseTiming(r, stts, timescale, info); err != nil {
+				if err := parseTiming(r, stts, timescale, &vt.info); err != nil {
 					return nil, err
 				}
 			}
-			if info.FrameCount > 0 {
+			if vt.info.FrameCount > 0 {
 				if stss, ok := find(sc, "stss"); ok {
-					if err := parseSyncSamples(r, stss, info); err != nil {
+					if err := parseSyncSamples(r, stss, &vt.info); err != nil {
 						return nil, err
 					}
 				} else {
 					// ISO BMFF: absent stss means every sample is a sync sample.
-					info.StartsWithKeyframe, info.MaxKeyframeInterval = true, 1
+					vt.info.StartsWithKeyframe, vt.info.MaxKeyframeInterval = true, 1
+				}
+			}
+			if vt.info.Codec != "" {
+				if firstFallback == nil {
+					firstFallback = vt
+				}
+				if vt.enabled && primary == nil {
+					primary = vt
 				}
 			}
 		}
 	}
-	if info.Codec == "" {
+	chosen := primary
+	if chosen == nil {
+		chosen = firstFallback
+	}
+	if chosen == nil {
 		return nil, errors.New("media: no video track")
 	}
+	info.Codec = chosen.info.Codec
+	info.FourCC = chosen.info.FourCC
+	info.W = chosen.info.W
+	info.H = chosen.info.H
+	info.FPS = chosen.info.FPS
+	info.DurationSec = chosen.info.DurationSec
+	info.FrameCount = chosen.info.FrameCount
+	info.ConstantFrameRate = chosen.info.ConstantFrameRate
+	info.StartsWithKeyframe = chosen.info.StartsWithKeyframe
+	info.MaxKeyframeInterval = chosen.info.MaxKeyframeInterval
+	info.Rotation = chosen.info.Rotation
+	info.BitDepth = chosen.info.BitDepth
 	return info, nil
+}
+
+func parseMDHD(r io.ReaderAt, b box) (timescale uint32, durationSec float64, err error) {
+	data := readN(r, b, 32)
+	if len(data) < 4 {
+		return 0, 0, errors.New("media: truncated mdhd")
+	}
+	var dur uint64
+	switch data[0] {
+	case 0:
+		if len(data) < 20 {
+			return 0, 0, errors.New("media: truncated mdhd v0")
+		}
+		timescale = binary.BigEndian.Uint32(data[12:16])
+		d32 := binary.BigEndian.Uint32(data[16:20])
+		if d32 != math.MaxUint32 {
+			dur = uint64(d32)
+		}
+	case 1:
+		if len(data) < 32 {
+			return 0, 0, errors.New("media: truncated mdhd v1")
+		}
+		timescale = binary.BigEndian.Uint32(data[20:24])
+		d64 := binary.BigEndian.Uint64(data[24:32])
+		if d64 != math.MaxUint64 {
+			dur = d64
+		}
+	default:
+		return 0, 0, fmt.Errorf("media: unsupported mdhd version %d", data[0])
+	}
+	if timescale > 0 && dur > 0 {
+		durationSec = float64(dur) / float64(timescale)
+	}
+	return timescale, durationSec, nil
+}
+
+func parseTKHD(r io.ReaderAt, b box) (enabled bool, rotation int) {
+	data := readN(r, b, 96)
+	if len(data) < 4 {
+		return false, 0
+	}
+	enabled = data[3]&0x01 != 0
+	var matrixOff int
+	switch data[0] {
+	case 0:
+		matrixOff = 40
+	case 1:
+		matrixOff = 52
+	default:
+		return enabled, 0
+	}
+	if len(data) < matrixOff+36 {
+		return enabled, 0
+	}
+	a := float64(int32(binary.BigEndian.Uint32(data[matrixOff:matrixOff+4]))) / 65536.0
+	bVal := float64(int32(binary.BigEndian.Uint32(data[matrixOff+4:matrixOff+8]))) / 65536.0
+	if a == 0 && bVal == 0 {
+		return enabled, 0
+	}
+	deg := math.Round(math.Atan2(bVal, a) * 180 / math.Pi)
+	rot := ((int(deg) % 360) + 360) % 360
+	return enabled, rot
+}
+
+func parseSTSD(r io.ReaderAt, stsd box, info *Info) {
+	if stsd.size < 16 {
+		return
+	}
+	hdr := readN(r, stsd, 8)
+	if len(hdr) < 8 || binary.BigEndian.Uint32(hdr[4:8]) == 0 {
+		return
+	}
+	entries, err := readBoxes(r, stsd.off+8, stsd.off+stsd.size)
+	if err != nil || len(entries) == 0 {
+		// Fallback for minimal truncated sample entries with at least 28 bytes of payload.
+		b := readN(r, stsd, 8+8+28)
+		if len(b) >= 8+8+28 {
+			fc := string(b[12:16])
+			info.FourCC = fc
+			info.Codec = codecOf(fc)
+			info.W = int(binary.BigEndian.Uint16(b[16+24 : 16+26]))
+			info.H = int(binary.BigEndian.Uint16(b[16+26 : 16+28]))
+		}
+		return
+	}
+	entry := entries[0]
+	if entry.size < 28 {
+		return
+	}
+	vb := readN(r, entry, 78)
+	if len(vb) < 28 {
+		return
+	}
+	info.FourCC = entry.typ
+	info.Codec = codecOf(entry.typ)
+	info.W = int(binary.BigEndian.Uint16(vb[24:26]))
+	info.H = int(binary.BigEndian.Uint16(vb[26:28]))
+	if (entry.typ == "avc1" || entry.typ == "avc3") && entry.size > 78 {
+		sub, err := readBoxes(r, entry.off+78, entry.off+entry.size)
+		if err == nil {
+			if avcc, ok := find(sub, "avcC"); ok {
+				info.BitDepth = parseAVCCBitDepth(readN(r, avcc, 64<<10))
+			}
+		}
+	}
+}
+
+func parseAVCCBitDepth(b []byte) int {
+	if len(b) < 7 || b[0] != 1 {
+		return 0
+	}
+	profile := b[1]
+	pos := 5
+	numSPS := int(b[pos] & 0x1f)
+	pos++
+	for i := 0; i < numSPS; i++ {
+		if pos+2 > len(b) {
+			return profileBitDepth(profile)
+		}
+		n := int(binary.BigEndian.Uint16(b[pos : pos+2]))
+		pos += 2 + n
+		if pos > len(b) {
+			return profileBitDepth(profile)
+		}
+	}
+	if pos >= len(b) {
+		return profileBitDepth(profile)
+	}
+	numPPS := int(b[pos])
+	pos++
+	for i := 0; i < numPPS; i++ {
+		if pos+2 > len(b) {
+			return profileBitDepth(profile)
+		}
+		n := int(binary.BigEndian.Uint16(b[pos : pos+2]))
+		pos += 2 + n
+		if pos > len(b) {
+			return profileBitDepth(profile)
+		}
+	}
+	// ISO/IEC 14496-15 §5.3.3.1.2: chroma_format and bit_depth fields follow PPS
+	// for High profiles (100, 110, 122, 144, 244).
+	if (profile == 100 || profile == 110 || profile == 122 || profile == 144 || profile == 244) && pos+3 <= len(b) {
+		luma := 8 + int(b[pos+1]&0x07)
+		chroma := 8 + int(b[pos+2]&0x07)
+		return max(luma, chroma)
+	}
+	return profileBitDepth(profile)
+}
+
+func profileBitDepth(profile byte) int {
+	switch profile {
+	case 110, 122, 144, 244, 44:
+		return 10
+	case 66, 77, 88, 100:
+		return 8
+	default:
+		return 0
+	}
 }
 
 // Parse complete, bounded sample tables. A prefix-only fps average can mislabel

@@ -214,3 +214,91 @@ func TestClickReprojectsWithAdaptiveScale(t *testing.T) {
 		t.Fatal(a, b)
 	}
 }
+
+func TestAnalyzerSanitizesNonFiniteAndExtremeSamples(t *testing.T) {
+	a := Analyzer{}
+	pcm := make([]float32, 1024)
+	pcm[0] = float32(math.NaN())
+	pcm[1] = float32(math.Inf(1))
+	pcm[2] = float32(math.Inf(-1))
+	pcm[3] = math.MaxFloat32
+	pcm[4] = -math.MaxFloat32
+	s, err := a.Analyze(pcm, 48000)
+	if err != nil {
+		t.Fatalf("Analyze rejected non-finite/extreme PCM instead of sanitizing: %v", err)
+	}
+	if math.IsNaN(float64(s.RMS)) || math.IsInf(float64(s.RMS), 0) {
+		t.Fatalf("non-finite RMS: %v", s.RMS)
+	}
+	for i, v := range s.Bins {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) || v < 0 {
+			t.Fatalf("bin %d poisoned: %v", i, v)
+		}
+	}
+	// Follow-up frame with normal silence must smoothly decay without NaN poisoning.
+	clear(pcm)
+	s2, err := a.Analyze(pcm, 48000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range s2.Bins {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) || v < 0 {
+			t.Fatalf("bin %d poisoned on subsequent frame: %v", i, v)
+		}
+	}
+}
+
+func TestAnalyzerLowFrequencyInterpolation(t *testing.T) {
+	// At N=4096, rate=48000, Δf ≈ 11.72 Hz so bottom ~30 log bands are narrower than Δf.
+	a := Analyzer{}
+	pcm := make([]float32, 4096)
+	for i := range pcm {
+		ts := float64(i) / 48000.0
+		pcm[i] = float32(0.4*math.Sin(2*math.Pi*25*ts) + 0.4*math.Sin(2*math.Pi*45*ts) + 0.4*math.Sin(2*math.Pi*75*ts))
+	}
+	s, err := a.Analyze(pcm, 48000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonZero := 0
+	for i := 0; i < 30; i++ {
+		if s.Bins[i] > 0 {
+			nonZero++
+		}
+	}
+	if nonZero < 25 {
+		t.Fatalf("low-frequency log bins left empty (%d/30 non-zero): %v", nonZero, s.Bins[:30])
+	}
+}
+
+func TestSessionDynamicDisableStopsSources(t *testing.T) {
+	a := &fakeSource{}
+	p := &fakePointer{sample: PointerSample{X: 30, Y: 40, Buttons: 1, Desktop: true}}
+	s := Session{
+		Capture:  Capture{Source: a},
+		Pointer:  p,
+		Audio:    true,
+		Input:    true,
+		Viewport: image.Rect(0, 0, 100, 100),
+		Canvas:   image.Rect(0, 0, 100, 100),
+	}
+	now := time.Now()
+	s.Frame(now, 30, image.Pt(100, 100))
+	if a.starts != 1 || p.starts != 1 {
+		t.Fatalf("expected both started, got a=%+v p=%+v", a, p)
+	}
+
+	// Dynamically disable audio only.
+	s.Audio = false
+	spec, _ := s.Frame(now.Add(100*time.Millisecond), 30, image.Pt(100, 100))
+	if a.stops != 1 || p.stops != 0 || spec != (Spectrum{}) {
+		t.Fatalf("expected audio stopped immediately and pointer still active: a=%+v p=%+v", a, p)
+	}
+
+	// Dynamically disable input.
+	s.Input = false
+	_, mouse := s.Frame(now.Add(200*time.Millisecond), 30, image.Pt(100, 100))
+	if p.stops != 1 || mouse != ([4]float32{}) || s.InputFrame != nil {
+		t.Fatalf("expected pointer stopped immediately: p=%+v mouse=%v", p, mouse)
+	}
+}

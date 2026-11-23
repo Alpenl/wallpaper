@@ -103,11 +103,14 @@ func encodeGIF(ctx context.Context, src, dst string, bw, bh int, cover bool) err
 	defer w.close()
 	w.cover = cover
 	for i := 0; i < count; i++ {
+		// Drain per-frame autoreleases to avoid unbounded ObjC heap growth on long GIFs.
+		framePool := class("NSAutoreleasePool").Send(sel("alloc")).Send(sel("init"))
 		im, e := frames.at(ctx, i)
-		if e != nil {
-			return e
+		if e == nil {
+			e = w.appendRGBA(ctx, im, i)
 		}
-		if e = w.appendRGBA(ctx, im, i); e != nil {
+		framePool.Send(sel("drain"))
+		if e != nil {
 			return e
 		}
 	}

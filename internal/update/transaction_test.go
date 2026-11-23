@@ -205,7 +205,7 @@ func TestTransactionRefusalAndCorruption(t *testing.T) {
 func TestTransactionLegacyPending(t *testing.T) {
 	for _, good := range []bool{false, true} {
 		t.Run(fmt.Sprint(good), func(t *testing.T) {
-			c := &Client{Dir: t.TempDir()}
+			c := &Client{Dir: t.TempDir(), Current: "0.2.0"}
 			if p, err := c.ReadPending(); p != nil || err != nil {
 				t.Fatal(p, err)
 			}
@@ -252,6 +252,7 @@ func TestTransactionHappyPathAndExeLast(t *testing.T) {
 		t.Fatal(moves)
 	}
 	c.rename = nil
+	c.Current = "0.2.0"
 	if err := c.Recover(); err != nil {
 		t.Fatal(err)
 	}
@@ -290,6 +291,7 @@ func TestTransactionRestoreJoinsErrors(t *testing.T) {
 	if _, err := c.Apply(context.Background(), m, nil); err != nil {
 		t.Fatal(err)
 	}
+	c.Current = "0.2.0"
 	one, two := errors.New("first rename"), errors.New("second rename")
 	n := 0
 	c.rename = func(a, b string) error {
@@ -339,6 +341,7 @@ func TestTransactionBootRollback(t *testing.T) {
 	if _, err := c.Apply(context.Background(), m, nil); err != nil {
 		t.Fatal(err)
 	}
+	c.Current = "0.2.0"
 	for i := 0; i < MaxBoots; i++ {
 		if rb, err := c.Boot(); rb || err != nil {
 			t.Fatal(rb, err)

@@ -19,17 +19,40 @@ func ParsePmset(out string) (bool, int) {
 	return on, pct
 }
 
+const defaultTopInset = 50.0
+
+// topInsetFromFrames computes the top menu-bar / notch inset from AppKit
+// bottom-up screen frame and visibleFrame rectangles.
+func topInsetFromFrames(frameY, frameH, visY, visH float64) float64 {
+	inset := (frameY + frameH) - (visY + visH)
+	if inset < 0 || inset > 120 {
+		return defaultTopInset
+	}
+	return max(inset, defaultTopInset)
+}
+
 // Covered 是 50 pt 网格遮挡判定（与 Windows 相同的 Lively 算法，坐标为 CG 左上原点）。
 func Covered(disp Rect, wins []Rect) (covered, fullscreen bool) {
+	return CoveredWithTopInset(disp, defaultTopInset, wins)
+}
+
+// CoveredWithTopInset 是 50 pt 网格遮挡与全屏判定，允许顶部预留刘海/菜单栏安全区高度。
+func CoveredWithTopInset(disp Rect, topInset float64, wins []Rect) (covered, fullscreen bool) {
 	const tile = 50.0
 	cols, rows := int((disp.W+tile-1)/tile), int((disp.H+tile-1)/tile)
 	if cols <= 0 || rows <= 0 {
 		return false, false
 	}
+	if topInset < 0 {
+		topInset = 0
+	}
+	if maxInset := disp.H * 0.2; topInset > maxInset {
+		topInset = maxInset
+	}
 	grid := make([]bool, cols*rows)
 	cnt := 0
 	for _, r := range wins {
-		if r.X <= disp.X+2 && r.Y <= disp.Y+2 && r.X+r.W >= disp.X+disp.W-2 && r.Y+r.H >= disp.Y+disp.H-2 {
+		if r.X <= disp.X+2 && r.Y <= disp.Y+topInset+2 && r.X+r.W >= disp.X+disp.W-2 && r.Y+r.H >= disp.Y+disp.H-2 {
 			fullscreen = true
 		}
 		x0, y0 := int((r.X-disp.X)/tile), int((r.Y-disp.Y)/tile)

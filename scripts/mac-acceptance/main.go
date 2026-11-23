@@ -332,12 +332,16 @@ func measure(r *avf.Renderer, stage string) error {
 		return fmt.Errorf("footprint: %w: %s", err, output)
 	}
 	match := footprintValue.FindStringSubmatch(string(output))
-	// Auxiliary tables may put the ledger name after the numeric columns.
-	for _, line := range strings.Split(string(output), "\n") {
-		for _, field := range strings.Fields(line) {
-			if strings.TrimSuffix(field, ":") == "phys_footprint" {
-				if value := integer.FindString(line); value != "" {
-					match = []string{"", value}
+	if len(match) != 2 {
+		// Auxiliary tables may put the ledger name after the numeric columns.
+	scan:
+		for _, line := range strings.Split(string(output), "\n") {
+			for _, field := range strings.Fields(line) {
+				if strings.TrimSuffix(field, ":") == "phys_footprint" {
+					if value := integer.FindString(line); value != "" {
+						match = []string{"", value}
+						break scan
+					}
 				}
 			}
 		}
